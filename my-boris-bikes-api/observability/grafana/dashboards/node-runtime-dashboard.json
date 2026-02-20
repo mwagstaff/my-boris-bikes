@@ -1,0 +1,111 @@
+{
+  "title": "Node.js Runtime Health",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 3,
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Process Memory (MB)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes / 1024 / 1024",
+          "legendFormat": "RSS Memory"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Heap Used (MB)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "nodejs_heap_size_used_bytes / 1024 / 1024",
+          "legendFormat": "Heap Used"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU Usage",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(process_cpu_seconds_total[1m])",
+          "legendFormat": "CPU/sec"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Event Loop Lag (p99)",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "nodejs_eventloop_lag_p99_seconds",
+          "legendFormat": "p99 lag"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Uptime",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": ["lastNotNull"],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "max(time() - process_start_time_seconds)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Server Start Date",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "time:dddd, MMM D, YYYY HH:mm:ss"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": ["lastNotNull"],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * min(process_start_time_seconds)"
+        }
+      ]
+    }
+  ]
+}

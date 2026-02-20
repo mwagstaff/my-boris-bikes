@@ -1,0 +1,1335 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		E72158872E564879004CB2E1 /* Launch Screen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = E72158862E564879004CB2E1 /* Launch Screen.storyboard */; };
+		E74135E02F31675900EB72C4 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E7544E6D2E48175C00B3F29D /* WidgetKit.framework */; };
+		E74135E12F31675900EB72C4 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E7544E6F2E48175C00B3F29D /* SwiftUI.framework */; };
+		E74135F22F31675C00EB72C4 /* My Boris Bikes WidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E74135DF2F31675900EB72C4 /* My Boris Bikes WidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E74FF9D22E46798900DD1BA8 /* My Boris Bikes Watch Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = E74FF9B22E46798800DD1BA8 /* My Boris Bikes Watch Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E7544E6E2E48175C00B3F29D /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E7544E6D2E48175C00B3F29D /* WidgetKit.framework */; };
+		E7544E702E48175C00B3F29D /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E7544E6F2E48175C00B3F29D /* SwiftUI.framework */; };
+		E7544E7B2E48175E00B3F29D /* My Boris Bikes Watch App Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E7544E6B2E48175C00B3F29D /* My Boris Bikes Watch App Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E74135F02F31675C00EB72C4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E74FF97C2E46720100DD1BA8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E74135DE2F31675900EB72C4;
+			remoteInfo = "My Boris Bikes WidgetExtension";
+		};
+		E74FF9922E46720300DD1BA8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E74FF97C2E46720100DD1BA8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E74FF9832E46720100DD1BA8;
+			remoteInfo = "My Boris Bikes";
+		};
+		E74FF99C2E46720300DD1BA8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E74FF97C2E46720100DD1BA8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E74FF9832E46720100DD1BA8;
+			remoteInfo = "My Boris Bikes";
+		};
+		E74FF9BF2E46798900DD1BA8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E74FF97C2E46720100DD1BA8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E74FF9B12E46798800DD1BA8;
+			remoteInfo = "My Boris Bikes Watch Watch App";
+		};
+		E74FF9C92E46798900DD1BA8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E74FF97C2E46720100DD1BA8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E74FF9B12E46798800DD1BA8;
+			remoteInfo = "My Boris Bikes Watch Watch App";
+		};
+		E74FF9D02E46798900DD1BA8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E74FF97C2E46720100DD1BA8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E74FF9B12E46798800DD1BA8;
+			remoteInfo = "My Boris Bikes Watch Watch App";
+		};
+		E7544E792E48175E00B3F29D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E74FF97C2E46720100DD1BA8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E7544E6A2E48175C00B3F29D;
+			remoteInfo = "My Boris Bikes Watch App ExtensionExtension";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E74135F72F31675C00EB72C4 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				E74135F22F31675C00EB72C4 /* My Boris Bikes WidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9D62E46798900DD1BA8 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				E74FF9D22E46798900DD1BA8 /* My Boris Bikes Watch Watch App.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7544E7C2E48175E00B3F29D /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				E7544E7B2E48175E00B3F29D /* My Boris Bikes Watch App Extension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		E72158862E564879004CB2E1 /* Launch Screen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = "Launch Screen.storyboard"; sourceTree = "<group>"; };
+		E74135DF2F31675900EB72C4 /* My Boris Bikes WidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "My Boris Bikes WidgetExtension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E741360B2F31686C00EB72C4 /* My Boris Bikes WidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "My Boris Bikes WidgetExtension.entitlements"; sourceTree = "<group>"; };
+		E74FF9842E46720100DD1BA8 /* My Boris Bikes.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "My Boris Bikes.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E74FF9912E46720300DD1BA8 /* My Boris BikesTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "My Boris BikesTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E74FF99B2E46720300DD1BA8 /* My Boris BikesUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "My Boris BikesUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E74FF9B22E46798800DD1BA8 /* My Boris Bikes Watch Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "My Boris Bikes Watch Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E74FF9BE2E46798900DD1BA8 /* My Boris Bikes Watch Watch AppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "My Boris Bikes Watch Watch AppTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E74FF9C82E46798900DD1BA8 /* My Boris Bikes Watch Watch AppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "My Boris Bikes Watch Watch AppUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7544E6B2E48175C00B3F29D /* My Boris Bikes Watch App Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "My Boris Bikes Watch App Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7544E6D2E48175C00B3F29D /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		E7544E6F2E48175C00B3F29D /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		E74135F32F31675C00EB72C4 /* Exceptions for "My Boris Bikes Widget" folder in "My Boris Bikes WidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E74135DE2F31675900EB72C4 /* My Boris Bikes WidgetExtension */;
+		};
+		E74136082F31682B00EB72C4 /* Exceptions for "My Boris Bikes" folder in "My Boris Bikes WidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Configuration/AppConstants.swift,
+				Models/BikePoint.swift,
+				Models/LiveActivityModels.swift,
+				Models/WidgetModels.swift,
+			);
+			target = E74135DE2F31675900EB72C4 /* My Boris Bikes WidgetExtension */;
+		};
+		E7544E7F2E48175E00B3F29D /* Exceptions for "My Boris Bikes Watch App Extension" folder in "My Boris Bikes Watch App Extension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E7544E6A2E48175C00B3F29D /* My Boris Bikes Watch App Extension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		E74135E22F31675900EB72C4 /* My Boris Bikes Widget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E74135F32F31675C00EB72C4 /* Exceptions for "My Boris Bikes Widget" folder in "My Boris Bikes WidgetExtension" target */,
+			);
+			path = "My Boris Bikes Widget";
+			sourceTree = "<group>";
+		};
+		E74FF9862E46720100DD1BA8 /* My Boris Bikes */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E74136082F31682B00EB72C4 /* Exceptions for "My Boris Bikes" folder in "My Boris Bikes WidgetExtension" target */,
+			);
+			path = "My Boris Bikes";
+			sourceTree = "<group>";
+		};
+		E74FF9942E46720300DD1BA8 /* My Boris BikesTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "My Boris BikesTests";
+			sourceTree = "<group>";
+		};
+		E74FF99E2E46720300DD1BA8 /* My Boris BikesUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "My Boris BikesUITests";
+			sourceTree = "<group>";
+		};
+		E74FF9B32E46798800DD1BA8 /* My Boris Bikes Watch Watch App */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "My Boris Bikes Watch Watch App";
+			sourceTree = "<group>";
+		};
+		E74FF9C12E46798900DD1BA8 /* My Boris Bikes Watch Watch AppTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "My Boris Bikes Watch Watch AppTests";
+			sourceTree = "<group>";
+		};
+		E74FF9CB2E46798900DD1BA8 /* My Boris Bikes Watch Watch AppUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "My Boris Bikes Watch Watch AppUITests";
+			sourceTree = "<group>";
+		};
+		E7544E712E48175C00B3F29D /* My Boris Bikes Watch App Extension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E7544E7F2E48175E00B3F29D /* Exceptions for "My Boris Bikes Watch App Extension" folder in "My Boris Bikes Watch App Extension" target */,
+			);
+			path = "My Boris Bikes Watch App Extension";
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E74135DC2F31675900EB72C4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E74135E12F31675900EB72C4 /* SwiftUI.framework in Frameworks */,
+				E74135E02F31675900EB72C4 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9812E46720100DD1BA8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF98E2E46720300DD1BA8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9982E46720300DD1BA8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9AF2E46798800DD1BA8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9BB2E46798900DD1BA8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9C52E46798900DD1BA8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7544E682E48175C00B3F29D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7544E702E48175C00B3F29D /* SwiftUI.framework in Frameworks */,
+				E7544E6E2E48175C00B3F29D /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		E74FF97B2E46720100DD1BA8 = {
+			isa = PBXGroup;
+			children = (
+				E741360B2F31686C00EB72C4 /* My Boris Bikes WidgetExtension.entitlements */,
+				E72158862E564879004CB2E1 /* Launch Screen.storyboard */,
+				E74FF9862E46720100DD1BA8 /* My Boris Bikes */,
+				E74FF9942E46720300DD1BA8 /* My Boris BikesTests */,
+				E74FF99E2E46720300DD1BA8 /* My Boris BikesUITests */,
+				E74FF9B32E46798800DD1BA8 /* My Boris Bikes Watch Watch App */,
+				E74FF9C12E46798900DD1BA8 /* My Boris Bikes Watch Watch AppTests */,
+				E74FF9CB2E46798900DD1BA8 /* My Boris Bikes Watch Watch AppUITests */,
+				E7544E712E48175C00B3F29D /* My Boris Bikes Watch App Extension */,
+				E74135E22F31675900EB72C4 /* My Boris Bikes Widget */,
+				E7544E6C2E48175C00B3F29D /* Frameworks */,
+				E74FF9852E46720100DD1BA8 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		E74FF9852E46720100DD1BA8 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E74FF9842E46720100DD1BA8 /* My Boris Bikes.app */,
+				E74FF9912E46720300DD1BA8 /* My Boris BikesTests.xctest */,
+				E74FF99B2E46720300DD1BA8 /* My Boris BikesUITests.xctest */,
+				E74FF9B22E46798800DD1BA8 /* My Boris Bikes Watch Watch App.app */,
+				E74FF9BE2E46798900DD1BA8 /* My Boris Bikes Watch Watch AppTests.xctest */,
+				E74FF9C82E46798900DD1BA8 /* My Boris Bikes Watch Watch AppUITests.xctest */,
+				E7544E6B2E48175C00B3F29D /* My Boris Bikes Watch App Extension.appex */,
+				E74135DF2F31675900EB72C4 /* My Boris Bikes WidgetExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		E7544E6C2E48175C00B3F29D /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				E7544E6D2E48175C00B3F29D /* WidgetKit.framework */,
+				E7544E6F2E48175C00B3F29D /* SwiftUI.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E74135DE2F31675900EB72C4 /* My Boris Bikes WidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E74135F42F31675C00EB72C4 /* Build configuration list for PBXNativeTarget "My Boris Bikes WidgetExtension" */;
+			buildPhases = (
+				E74135DB2F31675900EB72C4 /* Sources */,
+				E74135DC2F31675900EB72C4 /* Frameworks */,
+				E74135DD2F31675900EB72C4 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E74135E22F31675900EB72C4 /* My Boris Bikes Widget */,
+			);
+			name = "My Boris Bikes WidgetExtension";
+			packageProductDependencies = (
+			);
+			productName = "My Boris Bikes WidgetExtension";
+			productReference = E74135DF2F31675900EB72C4 /* My Boris Bikes WidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		E74FF9832E46720100DD1BA8 /* My Boris Bikes */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E74FF9A52E46720300DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris Bikes" */;
+			buildPhases = (
+				E74FF9802E46720100DD1BA8 /* Sources */,
+				E74FF9812E46720100DD1BA8 /* Frameworks */,
+				E74FF9822E46720100DD1BA8 /* Resources */,
+				E74FF9D62E46798900DD1BA8 /* Embed Watch Content */,
+				E74135F72F31675C00EB72C4 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E74FF9D12E46798900DD1BA8 /* PBXTargetDependency */,
+				E74135F12F31675C00EB72C4 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E74FF9862E46720100DD1BA8 /* My Boris Bikes */,
+			);
+			name = "My Boris Bikes";
+			packageProductDependencies = (
+			);
+			productName = "My Boris Bikes";
+			productReference = E74FF9842E46720100DD1BA8 /* My Boris Bikes.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E74FF9902E46720300DD1BA8 /* My Boris BikesTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E74FF9A82E46720300DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris BikesTests" */;
+			buildPhases = (
+				E74FF98D2E46720300DD1BA8 /* Sources */,
+				E74FF98E2E46720300DD1BA8 /* Frameworks */,
+				E74FF98F2E46720300DD1BA8 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E74FF9932E46720300DD1BA8 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E74FF9942E46720300DD1BA8 /* My Boris BikesTests */,
+			);
+			name = "My Boris BikesTests";
+			packageProductDependencies = (
+			);
+			productName = "My Boris BikesTests";
+			productReference = E74FF9912E46720300DD1BA8 /* My Boris BikesTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		E74FF99A2E46720300DD1BA8 /* My Boris BikesUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E74FF9AB2E46720300DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris BikesUITests" */;
+			buildPhases = (
+				E74FF9972E46720300DD1BA8 /* Sources */,
+				E74FF9982E46720300DD1BA8 /* Frameworks */,
+				E74FF9992E46720300DD1BA8 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E74FF99D2E46720300DD1BA8 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E74FF99E2E46720300DD1BA8 /* My Boris BikesUITests */,
+			);
+			name = "My Boris BikesUITests";
+			packageProductDependencies = (
+			);
+			productName = "My Boris BikesUITests";
+			productReference = E74FF99B2E46720300DD1BA8 /* My Boris BikesUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		E74FF9B12E46798800DD1BA8 /* My Boris Bikes Watch Watch App */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E74FF9D32E46798900DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris Bikes Watch Watch App" */;
+			buildPhases = (
+				E74FF9AE2E46798800DD1BA8 /* Sources */,
+				E74FF9AF2E46798800DD1BA8 /* Frameworks */,
+				E74FF9B02E46798800DD1BA8 /* Resources */,
+				E7544E7C2E48175E00B3F29D /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E7544E7A2E48175E00B3F29D /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E74FF9B32E46798800DD1BA8 /* My Boris Bikes Watch Watch App */,
+			);
+			name = "My Boris Bikes Watch Watch App";
+			packageProductDependencies = (
+			);
+			productName = "My Boris Bikes Watch Watch App";
+			productReference = E74FF9B22E46798800DD1BA8 /* My Boris Bikes Watch Watch App.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E74FF9BD2E46798900DD1BA8 /* My Boris Bikes Watch Watch AppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E74FF9D72E46798900DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris Bikes Watch Watch AppTests" */;
+			buildPhases = (
+				E74FF9BA2E46798900DD1BA8 /* Sources */,
+				E74FF9BB2E46798900DD1BA8 /* Frameworks */,
+				E74FF9BC2E46798900DD1BA8 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E74FF9C02E46798900DD1BA8 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E74FF9C12E46798900DD1BA8 /* My Boris Bikes Watch Watch AppTests */,
+			);
+			name = "My Boris Bikes Watch Watch AppTests";
+			packageProductDependencies = (
+			);
+			productName = "My Boris Bikes Watch Watch AppTests";
+			productReference = E74FF9BE2E46798900DD1BA8 /* My Boris Bikes Watch Watch AppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		E74FF9C72E46798900DD1BA8 /* My Boris Bikes Watch Watch AppUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E74FF9DA2E46798900DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris Bikes Watch Watch AppUITests" */;
+			buildPhases = (
+				E74FF9C42E46798900DD1BA8 /* Sources */,
+				E74FF9C52E46798900DD1BA8 /* Frameworks */,
+				E74FF9C62E46798900DD1BA8 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E74FF9CA2E46798900DD1BA8 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E74FF9CB2E46798900DD1BA8 /* My Boris Bikes Watch Watch AppUITests */,
+			);
+			name = "My Boris Bikes Watch Watch AppUITests";
+			packageProductDependencies = (
+			);
+			productName = "My Boris Bikes Watch Watch AppUITests";
+			productReference = E74FF9C82E46798900DD1BA8 /* My Boris Bikes Watch Watch AppUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		E7544E6A2E48175C00B3F29D /* My Boris Bikes Watch App Extension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7544E802E48175E00B3F29D /* Build configuration list for PBXNativeTarget "My Boris Bikes Watch App Extension" */;
+			buildPhases = (
+				E7544E672E48175C00B3F29D /* Sources */,
+				E7544E682E48175C00B3F29D /* Frameworks */,
+				E7544E692E48175C00B3F29D /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E7544E712E48175C00B3F29D /* My Boris Bikes Watch App Extension */,
+			);
+			name = "My Boris Bikes Watch App Extension";
+			packageProductDependencies = (
+			);
+			productName = "My Boris Bikes Watch App ExtensionExtension";
+			productReference = E7544E6B2E48175C00B3F29D /* My Boris Bikes Watch App Extension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E74FF97C2E46720100DD1BA8 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 1640;
+				TargetAttributes = {
+					E74135DE2F31675900EB72C4 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					E74FF9832E46720100DD1BA8 = {
+						CreatedOnToolsVersion = 16.4;
+					};
+					E74FF9902E46720300DD1BA8 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = E74FF9832E46720100DD1BA8;
+					};
+					E74FF99A2E46720300DD1BA8 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = E74FF9832E46720100DD1BA8;
+					};
+					E74FF9B12E46798800DD1BA8 = {
+						CreatedOnToolsVersion = 16.4;
+					};
+					E74FF9BD2E46798900DD1BA8 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = E74FF9B12E46798800DD1BA8;
+					};
+					E74FF9C72E46798900DD1BA8 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = E74FF9B12E46798800DD1BA8;
+					};
+					E7544E6A2E48175C00B3F29D = {
+						CreatedOnToolsVersion = 16.4;
+					};
+				};
+			};
+			buildConfigurationList = E74FF97F2E46720100DD1BA8 /* Build configuration list for PBXProject "My Boris Bikes" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = E74FF97B2E46720100DD1BA8;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = E74FF9852E46720100DD1BA8 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E74FF9832E46720100DD1BA8 /* My Boris Bikes */,
+				E74FF9902E46720300DD1BA8 /* My Boris BikesTests */,
+				E74FF99A2E46720300DD1BA8 /* My Boris BikesUITests */,
+				E74FF9B12E46798800DD1BA8 /* My Boris Bikes Watch Watch App */,
+				E74FF9BD2E46798900DD1BA8 /* My Boris Bikes Watch Watch AppTests */,
+				E74FF9C72E46798900DD1BA8 /* My Boris Bikes Watch Watch AppUITests */,
+				E7544E6A2E48175C00B3F29D /* My Boris Bikes Watch App Extension */,
+				E74135DE2F31675900EB72C4 /* My Boris Bikes WidgetExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E74135DD2F31675900EB72C4 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9822E46720100DD1BA8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E72158872E564879004CB2E1 /* Launch Screen.storyboard in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF98F2E46720300DD1BA8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9992E46720300DD1BA8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9B02E46798800DD1BA8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9BC2E46798900DD1BA8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9C62E46798900DD1BA8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7544E692E48175C00B3F29D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E74135DB2F31675900EB72C4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9802E46720100DD1BA8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF98D2E46720300DD1BA8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9972E46720300DD1BA8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9AE2E46798800DD1BA8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9BA2E46798900DD1BA8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E74FF9C42E46798900DD1BA8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7544E672E48175C00B3F29D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E74135F12F31675C00EB72C4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E74135DE2F31675900EB72C4 /* My Boris Bikes WidgetExtension */;
+			targetProxy = E74135F02F31675C00EB72C4 /* PBXContainerItemProxy */;
+		};
+		E74FF9932E46720300DD1BA8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E74FF9832E46720100DD1BA8 /* My Boris Bikes */;
+			targetProxy = E74FF9922E46720300DD1BA8 /* PBXContainerItemProxy */;
+		};
+		E74FF99D2E46720300DD1BA8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E74FF9832E46720100DD1BA8 /* My Boris Bikes */;
+			targetProxy = E74FF99C2E46720300DD1BA8 /* PBXContainerItemProxy */;
+		};
+		E74FF9C02E46798900DD1BA8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E74FF9B12E46798800DD1BA8 /* My Boris Bikes Watch Watch App */;
+			targetProxy = E74FF9BF2E46798900DD1BA8 /* PBXContainerItemProxy */;
+		};
+		E74FF9CA2E46798900DD1BA8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E74FF9B12E46798800DD1BA8 /* My Boris Bikes Watch Watch App */;
+			targetProxy = E74FF9C92E46798900DD1BA8 /* PBXContainerItemProxy */;
+		};
+		E74FF9D12E46798900DD1BA8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E74FF9B12E46798800DD1BA8 /* My Boris Bikes Watch Watch App */;
+			targetProxy = E74FF9D02E46798900DD1BA8 /* PBXContainerItemProxy */;
+		};
+		E7544E7A2E48175E00B3F29D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E7544E6A2E48175C00B3F29D /* My Boris Bikes Watch App Extension */;
+			targetProxy = E7544E792E48175E00B3F29D /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		E74135F52F31675C00EB72C4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = "My Boris Bikes WidgetExtension.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "My Boris Bikes Widget/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "My Boris Bikes Widget";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes.widget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E74135F62F31675C00EB72C4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = "My Boris Bikes WidgetExtension.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "My Boris Bikes Widget/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "My Boris Bikes Widget";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes.widget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		E74FF9A32E46720300DD1BA8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		E74FF9A42E46720300DD1BA8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		E74FF9A62E46720300DD1BA8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "My Boris Bikes/My Boris Bikes.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "My-Boris-Bikes-Info.plist";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSLocationUsageDescription = "My Boris Bikes needs access to your location to sort bike stations by distance and center the map on your location.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "My Boris Bikes needs access to your location to sort bike stations by distance and center the map on your location.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = "";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.80;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E74FF9A72E46720300DD1BA8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "My Boris Bikes/My Boris Bikes.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "My-Boris-Bikes-Info.plist";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSLocationUsageDescription = "My Boris Bikes needs access to your location to sort bike stations by distance and center the map on your location.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "My Boris Bikes needs access to your location to sort bike stations by distance and center the map on your location.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = "";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.80;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		E74FF9A92E46720300DD1BA8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-BikesTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/My Boris Bikes.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/My Boris Bikes";
+			};
+			name = Debug;
+		};
+		E74FF9AA2E46720300DD1BA8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-BikesTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/My Boris Bikes.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/My Boris Bikes";
+			};
+			name = Release;
+		};
+		E74FF9AC2E46720300DD1BA8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-BikesUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "My Boris Bikes";
+			};
+			name = Debug;
+		};
+		E74FF9AD2E46720300DD1BA8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-BikesUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "My Boris Bikes";
+			};
+			name = Release;
+		};
+		E74FF9D42E46798900DD1BA8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "My Boris Bikes Watch Watch App/My Boris Bikes Watch Watch App.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "My Boris Bikes Watch";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "dev.skynolimit.myborisbikes.My-Boris-Bikes";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.40;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes.watchkitapp";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.5;
+			};
+			name = Debug;
+		};
+		E74FF9D52E46798900DD1BA8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "My Boris Bikes Watch Watch App/My Boris Bikes Watch Watch App.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "My Boris Bikes Watch";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "dev.skynolimit.myborisbikes.My-Boris-Bikes";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.40;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes.watchkitapp";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.5;
+			};
+			name = Release;
+		};
+		E74FF9D82E46798900DD1BA8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes-Watch-Watch-AppTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/My Boris Bikes Watch Watch App.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/My Boris Bikes Watch Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 11.5;
+			};
+			name = Debug;
+		};
+		E74FF9D92E46798900DD1BA8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes-Watch-Watch-AppTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/My Boris Bikes Watch Watch App.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/My Boris Bikes Watch Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 11.5;
+			};
+			name = Release;
+		};
+		E74FF9DB2E46798900DD1BA8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes-Watch-Watch-AppUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_TARGET_NAME = "My Boris Bikes Watch Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 11.5;
+			};
+			name = Debug;
+		};
+		E74FF9DC2E46798900DD1BA8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes-Watch-Watch-AppUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_TARGET_NAME = "My Boris Bikes Watch Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 11.5;
+			};
+			name = Release;
+		};
+		E7544E7D2E48175E00B3F29D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = "My Boris Bikes Watch App ExtensionExtension.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "My Boris Bikes Watch App Extension/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "My Boris Bikes Watch App Extension";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes.watchkitapp.My-Boris-Bikes-Watch-App-Extension";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.5;
+			};
+			name = Debug;
+		};
+		E7544E7E2E48175E00B3F29D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = "My Boris Bikes Watch App ExtensionExtension.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "My Boris Bikes Watch App Extension/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "My Boris Bikes Watch App Extension";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-Bikes.watchkitapp.My-Boris-Bikes-Watch-App-Extension";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.5;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		E74135F42F31675C00EB72C4 /* Build configuration list for PBXNativeTarget "My Boris Bikes WidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E74135F52F31675C00EB72C4 /* Debug */,
+				E74135F62F31675C00EB72C4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E74FF97F2E46720100DD1BA8 /* Build configuration list for PBXProject "My Boris Bikes" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E74FF9A32E46720300DD1BA8 /* Debug */,
+				E74FF9A42E46720300DD1BA8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E74FF9A52E46720300DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris Bikes" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E74FF9A62E46720300DD1BA8 /* Debug */,
+				E74FF9A72E46720300DD1BA8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E74FF9A82E46720300DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris BikesTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E74FF9A92E46720300DD1BA8 /* Debug */,
+				E74FF9AA2E46720300DD1BA8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E74FF9AB2E46720300DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris BikesUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E74FF9AC2E46720300DD1BA8 /* Debug */,
+				E74FF9AD2E46720300DD1BA8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E74FF9D32E46798900DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris Bikes Watch Watch App" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E74FF9D42E46798900DD1BA8 /* Debug */,
+				E74FF9D52E46798900DD1BA8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E74FF9D72E46798900DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris Bikes Watch Watch AppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E74FF9D82E46798900DD1BA8 /* Debug */,
+				E74FF9D92E46798900DD1BA8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E74FF9DA2E46798900DD1BA8 /* Build configuration list for PBXNativeTarget "My Boris Bikes Watch Watch AppUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E74FF9DB2E46798900DD1BA8 /* Debug */,
+				E74FF9DC2E46798900DD1BA8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7544E802E48175E00B3F29D /* Build configuration list for PBXNativeTarget "My Boris Bikes Watch App Extension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7544E7D2E48175E00B3F29D /* Debug */,
+				E7544E7E2E48175E00B3F29D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E74FF97C2E46720100DD1BA8 /* Project object */;
+}

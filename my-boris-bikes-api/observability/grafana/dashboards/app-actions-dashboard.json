@@ -1,0 +1,164 @@
+{
+  "title": "App Metrics",
+  "schemaVersion": 38,
+  "version": 6,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Actions per Minute by Screen",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "60 * sum(rate(app_actions_total[$__rate_interval])) by (screen)",
+          "legendFormat": "{{screen}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Actions per Minute by Action",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "60 * sum(rate(app_actions_total[$__rate_interval])) by (action)",
+          "legendFormat": "{{action}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "APNS Push Rate",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(apns_pushes_total[5m])",
+          "legendFormat": "apns push/sec"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Active Live Activities",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(live_activities_active)"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Top Actions",
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 10 },
+      "targets": [
+        {
+          "expr": "topk(15, sum(increase(app_actions_total[$__range])) by (action))",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Metric": true,
+              "metric": true
+            },
+            "indexByName": {
+              "action": 0,
+              "Value": 1,
+              "Value #A": 1
+            },
+            "renameByName": {
+              "action": "Action",
+              "Value": "Count",
+              "Value #A": "Count"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Top Screens",
+      "gridPos": { "x": 0, "y": 26, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "topk(20, sum(increase(app_actions_total[$__range])) by (screen))",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Metric": true,
+              "metric": true
+            },
+            "indexByName": {
+              "screen": 0,
+              "Value": 1,
+              "Value #A": 1
+            },
+            "renameByName": {
+              "screen": "Screen",
+              "Value": "Count",
+              "Value #A": "Count"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Top Actions by Screen (By Count)",
+      "gridPos": { "x": 0, "y": 34, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "topk(20, sum(increase(app_actions_total[$__range])) by (screen, action))",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Metric": true,
+              "metric": true
+            },
+            "indexByName": {
+              "screen": 0,
+              "action": 1,
+              "Value": 2,
+              "Value #A": 2
+            },
+            "renameByName": {
+              "screen": "Screen",
+              "action": "Action",
+              "Value": "Count",
+              "Value #A": "Count"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

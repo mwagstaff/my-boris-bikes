@@ -1,0 +1,179 @@
+{
+  "title": "Dock Stats",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Dock Action Rate by Dock",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(dock_stats_total{dock_id!=\"none\"}[$__rate_interval])) by (dock_name)",
+          "legendFormat": "{{dock_name}}"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Top Docks Across All Activity",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 10 },
+      "targets": [
+        {
+          "expr": "sort_desc(sum(increase(dock_stats_total{dock_id!=\"none\"}[$__range])) by (dock_name))",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Metric": true,
+              "metric": true
+            },
+            "indexByName": {
+              "dock_name": 0,
+              "Value": 1,
+              "Value #A": 1
+            },
+            "renameByName": {
+              "dock_name": "Dock name",
+              "Value": "Count",
+              "Value #A": "Count"
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "type": "table",
+      "title": "Favourite Adds by Dock",
+      "gridPos": { "x": 0, "y": 18, "w": 8, "h": 10 },
+      "targets": [
+        {
+          "expr": "sort_desc(sum(increase(dock_stats_total{action=\"favorite_add\",dock_id!=\"none\"}[$__range])) by (dock_name))",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Metric": true,
+              "metric": true
+            },
+            "indexByName": {
+              "dock_name": 0,
+              "Value": 1,
+              "Value #A": 1
+            },
+            "renameByName": {
+              "dock_name": "Dock name",
+              "Value": "Count",
+              "Value #A": "Count"
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "type": "table",
+      "title": "Map Taps by Dock",
+      "gridPos": { "x": 8, "y": 18, "w": 8, "h": 10 },
+      "targets": [
+        {
+          "expr": "sort_desc(sum(increase(dock_stats_total{action=\"dock_tap\",screen=\"Map\",dock_id!=\"none\"}[$__range])) by (dock_name))",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Metric": true,
+              "metric": true
+            },
+            "indexByName": {
+              "dock_name": 0,
+              "Value": 1,
+              "Value #A": 1
+            },
+            "renameByName": {
+              "dock_name": "Dock name",
+              "Value": "Count",
+              "Value #A": "Count"
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "type": "table",
+      "title": "Live Activity Starts by Dock",
+      "gridPos": { "x": 16, "y": 18, "w": 8, "h": 10 },
+      "targets": [
+        {
+          "expr": "sort_desc(sum(increase(dock_stats_total{action=\"live_activity_start\",dock_id!=\"none\"}[$__range])) by (dock_name))",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Metric": true,
+              "metric": true
+            },
+            "indexByName": {
+              "dock_name": 0,
+              "Value": 1,
+              "Value #A": 1
+            },
+            "renameByName": {
+              "dock_name": "Dock name",
+              "Value": "Count",
+              "Value #A": "Count"
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}
