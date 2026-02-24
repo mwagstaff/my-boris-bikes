@@ -1,0 +1,289 @@
+{
+  "title": "Push Notifications",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Complication Tokens Registered",
+      "description": "Devices currently registered to receive silent background pushes for complication refresh",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 6 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "text": { "valueSize": 60 }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue",   "value": null },
+              { "color": "green",  "value": 1 },
+              { "color": "yellow", "value": 10 }
+            ]
+          },
+          "color": { "mode": "thresholds" },
+          "mappings": []
+        }
+      },
+      "targets": [
+        {
+          "expr": "complication_tokens_registered",
+          "legendFormat": ""
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Live Activity Push Success Rate",
+      "description": "Percentage of live activity APNs pushes that succeeded within the selected time range",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 6 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "text": { "valueSize": 60 }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "yellow", "value": 80 },
+              { "color": "green",  "value": 95 }
+            ]
+          },
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            { "type": "special", "options": { "match": "nan", "result": { "text": "N/A" } } }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "(sum(increase(apns_pushes_total{status=\"success\"}[$__range])) or vector(0)) / (sum(increase(apns_pushes_total[$__range])) or vector(0)) * 100",
+          "legendFormat": "Success rate"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Complication Push Success Rate",
+      "description": "Percentage of silent background (complication) APNs pushes that succeeded within the selected time range",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 6 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "text": { "valueSize": 60 }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "yellow", "value": 80 },
+              { "color": "green",  "value": 95 }
+            ]
+          },
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            { "type": "special", "options": { "match": "nan", "result": { "text": "N/A" } } }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "(sum(increase(complication_pushes_total{status=\"success\"}[$__range])) or vector(0)) / (sum(increase(complication_pushes_total[$__range])) or vector(0)) * 100",
+          "legendFormat": "Success rate"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Total Pushes Sent",
+      "description": "Combined live activity + complication APNs pushes sent within the selected time range",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 6 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "text": { "valueSize": 60 }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          },
+          "color": { "mode": "thresholds" },
+          "mappings": []
+        }
+      },
+      "targets": [
+        {
+          "expr": "round((sum(increase(apns_pushes_total[$__range])) or vector(0)) + (sum(increase(complication_pushes_total[$__range])) or vector(0)))",
+          "legendFormat": "Total"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Overall APNs Push Rate",
+      "description": "Combined send rate for all APNs push types",
+      "gridPos": { "x": 0, "y": 6, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 12, "lineWidth": 2 },
+          "unit": "ops",
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(apns_pushes_total[$__rate_interval]))",
+          "legendFormat": "Live Activity"
+        },
+        {
+          "expr": "sum(rate(complication_pushes_total[$__rate_interval]))",
+          "legendFormat": "Complication (background)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Live Activity APNs — Rate by Event & Status",
+      "description": "Push rate for live activity update and end events, split by success/failure",
+      "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 10, "lineWidth": 2 },
+          "unit": "ops",
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(apns_pushes_total[$__rate_interval])) by (event, status)",
+          "legendFormat": "{{event}} / {{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Live Activity APNs — Rate by Build Type",
+      "description": "Push rate split by development vs production builds",
+      "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 10, "lineWidth": 2 },
+          "unit": "ops",
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(apns_pushes_total[$__rate_interval])) by (build_type, event)",
+          "legendFormat": "{{build_type}} / {{event}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Complication APNs — Rate by Build Type & Status",
+      "description": "Silent background push rate for watch complication refresh, split by build type and success/failure",
+      "gridPos": { "x": 0, "y": 22, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 10, "lineWidth": 2 },
+          "unit": "ops",
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(complication_pushes_total[$__rate_interval])) by (build_type, status)",
+          "legendFormat": "{{build_type}} / {{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Complication Tokens Registered Over Time",
+      "description": "Number of devices registered for complication refresh background pushes",
+      "gridPos": { "x": 12, "y": 22, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 15, "lineWidth": 2 },
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "complication_tokens_registered",
+          "legendFormat": "Registered tokens"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "APNs Failure Rate",
+      "description": "Rate of failed pushes across all types — sustained spikes indicate delivery problems",
+      "gridPos": { "x": 0, "y": 30, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 20, "lineWidth": 2 },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Live Activity failures" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Complication failures" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(apns_pushes_total{status=\"failure\"}[$__rate_interval]))",
+          "legendFormat": "Live Activity failures"
+        },
+        {
+          "expr": "sum(rate(complication_pushes_total{status=\"failure\"}[$__rate_interval]))",
+          "legendFormat": "Complication failures"
+        }
+      ]
+    }
+  ]
+}

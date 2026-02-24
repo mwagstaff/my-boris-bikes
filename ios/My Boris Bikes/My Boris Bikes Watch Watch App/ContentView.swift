@@ -123,6 +123,22 @@ struct ContentView: View {
       navigationId = UUID()
       navigationPath.append(selectedBikePoint)
       selectedDockId = nil // Reset to prevent repeated navigation
+    } else {
+      // customWidgetContext is set but favourites data hasn't loaded yet (cold launch race).
+      // Navigate immediately with a placeholder so the screen always opens;
+      // CustomDockDetailView.syncWithMainAppData() will replace it with real data on appear.
+      let placeholder = WatchBikePoint(
+        id: dockId,
+        commonName: "Loading…",
+        alias: nil,
+        lat: 0.0,
+        lon: 0.0,
+        additionalProperties: []
+      )
+      navigationPath = NavigationPath()
+      navigationId = UUID()
+      navigationPath.append(placeholder)
+      selectedDockId = nil
     }
   }
   

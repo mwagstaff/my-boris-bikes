@@ -182,6 +182,18 @@ class WatchTfLAPIService: ObservableObject {
         let ages = cache.values.map { now.timeIntervalSince($0.timestamp) }
         return (count: cache.count, oldestAge: ages.max())
     }
+
+    /// Fetches all bike points within `radiusMeters` of a coordinate using TfL's Place API.
+    /// Far more efficient than loading all ~800 London docks and filtering locally.
+    func fetchNearbyBikePoints(lat: Double, lon: Double, radiusMeters: Int = 500) async throws -> [WatchBikePoint] {
+        let urlString = "\(baseURL)/Place?lat=\(lat)&lon=\(lon)&radius=\(radiusMeters)&type=BikePoint"
+        guard let url = URL(string: urlString) else { throw WatchNetworkError.invalidURL }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw WatchNetworkError.httpError((response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+        return (try? JSONDecoder().decode([WatchBikePoint].self, from: data)) ?? []
+    }
     
     private func fetchBikePointsInParallel(ids: [String], cacheBusting: Bool = false) -> AnyPublisher<[WatchBikePoint], WatchNetworkError> {
         guard !ids.isEmpty else {

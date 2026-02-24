@@ -29,7 +29,10 @@ class TfLAPIService {
         monitor.start(queue: monitorQueue)
     }
     
-    func fetchAllBikePoints(cacheBusting: Bool = false) -> AnyPublisher<[BikePoint], NetworkError> {
+    func fetchAllBikePoints(
+        cacheBusting: Bool = false,
+        timeoutInterval: TimeInterval? = nil
+    ) -> AnyPublisher<[BikePoint], NetworkError> {
         guard isOnline else {
             return Fail(error: NetworkError.offline)
                 .eraseToAnyPublisher()
@@ -47,6 +50,9 @@ class TfLAPIService {
         }
         
         var request = URLRequest(url: url)
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
         if cacheBusting {
             request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
             request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")

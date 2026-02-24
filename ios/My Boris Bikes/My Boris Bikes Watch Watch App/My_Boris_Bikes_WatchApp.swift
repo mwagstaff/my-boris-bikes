@@ -7,27 +7,93 @@
 
 import SwiftUI
 import WidgetKit
+import WatchKit
 
 @main
 struct My_Boris_Bikes_Watch_Watch_AppApp: App {
     @State private var selectedDockId: String?
     @State private var customWidgetContext: String?
-    
+
+    private static let backgroundRefreshTaskIdentifier = "dev.skynolimit.myborisbikes.watch-complication-refresh"
+
     init() {
         // Initialize WatchConnectivity
         WatchFavoritesService.shared.setupWatchConnectivity()
+        // NOTE: Do NOT call scheduleWatchBackgroundRefresh() here.
+        // WKApplication.scheduleBackgroundRefresh requires the SwiftUI .backgroundTask
+        // handler to be registered first, which only happens after `body` is evaluated.
+        // Scheduling is deferred to .onAppear below.
     }
-    
+
     var body: some Scene {
         WindowGroup {
             ContentView(selectedDockId: $selectedDockId, customWidgetContext: $customWidgetContext)
                 .environmentObject(WatchFavoritesService.shared)
                 .environmentObject(WatchLocationService.shared)
+                .onAppear {
+                    // Schedule the first background refresh now that the scene —
+                    // including the .backgroundTask handler below — is fully registered.
+                    Self.scheduleWatchBackgroundRefresh()
+                }
                 .onOpenURL { url in
                     handleDeepLink(url)
                 }
                 .onChange(of: customWidgetContext) { newValue in
                 }
+        }
+        // Independent watch-side background refresh — fires approximately every 15 minutes.
+        // This keeps complications current even when the paired iPhone is unreachable.
+        .backgroundTask(.appRefresh(Self.backgroundRefreshTaskIdentifier)) {
+            // Reschedule before doing work so the chain never breaks
+            Self.scheduleWatchBackgroundRefresh()
+            await performWatchBackgroundRefresh()
+        }
+    }
+
+    /// Asks watchOS to schedule a background app refresh ~15 minutes from now.
+    static func scheduleWatchBackgroundRefresh() {
+        let fireDate = Date(timeIntervalSinceNow: 15 * 60)
+        WKApplication.shared().scheduleBackgroundRefresh(withPreferredDate: fireDate, userInfo: nil) { error in
+            if let error = error {
+                print("WatchApp: Failed to schedule background refresh: \(error)")
+            }
+        }
+    }
+
+    /// Fetches fresh dock data from TfL and writes it to the shared app group so that
+    /// the widget extension can display up-to-date complications.
+    private func performWatchBackgroundRefresh() async {
+        let favoritesService = WatchFavoritesService.shared
+        let widgetService = WatchWidgetService.shared
+        let apiService = WatchTfLAPIService.shared
+        let favorites = favoritesService.favorites
+
+        guard !favorites.isEmpty else { return }
+
+        let ids = favorites.map { $0.id }
+        let bikePoints = await fetchFreshBikePoints(ids: ids, apiService: apiService)
+        guard !bikePoints.isEmpty else { return }
+
+        await MainActor.run {
+            widgetService.updateAllDockData(from: bikePoints)
+            widgetService.updateClosestStation(from: bikePoints)
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+        print("WatchApp: Background refresh completed — \(bikePoints.count) docks updated")
+    }
+
+    private func fetchFreshBikePoints(ids: [String], apiService: WatchTfLAPIService) async -> [WatchBikePoint] {
+        await withTaskGroup(of: WatchBikePoint?.self) { group in
+            for id in ids {
+                group.addTask {
+                    try? await apiService.fetchBikePoint(id: id, cacheBusting: true).async()
+                }
+            }
+            var results: [WatchBikePoint] = []
+            for await result in group {
+                if let bp = result { results.append(bp) }
+            }
+            return results
         }
     }
     

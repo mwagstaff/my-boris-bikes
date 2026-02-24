@@ -1,5 +1,10 @@
 import Foundation
 
+struct AllBikePointsSnapshot {
+    let bikePoints: [BikePoint]
+    let savedAt: Date?
+}
+
 final class AllBikePointsCache {
     static let shared = AllBikePointsCache()
 
@@ -15,27 +20,53 @@ final class AllBikePointsCache {
     }
 
     func load() -> [BikePoint] {
-        guard let fileURL = fileURL else { return [] }
-        guard let data = try? Data(contentsOf: fileURL) else { return [] }
-
-        do {
-            let decoder = JSONDecoder()
-            return try decoder.decode([BikePoint].self, from: data)
-        } catch {
-            print("AllBikePointsCache: Failed to decode cache: \(error)")
-            return []
-        }
+        loadSnapshot()?.bikePoints ?? []
     }
 
-    func save(_ bikePoints: [BikePoint]) {
+    func loadSnapshot() -> AllBikePointsSnapshot? {
+        guard let fileURL = fileURL else { return nil }
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+
+        let decoder = JSONDecoder()
+
+        if let payload = try? decoder.decode(CachedAllBikePointsPayload.self, from: data) {
+            return AllBikePointsSnapshot(
+                bikePoints: payload.bikePoints,
+                savedAt: payload.savedAt
+            )
+        }
+
+        if let bikePoints = try? decoder.decode([BikePoint].self, from: data) {
+            let savedAt = (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            return AllBikePointsSnapshot(
+                bikePoints: bikePoints,
+                savedAt: savedAt
+            )
+        }
+
+        print("AllBikePointsCache: Failed to decode cache payload")
+        return nil
+    }
+
+    func save(_ bikePoints: [BikePoint], savedAt: Date = Date()) {
+        guard !bikePoints.isEmpty else {
+            print("AllBikePointsCache: Skipping save because bike points list is empty")
+            return
+        }
         guard let fileURL = fileURL else { return }
 
         do {
             let encoder = JSONEncoder()
-            let data = try encoder.encode(bikePoints)
+            let payload = CachedAllBikePointsPayload(savedAt: savedAt, bikePoints: bikePoints)
+            let data = try encoder.encode(payload)
             try data.write(to: fileURL, options: [.atomic])
         } catch {
             print("AllBikePointsCache: Failed to save cache: \(error)")
         }
     }
+}
+
+private struct CachedAllBikePointsPayload: Codable {
+    let savedAt: Date
+    let bikePoints: [BikePoint]
 }

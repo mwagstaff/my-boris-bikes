@@ -383,9 +383,11 @@ class LiveActivityService: ObservableObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Add device token for tracking unique users
-        if let deviceToken = DeviceTokenHelper.deviceToken {
+        // Add APNs device token so the server can send availability alert pushes.
+        if let deviceToken = DeviceTokenHelper.apnsDeviceToken {
             request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
+        } else {
+            logger.warning("APNs device token unavailable while registering live activity; availability alerts may be skipped")
         }
 
         request.timeoutInterval = 10
@@ -402,6 +404,7 @@ class LiveActivityService: ObservableObject {
                 "emptySpaces": alternative.emptySpaces,
             ]
         }
+        let primaryDisplayRawValue = getPrimaryDisplay(for: dockId).rawValue
 
         let body: [String: Any] = [
             "dockId": dockId,
@@ -409,13 +412,14 @@ class LiveActivityService: ObservableObject {
             "buildType": buildType,
             "expirySeconds": finalExpirySeconds,
             "alternatives": serializedAlternatives,
+            "primaryDisplay": primaryDisplayRawValue,
         ]
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (_, response) = try await URLSession.shared.data(for: request)
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                logger.info("Registered live activity with server for dock \(dockId) (expires in \(Int(finalExpirySeconds))s, alternatives: \(serializedAlternatives.count))")
+                logger.info("Registered live activity with server for dock \(dockId) (expires in \(Int(finalExpirySeconds))s, alternatives: \(serializedAlternatives.count), primaryDisplay: \(primaryDisplayRawValue))")
             } else {
                 logger.warning("Server returned unexpected response for dock \(dockId)")
             }
@@ -432,8 +436,8 @@ class LiveActivityService: ObservableObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Add device token for tracking unique users
-        if let deviceToken = DeviceTokenHelper.deviceToken {
+        // Add APNs device token so server can correlate this session with alerts.
+        if let deviceToken = DeviceTokenHelper.apnsDeviceToken {
             request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
         }
 

@@ -15,6 +15,7 @@ class MapViewModel: BaseViewModel {
     @Published var visibleBikePoints: [BikePoint] = []
     @Published var shouldShowZoomMessage = false
     @Published var lastUpdateTime: Date?
+    @Published var staleDataWarningMessage: String?
     
     private var locationService: LocationService?
     private var allBikePoints: [BikePoint] = []
@@ -23,6 +24,8 @@ class MapViewModel: BaseViewModel {
     private var currentMapSpan: MKCoordinateSpan = MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
     private var updateTimer: Timer?
     private var backgroundUpdateTimer: Timer?
+    private var transientRetryTimer: Timer?
+    private var transientRetryAttemptCount = 0
     private let logger = Logger(subsystem: "com.myborisbikes.app", category: "MapViewModel")
     private var hasInitiallyeCentered = false // Track if we've already centered on user location
     private var isSetup = false // Track if setup has already been called
@@ -64,6 +67,7 @@ class MapViewModel: BaseViewModel {
             locationService.requestLocationPermission()
         }
         
+        loadCachedBikePointsIfAvailable()
         loadBikePoints()
         startBackgroundUpdates()
     }
@@ -192,33 +196,146 @@ class MapViewModel: BaseViewModel {
         }
         
         TfLAPIService.shared
-            .fetchAllBikePoints(cacheBusting: cacheBusting)
+            .fetchAllBikePoints(
+                cacheBusting: cacheBusting,
+                timeoutInterval: AppConstants.App.mapFetchTimeout
+            )
             .sink(
                 receiveCompletion: { [weak self] completion in
                     self?.isLoading = false
                     if case .failure(let error) = completion {
-                        self?.setError(error)
+                        let usedFallback = self?.handleFetchFailure(error) ?? false
+                        if !usedFallback {
+                            self?.setError(error)
+                            self?.scheduleTransientRetry()
+                        }
                     }
                 },
                 receiveValue: { [weak self] bikePoints in
-                    // Store all bike points and filter available ones
                     let installedBikePoints = bikePoints.filter { $0.isInstalled }
-                    self?.allBikePoints = installedBikePoints
-                    AllBikePointsCache.shared.save(installedBikePoints)
-                    self?.updateVisibleBikePoints()
-                    if let dockId = self?.pendingDockId,
-                       let bikePoint = bikePoints.first(where: { $0.id == dockId }) {
-                        self?.pendingDockId = nil
-                        self?.centerOnBikePoint(bikePoint)
+                    guard !installedBikePoints.isEmpty else {
+                        let usedFallback = self?.handleFetchFailure(NetworkError.noData) ?? false
+                        if !usedFallback {
+                            self?.setError(NetworkError.noData)
+                            self?.scheduleTransientRetry()
+                        }
+                        return
                     }
-                    // Set last update time on successful API call
-                    self?.lastUpdateTime = Date()
-                    self?.logger.info("Map data updated successfully")
-                    // Clear any existing errors on successful data load
-                    self?.clearErrorOnSuccess()
+
+                    self?.applyFreshBikePoints(installedBikePoints)
                 }
             )
             .store(in: &cancellables)
+    }
+
+    private func loadCachedBikePointsIfAvailable() {
+        guard let cachedSnapshot = AllBikePointsCache.shared.loadSnapshot() else { return }
+
+        let installedBikePoints = cachedSnapshot.bikePoints.filter { $0.isInstalled }
+        guard !installedBikePoints.isEmpty else { return }
+
+        allBikePoints = installedBikePoints
+        lastUpdateTime = cachedSnapshot.savedAt
+        updateVisibleBikePoints()
+        logger.info("Loaded \(installedBikePoints.count, privacy: .public) cached bike points for map startup")
+    }
+
+    private func applyFreshBikePoints(_ bikePoints: [BikePoint]) {
+        let updateDate = Date()
+        allBikePoints = bikePoints
+        lastUpdateTime = updateDate
+        staleDataWarningMessage = nil
+        AllBikePointsCache.shared.save(bikePoints, savedAt: updateDate)
+        updateVisibleBikePoints()
+        stopTransientRetry()
+
+        if let dockId = pendingDockId,
+           let bikePoint = bikePoints.first(where: { $0.id == dockId }) {
+            pendingDockId = nil
+            centerOnBikePoint(bikePoint)
+        }
+
+        logger.info("Map data updated successfully")
+        clearErrorOnSuccess()
+    }
+
+    private func handleFetchFailure(_ error: Error) -> Bool {
+        if !allBikePoints.isEmpty {
+            logger.warning("Keeping in-memory bike points due to TfL fetch issue: \(error.localizedDescription, privacy: .public)")
+            updateStaleDataWarning(savedAt: lastUpdateTime)
+            scheduleTransientRetry()
+            return true
+        }
+
+        guard let cachedSnapshot = AllBikePointsCache.shared.loadSnapshot() else {
+            staleDataWarningMessage = nil
+            return false
+        }
+
+        let installedBikePoints = cachedSnapshot.bikePoints.filter { $0.isInstalled }
+        guard !installedBikePoints.isEmpty else {
+            staleDataWarningMessage = nil
+            return false
+        }
+
+        allBikePoints = installedBikePoints
+        lastUpdateTime = cachedSnapshot.savedAt
+        updateVisibleBikePoints()
+        updateStaleDataWarning(savedAt: cachedSnapshot.savedAt)
+
+        if let dockId = pendingDockId,
+           let bikePoint = installedBikePoints.first(where: { $0.id == dockId }) {
+            pendingDockId = nil
+            centerOnBikePoint(bikePoint)
+        }
+
+        logger.warning("Using cached bike points due to TfL fetch issue: \(error.localizedDescription, privacy: .public)")
+        scheduleTransientRetry()
+        return true
+    }
+
+    private func updateStaleDataWarning(savedAt: Date?) {
+        guard let savedAt else {
+            staleDataWarningMessage = nil
+            return
+        }
+
+        let cacheAge = Date().timeIntervalSince(savedAt)
+        if cacheAge > AppConstants.App.staleDataWarningThreshold {
+            staleDataWarningMessage = "We're having problems getting data from TfL. Dock information may be out of date."
+        } else {
+            staleDataWarningMessage = nil
+        }
+    }
+
+    private func scheduleTransientRetry() {
+        guard transientRetryTimer == nil else { return }
+
+        logger.info("Starting transient map retry loop")
+        transientRetryAttemptCount = 0
+        transientRetryTimer = Timer.scheduledTimer(
+            withTimeInterval: AppConstants.App.mapTransientRetryInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                guard self.transientRetryAttemptCount < 8 else {
+                    self.logger.info("Stopping transient retry loop after max attempts")
+                    self.stopTransientRetry()
+                    return
+                }
+                guard !self.isLoading else { return }
+                self.transientRetryAttemptCount += 1
+                self.logger.info("Transient retry: attempting map refresh")
+                self.loadBikePoints(cacheBusting: true)
+            }
+        }
+    }
+
+    private func stopTransientRetry() {
+        transientRetryTimer?.invalidate()
+        transientRetryTimer = nil
+        transientRetryAttemptCount = 0
     }
     
     private func updateVisibleBikePoints() {
@@ -255,5 +372,6 @@ class MapViewModel: BaseViewModel {
     deinit {
         updateTimer?.invalidate()
         backgroundUpdateTimer?.invalidate()
+        transientRetryTimer?.invalidate()
     }
 }

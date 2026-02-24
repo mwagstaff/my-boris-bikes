@@ -108,10 +108,19 @@ Environment variables:
 - `APNS_KEY_ID` - Apple Push Notification service key ID
 - `APNS_TEAM_ID` - Apple team ID
 - `APNS_KEY_PATH` - Path to APNS private key
-- `APNS_TOPIC` - APNS topic
+- `APNS_TOPIC` - Live Activity APNS topic (for example `com.example.app.push-type.liveactivity`)
+- `APNS_BACKGROUND_TOPIC_MY_BORIS_BIKES` - App bundle topic for alert/background pushes (preferred)
+- `APNS_BACKGROUND_TOPIC` - Legacy alias still supported for backward compatibility
 
 ## Endpoints
 
+- `GET /BikePoint` - TfL proxy for all docks (applies admin overrides)
+- `GET /Place/:dockId` - TfL proxy for a single dock (applies admin overrides)
+- `GET /admin` - Admin UI for dock value overrides
+- `GET /admin/api/docks` - Dock list for admin UI
+- `GET /admin/api/overrides` - Current overrides
+- `POST /admin/api/overrides` - Set override `{ dockId, standardBikes, eBikes, emptySpaces }`
+- `DELETE /admin/api/overrides/:dockId` - Clear override
 - `POST /live-activity/start` - Start tracking a dock
 - `POST /live-activity/end` - Stop tracking a dock
 - `POST /live-activity/test` - Start test mode with simulated data
@@ -120,6 +129,21 @@ Environment variables:
 - `GET /status` - Server status and metrics
 - `GET /live-activity/status` - Active sessions info
 - `GET /metrics` - Prometheus metrics endpoint
+
+### Live Activity Availability Alerts
+
+When a live activity is active, the server now tracks threshold transitions for the selected primary metric:
+- `bikes`
+- `eBikes`
+- `spaces`
+
+If the selected metric crosses from positive to zero, the server sends an APNS alert like:
+- `⚠️ Warwick Row no longer has any bikes`
+
+If it crosses from zero to positive, the server sends an APNS alert like:
+- `✅ Warwick Row now has 1 bike available`
+
+The selected primary metric is provided by the app when calling `POST /live-activity/start`.
 
 ### Device Token Tracking
 

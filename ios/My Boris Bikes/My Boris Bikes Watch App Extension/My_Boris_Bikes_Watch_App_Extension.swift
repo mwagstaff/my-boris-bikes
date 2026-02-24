@@ -65,12 +65,14 @@ struct BorisBikesEntry: TimelineEntry {
     let closestStation: WidgetBikePoint?
     let error: String?
     let isStaleData: Bool // Indicates if this is fallback data from a transient outage
-    
-    init(date: Date, closestStation: WidgetBikePoint?, error: String?, isStaleData: Bool = false) {
+    let dataTimestamp: Date? // When this bike data was last fetched from TfL
+
+    init(date: Date, closestStation: WidgetBikePoint?, error: String?, isStaleData: Bool = false, dataTimestamp: Date? = nil) {
         self.date = date
         self.closestStation = closestStation
         self.error = error
         self.isStaleData = isStaleData
+        self.dataTimestamp = dataTimestamp
     }
 }
 
@@ -565,73 +567,68 @@ struct BorisBikesTimelineProvider: TimelineProvider {
         
         
         let allKeys = userDefaults.dictionaryRepresentation().keys
-        
+
+        // Read the data timestamp so the complication can display when data was last fetched
+        let rawTimestamp = userDefaults.double(forKey: "widget_data_timestamp")
+        let dataTimestamp: Date? = rawTimestamp > 0 ? Date(timeIntervalSince1970: rawTimestamp) : nil
+
         // Get favorites from UserDefaults
         guard let favoritesData = userDefaults.data(forKey: "favorites") else {
-            
+
             // Check for last known good data before showing error
             if let fallbackStation = getLastKnownGoodDataFromWidget() {
-                return BorisBikesEntry(date: Date(), closestStation: fallbackStation, error: nil)
+                return BorisBikesEntry(date: Date(), closestStation: fallbackStation, error: nil, dataTimestamp: dataTimestamp)
             }
-            
+
             return BorisBikesEntry(date: Date(), closestStation: nil, error: "No favorites data")
         }
-        
-        
+
+
         guard let favorites = try? JSONDecoder().decode([FavoriteBikePoint].self, from: favoritesData) else {
             return BorisBikesEntry(date: Date(), closestStation: nil, error: "Invalid favorites data")
         }
-        
+
         // Trigger a background refresh if stored data may be stale
         WidgetDataRefresher.shared.refreshIfNeeded(favorites: favorites)
-        
+
         guard !favorites.isEmpty else {
-            
+
             // Check for last known good data before showing error
             if let fallbackStation = getLastKnownGoodDataFromWidget() {
-                return BorisBikesEntry(date: Date(), closestStation: fallbackStation, error: nil)
+                return BorisBikesEntry(date: Date(), closestStation: fallbackStation, error: nil, dataTimestamp: dataTimestamp)
             }
-            
+
             return BorisBikesEntry(date: Date(), closestStation: nil, error: "No favorites found")
         }
-        
-        
+
+
         // Try to get cached bike point data from shared file first
         if let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
             let fileURL = containerURL.appendingPathComponent("widget_data.json")
-            
+
             if let fileData = try? Data(contentsOf: fileURL) {
-                
                 if let cachedStation = try? JSONDecoder().decode(WidgetBikePoint.self, from: fileData) {
-                    return BorisBikesEntry(date: Date(), closestStation: cachedStation, error: nil)
-                } else {
+                    return BorisBikesEntry(date: Date(), closestStation: cachedStation, error: nil, dataTimestamp: dataTimestamp)
                 }
             }
         }
-        
+
         // Fallback to UserDefaults
         if let cachedData = userDefaults.data(forKey: "widget_closest_station") {
-            
             if let cachedStation = try? JSONDecoder().decode(WidgetBikePoint.self, from: cachedData) {
-                
-                // Check timestamp to see how fresh the data is
-                let dataTimestamp = userDefaults.double(forKey: "widget_data_timestamp")
-                let age = Date().timeIntervalSince1970 - dataTimestamp
-                
-                
-                return BorisBikesEntry(date: Date(), closestStation: cachedStation, error: nil)
+                return BorisBikesEntry(date: Date(), closestStation: cachedStation, error: nil, dataTimestamp: dataTimestamp)
             }
         }
-        
+
         // Before showing error, check for last known good data (fallback for transient network issues)
         if let fallbackStation = getLastKnownGoodDataFromWidget() {
-            return BorisBikesEntry(date: Date(), closestStation: fallbackStation, error: nil)
+            return BorisBikesEntry(date: Date(), closestStation: fallbackStation, error: nil, dataTimestamp: dataTimestamp)
         }
-        
-        
+
+
         // Fallback: use first favorite with placeholder data BUT NO ERROR to avoid exclamation mark
         let firstFavorite = favorites.first!
-        
+
         let widgetStation = WidgetBikePoint(
             id: firstFavorite.id,
             commonName: firstFavorite.commonName,
@@ -641,7 +638,7 @@ struct BorisBikesTimelineProvider: TimelineProvider {
             emptySpaces: 0,
             distance: nil
         )
-        
+
         return BorisBikesEntry(date: Date(), closestStation: widgetStation, error: nil)
     }
     
@@ -1294,36 +1291,44 @@ struct WidgetDonutChart: View {
     let emptySpaces: Int
     let name: String
     let size: CGFloat
-    
+
+    // Reads the same key the phone app writes so the complication honours the user's preference
+    @AppStorage(WidgetBikeFilter.userDefaultsKey, store: WidgetBikeFilter.store)
+    private var filterRawValue: String = WidgetBikeFilter.both.rawValue
+
+    private var filter: WidgetBikeFilter {
+        WidgetBikeFilter(rawValue: filterRawValue) ?? .both
+    }
+
+    // Apply filter — empty spaces are always shown regardless of bike-type preference
+    private var displayedStandard: Int { filter.visibleStandard(standardBikes) }
+    private var displayedEBike: Int    { filter.visibleEBike(eBikes) }
+    private var displayedEmpty: Int    { emptySpaces }
+
     private let strokeWidth: CGFloat = 6
-    
+
     init(standardBikes: Int, eBikes: Int, emptySpaces: Int, name: String, size: CGFloat) {
         self.standardBikes = standardBikes
         self.eBikes = eBikes
         self.emptySpaces = emptySpaces
         self.name = name
         self.size = size
-        
     }
-    
-    private var total: Int {
-        standardBikes + eBikes + emptySpaces
-    }
-    
+
+    private var total: Int { displayedStandard + displayedEBike + displayedEmpty }
+
     private var standardPercentage: Double {
         guard total > 0 else { return 0 }
-        return Double(standardBikes) / Double(total)
+        return Double(displayedStandard) / Double(total)
     }
-    
+
     private var eBikePercentage: Double {
         guard total > 0 else { return 0 }
-        return Double(eBikes) / Double(total)
+        return Double(displayedEBike) / Double(total)
     }
-    
-    private var hasData: Bool {
-        total > 0
-    }
-    
+
+    private var hasData: Bool { total > 0 }
+
     var body: some View {
         ZStack {
             // If no data is available, show a "refreshing" indicator
@@ -1338,26 +1343,26 @@ struct WidgetDonutChart: View {
                 Circle()
                     .stroke(WidgetColors.emptySpace.opacity(0.4), lineWidth: strokeWidth)
                     .frame(width: size, height: size)
-                
+
                 // E-bikes section (blue) - outer layer
-                if eBikes > 0 {
+                if displayedEBike > 0 {
                     Circle()
                         .trim(from: 0, to: eBikePercentage + standardPercentage)
                         .stroke(WidgetColors.eBike, lineWidth: strokeWidth)
                         .rotationEffect(.degrees(-90))
                         .frame(width: size, height: size)
                 }
-                
+
                 // Standard bikes section (red) - inner layer
-                if standardBikes > 0 {
+                if displayedStandard > 0 {
                     Circle()
                         .trim(from: 0, to: standardPercentage)
                         .stroke(WidgetColors.standardBike, lineWidth: strokeWidth)
                         .rotationEffect(.degrees(-90))
                         .frame(width: size, height: size)
                 }
-                // Center text showing the first 2 initials of the name
-                // Get the first letter of each word in station.commonName (separated either by space or comma)
+
+                // Center: first 2 initials of the dock name
                 let initials = name
                     .split(whereSeparator: { $0 == " " || $0 == "," })
                     .compactMap { $0.first }
@@ -1371,7 +1376,7 @@ struct WidgetDonutChart: View {
                         .foregroundColor(.primary)
                         .lineLimit(1)
                 }
-            } 
+            }
         }
     }
 }
@@ -1424,15 +1429,26 @@ struct BorisBikesRectangularComplicationView: View {
                             .lineLimit(2)
                             .minimumScaleFactor(0.8)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            
+                        Spacer(minLength: 4)
+                        if let ts = entry.dataTimestamp {
+                            Text(ts, format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute().second())
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.secondary.opacity(0.8))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
                     }
 
-                    // Bottom row: availability labels per user preference
-                    RectangularWidgetLegend(
-                        standardBikes: station.standardBikes,
-                        eBikes: station.eBikes,
-                        emptySpaces: station.emptySpaces,
-                        filter: filter
-                    )
+                    // Bottom row: availability labels + last updated time (for debugging)
+                    HStack(alignment: .center, spacing: 0) {
+                        RectangularWidgetLegend(
+                            standardBikes: station.standardBikes,
+                            eBikes: station.eBikes,
+                            emptySpaces: station.emptySpaces,
+                            filter: filter
+                        )
+                    }
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
@@ -1459,7 +1475,7 @@ struct BorisBikesRectangularComplicationView: View {
                     Text("Loading...")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.primary)
-
+    
                     HStack(spacing: 4) {
                         ProgressView()
                             .scaleEffect(0.6)

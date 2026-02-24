@@ -312,6 +312,7 @@ class HomeViewModel: BaseViewModel {
                 },
                 receiveValue: { [weak self] bikePoints in
                     let installedBikePoints = bikePoints.filter { $0.isInstalled }
+                    guard !installedBikePoints.isEmpty else { return }
                     self?.allBikePoints = installedBikePoints
                     self?.lastAllBikePointsRefreshTime = Date()
                     AllBikePointsCache.shared.save(installedBikePoints)

@@ -365,6 +365,18 @@ extension WatchFavoritesService: WCSessionDelegate {
         }
     }
     
+    /// Called when iOS sends data via transferCurrentComplicationUserInfo(_:).
+    /// This arrives even when the watch app is in the background, giving us the opportunity
+    /// to reload widget timelines so complications pick up the fresh data already written
+    /// to the shared app group by the iOS background refresh task.
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String : Any]) {
+        guard userInfo["complication_refresh"] as? Bool == true else { return }
+        print("WatchFavoritesService: Received complication refresh signal — reloading timelines")
+        DispatchQueue.main.async {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+
     func session(_ session: WCSession, didReceiveMessage message: [String : Any], replyHandler: @escaping ([String : Any]) -> Void) {
         
         if let favoritesData = message["favorites"] as? Data {

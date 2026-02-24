@@ -18,12 +18,18 @@ struct AppConstants {
     
     struct App {
         static let refreshInterval: TimeInterval = 30
+        static let staleDataWarningThreshold: TimeInterval = 120
+        static let mapFetchTimeout: TimeInterval = 12
+        static let mapTransientRetryInterval: TimeInterval = 8
+        static let allBikePointsPrewarmInterval: TimeInterval = 60
         static let appGroup = "group.dev.skynolimit.myborisbikes"
         static let developerURL = "https://skynolimit.dev"
     }
 
     struct Server {
         static let analyticsEndpoint = "/app/metrics"
+        static let complicationRegisterEndpoint = "/complication/register"
+        static let complicationUnregisterEndpoint = "/complication/unregister"
 
         static var baseURL: String {
             #if DEBUG

@@ -234,6 +234,26 @@ struct MapView: View {
                 // Last update time label
                 VStack {
                     Spacer()
+                    if let staleDataWarningMessage = viewModel.staleDataWarningMessage {
+                        HStack {
+                            Spacer()
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text(staleDataWarningMessage)
+                                    .font(.caption2)
+                                    .multilineTextAlignment(.trailing)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color(.systemBackground).opacity(0.9))
+                            .cornerRadius(8)
+                            .shadow(radius: 2)
+                        }
+                        .padding(.horizontal)
+                        .padding(.bottom, 6)
+                    }
                     HStack {
                         Spacer()
                         if let lastUpdate = viewModel.lastUpdateTime {

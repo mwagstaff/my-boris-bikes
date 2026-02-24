@@ -1,0 +1,235 @@
+{
+  "title": "Live Activities",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Active Live Activities",
+      "description": "Number of users currently running a Live Activity",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 8 },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "text": {
+          "valueSize": 72
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 1 },
+              { "color": "yellow", "value": 50 },
+              { "color": "orange", "value": 100 }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": []
+        }
+      },
+      "targets": [
+        {
+          "expr": "live_activities_active",
+          "legendFormat": "Active"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Active Live Activities Over Time",
+      "gridPos": { "x": 6, "y": 0, "w": 18, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 2
+          },
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "live_activities_active",
+          "legendFormat": "Active"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Live Activity Start Rate (by build type)",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "unit": "ops",
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(live_activities_total[$__rate_interval])) by (build_type)",
+          "legendFormat": "{{build_type}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Live Activity End Rate (by reason)",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "unit": "ops",
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(live_activities_ended_total[$__rate_interval])) by (reason)",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "APNs Push Rate (by event & status)",
+      "description": "Rate of APNs pushes sent to update or end live activities",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "unit": "ops",
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(apns_pushes_total[$__rate_interval])) by (event, status)",
+          "legendFormat": "{{event}} / {{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cumulative Starts vs Ends",
+      "description": "Running total of live activities started and ended within the selected time range",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(live_activities_total[$__range]))",
+          "legendFormat": "Started",
+          "instant": false
+        },
+        {
+          "expr": "sum(increase(live_activities_ended_total[$__range]))",
+          "legendFormat": "Ended",
+          "instant": false
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "APNs Push Failure Rate",
+      "description": "Rate of failed APNs pushes — spikes here indicate delivery issues",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2
+          },
+          "unit": "ops",
+          "min": 0,
+          "color": {
+            "fixedColor": "red",
+            "mode": "fixed"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(apns_pushes_total{status=\"failure\"}[$__rate_interval])) by (event)",
+          "legendFormat": "{{event}} failures"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Live Activity Summary (time range totals)",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(increase(live_activities_total[$__range])) by (build_type)",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Started"
+        },
+        {
+          "expr": "sum(increase(live_activities_ended_total[$__range])) by (reason)",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Ended"
+        },
+        {
+          "expr": "sum(increase(apns_pushes_total{status=\"failure\"}[$__range]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "APNs Failures"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true
+            },
+            "renameByName": {
+              "Value #A": "Started",
+              "Value #B": "Ended",
+              "Value #C": "APNs Failures",
+              "build_type": "Build type",
+              "reason": "End reason"
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}
