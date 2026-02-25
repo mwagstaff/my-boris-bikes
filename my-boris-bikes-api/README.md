@@ -101,8 +101,9 @@ Available levels: `error`, `warn`, `info` (default), `debug`
 
 Environment variables:
 - `PORT` - Server port (default: 3010)
-- `POLL_INTERVAL_MS` - Polling interval (default: 30000)
-- `SESSION_TIMEOUT_MS` - Session timeout (default: 14400000)
+- `POLL_INTERVAL_MS` - Polling interval (default: 15000)
+- `SESSION_TIMEOUT_MS` - Session timeout default (default: 7200000)
+- `MAX_NOTIFICATION_WINDOW_MS` - Hard cap on notification window (default: 7200000)
 - `LOG_LEVEL` - Logging level (default: info)
 - `LOG_DIR` - Log directory (default: ./logs)
 - `APNS_KEY_ID` - Apple Push Notification service key ID
@@ -122,6 +123,7 @@ Environment variables:
 - `POST /admin/api/overrides` - Set override `{ dockId, standardBikes, eBikes, emptySpaces }`
 - `DELETE /admin/api/overrides/:dockId` - Clear override
 - `POST /live-activity/start` - Start tracking a dock
+- `POST /live-activity/session/update` - Update tracked session settings (focused metric/thresholds)
 - `POST /live-activity/end` - Stop tracking a dock
 - `POST /live-activity/test` - Start test mode with simulated data
 - `POST /live-activity/test/end` - Stop test mode
@@ -132,18 +134,43 @@ Environment variables:
 
 ### Live Activity Availability Alerts
 
-When a live activity is active, the server now tracks threshold transitions for the selected primary metric:
+When a live activity is active, the server now tracks transitions for the selected primary metric:
 - `bikes`
 - `eBikes`
 - `spaces`
 
 If the selected metric crosses from positive to zero, the server sends an APNS alert like:
-- `⚠️ Warwick Row no longer has any bikes`
+- `‼️ Warwick Row no longer has any bikes`
 
 If it crosses from zero to positive, the server sends an APNS alert like:
 - `✅ Warwick Row now has 1 bike available`
 
-The selected primary metric is provided by the app when calling `POST /live-activity/start`.
+If the selected metric is below the user's configured minimum threshold, the server sends a warning alert on every change:
+- `⚠️ Warwick Row, Westminster only has 4 spaces available`
+- `⚠️ Warwick Row, Westminster only has 3 spaces available`
+- `⚠️ Warwick Row, Westminster now has 2 spaces available`
+
+If the selected metric rises back to or above that threshold, the server sends a success alert:
+- `✅ Warwick Row, Westminster now has 6 spaces available`
+
+The app should provide both the selected primary metric and minimum thresholds when calling `POST /live-activity/start`:
+
+```json
+{
+  "primaryDisplay": "spaces",
+  "minimumThresholds": {
+    "bikes": 3,
+    "eBikes": 2,
+    "spaces": 5
+  }
+}
+```
+
+### Notification Stop Conditions
+
+- The app attempts to call `POST /live-activity/end` when a live activity is dismissed/ended.
+- The server enforces a hard max notification window (default: 2 hours) even if no explicit end request arrives.
+- If `expirySeconds` is supplied by the client, it is capped to this max window.
 
 ### Device Token Tracking
 

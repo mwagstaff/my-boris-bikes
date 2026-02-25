@@ -12,6 +12,7 @@ import os.log
 @MainActor
 class LiveActivityService: ObservableObject {
     static let shared = LiveActivityService()
+    private let serverSessionTokensKey = "liveActivityServerSessionTokensByDock"
 
     private let logger = Logger(subsystem: "dev.skynolimit.myborisbikes", category: "LiveActivity")
 
@@ -68,6 +69,58 @@ class LiveActivityService: ObservableObject {
 
     private func notifyPrimaryDisplayChanged() {
         primaryDisplayChangeToken = UUID()
+    }
+
+    private func configuredLiveActivityExpirySeconds() -> TimeInterval {
+        let configuredSeconds = AppConstants.UserDefaults.sharedDefaults.double(
+            forKey: AppConstants.UserDefaults.liveActivityAutoRemoveDurationKey
+        )
+        let fallbackSeconds = configuredSeconds > 0
+            ? configuredSeconds
+            : AppConstants.LiveActivity.defaultAutoRemoveDurationSeconds
+        return min(fallbackSeconds, AppConstants.LiveActivity.maxNotificationWindowSeconds)
+    }
+
+    private func trackedServerSessionsByDock() -> [String: String] {
+        AppConstants.UserDefaults.sharedDefaults.dictionary(forKey: serverSessionTokensKey) as? [String: String] ?? [:]
+    }
+
+    private func saveTrackedServerSessionsByDock(_ sessions: [String: String]) {
+        AppConstants.UserDefaults.sharedDefaults.set(sessions, forKey: serverSessionTokensKey)
+    }
+
+    private func trackServerSession(dockId: String, pushToken: String) {
+        var sessions = trackedServerSessionsByDock()
+        sessions[dockId] = pushToken
+        saveTrackedServerSessionsByDock(sessions)
+    }
+
+    private func untrackServerSession(dockId: String, pushToken: String?) {
+        var sessions = trackedServerSessionsByDock()
+        if let pushToken {
+            guard sessions[dockId] == pushToken else { return }
+        }
+        sessions.removeValue(forKey: dockId)
+        saveTrackedServerSessionsByDock(sessions)
+    }
+
+    private func clearLocallyTrackedActivity(for dockId: String) {
+        LiveActivityDockSettings.clearPrimaryDisplay(for: dockId)
+        activeActivities.removeValue(forKey: dockId)
+        staleDates.removeValue(forKey: dockId)
+        cancelObservationTasks(for: dockId)
+    }
+
+    private func reconcileTrackedServerSessions(activeDockIds: Set<String>) {
+        let trackedSessions = trackedServerSessionsByDock()
+        guard !trackedSessions.isEmpty else { return }
+
+        for (dockId, pushToken) in trackedSessions where !activeDockIds.contains(dockId) {
+            logger.info("Found tracked server session for non-active dock \(dockId); unregistering to stop notifications")
+            Task { [weak self] in
+                await self?.unregisterFromServer(dockId: dockId, pushToken: pushToken)
+            }
+        }
     }
 
     /// End all active activities except the specified dock (if provided)
@@ -143,9 +196,8 @@ class LiveActivityService: ObservableObject {
             alternatives: Array(alternativeDocks)
         )
 
-        // Calculate stale date based on configured duration
-        let expirySeconds = AppConstants.UserDefaults.sharedDefaults.double(forKey: AppConstants.UserDefaults.liveActivityAutoRemoveDurationKey)
-        let finalExpirySeconds = expirySeconds > 0 ? expirySeconds : AppConstants.LiveActivity.defaultAutoRemoveDurationSeconds
+        // Calculate stale date based on configured duration, capped to notification window max.
+        let finalExpirySeconds = configuredLiveActivityExpirySeconds()
         let staleDate = Date().addingTimeInterval(finalExpirySeconds)
 
         let content = ActivityContent(state: initialState, staleDate: staleDate)
@@ -202,12 +254,8 @@ class LiveActivityService: ObservableObject {
                                 "reason": state == .dismissed ? "dismissed" : "ended"
                             ]
                         )
-                        // Clear the per-dock override
-                        LiveActivityDockSettings.clearPrimaryDisplay(for: dockId)
                         await MainActor.run {
-                            self.activeActivities.removeValue(forKey: dockId)
-                            self.staleDates.removeValue(forKey: dockId)
-                            self.cancelObservationTasks(for: dockId)
+                            self.clearLocallyTrackedActivity(for: dockId)
                             self.notifyPrimaryDisplayChanged()
                         }
                         // Notify server to stop polling
@@ -270,14 +318,24 @@ class LiveActivityService: ObservableObject {
 
         // Force update the activity to reflect the change immediately
         if let activity = activeActivities[dockId] {
-            Task {
+            Task { [weak self] in
+                guard let self else { return }
                 // Get current state and create a new content with the same data
                 // IMPORTANT: Preserve the original stale date so the activity still expires
                 let currentState = activity.content.state
                 let preservedStaleDate = self.staleDates[dockId]
                 let newContent = ActivityContent(state: currentState, staleDate: preservedStaleDate)
                 await activity.update(newContent)
-                logger.info("Updated live activity display for dock \(dockId)")
+                self.logger.info("Updated live activity display for dock \(dockId)")
+
+                if let pushToken = activity.pushToken {
+                    let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
+                    await self.updateSessionConfigurationOnServer(
+                        dockId: dockId,
+                        pushToken: tokenString,
+                        primaryDisplay: display
+                    )
+                }
             }
         }
     }
@@ -294,6 +352,20 @@ class LiveActivityService: ObservableObject {
     /// Restore activities that may still be running from a previous app session
     func restoreActivities() {
         let runningActivities = Activity<DockActivityAttributes>.activities
+        let runningDockIds = Set(runningActivities.map { $0.attributes.dockId })
+
+        // If local in-memory tracking says an activity exists but the system no longer has it
+        // (e.g. user swiped it away while app was suspended), clear local state.
+        let inactiveTrackedDockIds = Set(activeActivities.keys).subtracting(runningDockIds)
+        for dockId in inactiveTrackedDockIds {
+            logger.info("Clearing local tracking for dock \(dockId) because no active system live activity was found")
+            clearLocallyTrackedActivity(for: dockId)
+        }
+
+        // Best-effort reconciliation: if we have a previously tracked server session for a dock
+        // that no longer has an active activity, unregister it to stop notifications.
+        reconcileTrackedServerSessions(activeDockIds: runningDockIds)
+
         var keptDockId: String?
         for activity in runningActivities {
             let dockId = activity.attributes.dockId
@@ -339,11 +411,8 @@ class LiveActivityService: ObservableObject {
                             await MainActor.run { self.endLiveActivity(for: dockId) }
                             break
                         } else if state == .dismissed || state == .ended {
-                            LiveActivityDockSettings.clearPrimaryDisplay(for: dockId)
                             await MainActor.run {
-                                self.activeActivities.removeValue(forKey: dockId)
-                                self.staleDates.removeValue(forKey: dockId)
-                                self.cancelObservationTasks(for: dockId)
+                                self.clearLocallyTrackedActivity(for: dockId)
                                 self.notifyPrimaryDisplayChanged()
                             }
                             // Notify server to stop polling
@@ -367,6 +436,22 @@ class LiveActivityService: ObservableObject {
     }
 
     // MARK: - Server Communication
+
+    private func minimumThresholdsPayload() -> [String: Int] {
+        let defaults = AppConstants.UserDefaults.sharedDefaults
+        let minBikes = defaults.object(forKey: AlternativeDockSettings.minBikesKey) as? Int
+            ?? AlternativeDockSettings.defaultMinBikes
+        let minEBikes = defaults.object(forKey: AlternativeDockSettings.minEBikesKey) as? Int
+            ?? AlternativeDockSettings.defaultMinEBikes
+        let minSpaces = defaults.object(forKey: AlternativeDockSettings.minSpacesKey) as? Int
+            ?? AlternativeDockSettings.defaultMinSpaces
+
+        return [
+            "bikes": max(0, minBikes),
+            "eBikes": max(0, minEBikes),
+            "spaces": max(0, minSpaces),
+        ]
+    }
 
     private func registerWithServer(
         dockId: String,
@@ -392,9 +477,8 @@ class LiveActivityService: ObservableObject {
 
         request.timeoutInterval = 10
 
-        // Get the auto-removal duration from settings
-        let expirySeconds = AppConstants.UserDefaults.sharedDefaults.double(forKey: AppConstants.UserDefaults.liveActivityAutoRemoveDurationKey)
-        let finalExpirySeconds = expirySeconds > 0 ? expirySeconds : AppConstants.LiveActivity.defaultAutoRemoveDurationSeconds
+        // Get the auto-removal duration from settings (capped to the max notification window)
+        let finalExpirySeconds = configuredLiveActivityExpirySeconds()
 
         let serializedAlternatives: [[String: Any]] = alternatives.map { alternative in
             [
@@ -405,6 +489,7 @@ class LiveActivityService: ObservableObject {
             ]
         }
         let primaryDisplayRawValue = getPrimaryDisplay(for: dockId).rawValue
+        let minimumThresholds = minimumThresholdsPayload()
 
         let body: [String: Any] = [
             "dockId": dockId,
@@ -413,18 +498,61 @@ class LiveActivityService: ObservableObject {
             "expirySeconds": finalExpirySeconds,
             "alternatives": serializedAlternatives,
             "primaryDisplay": primaryDisplayRawValue,
+            "minimumThresholds": minimumThresholds,
         ]
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (_, response) = try await URLSession.shared.data(for: request)
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                logger.info("Registered live activity with server for dock \(dockId) (expires in \(Int(finalExpirySeconds))s, alternatives: \(serializedAlternatives.count), primaryDisplay: \(primaryDisplayRawValue))")
+                trackServerSession(dockId: dockId, pushToken: pushToken)
+                let activeThreshold = minimumThresholds[primaryDisplayRawValue] ?? 0
+                logger.info("Registered live activity with server for dock \(dockId) (expires in \(Int(finalExpirySeconds))s, alternatives: \(serializedAlternatives.count), primaryDisplay: \(primaryDisplayRawValue), minimumThreshold: \(activeThreshold))")
             } else {
                 logger.warning("Server returned unexpected response for dock \(dockId)")
             }
         } catch {
             logger.error("Failed to register with server: \(error.localizedDescription)")
+        }
+    }
+
+    private func updateSessionConfigurationOnServer(
+        dockId: String,
+        pushToken: String,
+        primaryDisplay: LiveActivityPrimaryDisplay
+    ) async {
+        let urlString = "\(serverBaseURL)/live-activity/session/update"
+        guard let url = URL(string: urlString) else {
+            logger.error("Invalid server URL: \(urlString)")
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 10
+
+        if let deviceToken = DeviceTokenHelper.apnsDeviceToken {
+            request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
+        }
+
+        let body: [String: Any] = [
+            "dockId": dockId,
+            "pushToken": pushToken,
+            "primaryDisplay": primaryDisplay.rawValue,
+            "minimumThresholds": minimumThresholdsPayload(),
+        ]
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                logger.info("Updated live activity server session for dock \(dockId) with primaryDisplay \(primaryDisplay.rawValue)")
+            } else {
+                logger.warning("Server returned unexpected response while updating live activity session for dock \(dockId)")
+            }
+        } catch {
+            logger.error("Failed to update live activity server session: \(error.localizedDescription)")
         }
     }
 
@@ -450,8 +578,18 @@ class LiveActivityService: ObservableObject {
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (_, _) = try await URLSession.shared.data(for: request)
-            logger.info("Unregistered live activity from server for dock \(dockId)")
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse {
+                let statusCode = httpResponse.statusCode
+                if (200...299).contains(statusCode) || statusCode == 404 {
+                    untrackServerSession(dockId: dockId, pushToken: pushToken)
+                    logger.info("Unregistered live activity from server for dock \(dockId) (status \(statusCode))")
+                } else {
+                    logger.warning("Server returned unexpected response while unregistering live activity for dock \(dockId) (status \(statusCode))")
+                }
+            } else {
+                logger.warning("Server returned unexpected non-HTTP response while unregistering live activity for dock \(dockId)")
+            }
         } catch {
             logger.error("Failed to unregister from server: \(error.localizedDescription)")
         }

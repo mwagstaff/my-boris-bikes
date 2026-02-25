@@ -17,6 +17,10 @@ const SESSION_TIMEOUT_MS = parseInt(
   process.env.SESSION_TIMEOUT_MS || "7200000",
   10
 ); // 2 hours
+const MAX_NOTIFICATION_WINDOW_MS = parseInt(
+  process.env.MAX_NOTIFICATION_WINDOW_MS || "7200000",
+  10
+); // hard cap for notification updates
 const APNS_KEY_ID = process.env.APNS_KEY_ID || "UQ2DV6UTF4";
 const APNS_TEAM_ID = process.env.APNS_TEAM_ID || "SJ8X4DLAN9";
 const APNS_KEY_PATH =
@@ -37,6 +41,11 @@ const COMPLICATION_REFRESH_INTERVAL_MS = parseInt(
   process.env.COMPLICATION_REFRESH_INTERVAL_MS || "60000",
   10
 );
+const DEFAULT_NOTIFICATION_WINDOW_MS = 2 * 60 * 60 * 1000;
+const EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS =
+  Number.isFinite(MAX_NOTIFICATION_WINDOW_MS) && MAX_NOTIFICATION_WINDOW_MS > 0
+    ? MAX_NOTIFICATION_WINDOW_MS
+    : DEFAULT_NOTIFICATION_WINDOW_MS;
 const TFL_API_BASE = "https://api.tfl.gov.uk";
 const LOG_DIR = process.env.LOG_DIR || path.join(__dirname, "logs");
 const COMPLICATION_TOKENS_PATH =
@@ -303,7 +312,7 @@ const uniqueUsersGauge = new promClient.Gauge({
 });
 
 // ── Active Sessions ──────────────────────────────────────────────────
-// dockPollers: Map<dockId, { interval, lastData, tokens: Map<pushToken, { buildType, startedAt, alternatives, primaryDisplay, deviceToken }> }>
+// dockPollers: Map<dockId, { interval, lastData, tokens: Map<pushToken, { buildType, startedAt, alternatives, primaryDisplay, minimumThresholds, deviceToken }> }>
 const dockPollers = new Map();
 
 // ── Dock Value Overrides ─────────────────────────────────────────────
@@ -564,6 +573,34 @@ function normalizeApnsDeviceToken(rawValue) {
   return trimmed.toLowerCase();
 }
 
+function sanitizeThresholdValue(rawValue) {
+  const parsedValue = Number(rawValue);
+  if (!Number.isFinite(parsedValue)) return 0;
+  return Math.max(0, Math.trunc(parsedValue));
+}
+
+function sanitizeMinimumThresholds(rawThresholds) {
+  if (!rawThresholds || typeof rawThresholds !== "object") {
+    return null;
+  }
+
+  return {
+    bikes: sanitizeThresholdValue(rawThresholds.bikes),
+    eBikes: sanitizeThresholdValue(rawThresholds.eBikes),
+    spaces: sanitizeThresholdValue(rawThresholds.spaces),
+  };
+}
+
+function resolveSessionExpiryMs(expirySeconds) {
+  const parsedExpirySeconds = Number(expirySeconds);
+  const defaultExpiryMs = Math.min(SESSION_TIMEOUT_MS, EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS);
+  const requestedExpiryMs =
+    Number.isFinite(parsedExpirySeconds) && parsedExpirySeconds > 0
+      ? parsedExpirySeconds * 1000
+      : defaultExpiryMs;
+  return Math.min(requestedExpiryMs, EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS);
+}
+
 function primaryValueForDisplay(data, primaryDisplay) {
   switch (primaryDisplay) {
     case "eBikes":
@@ -600,19 +637,55 @@ function pluralMetricLabel(primaryDisplay) {
   }
 }
 
-function buildAvailabilityAlertMessage(dockName, primaryDisplay, previousValue, currentValue) {
+function metricLabelForValue(primaryDisplay, value) {
+  return value === 1
+    ? singularMetricLabel(primaryDisplay)
+    : pluralMetricLabel(primaryDisplay);
+}
+
+function minimumThresholdForDisplay(minimumThresholds, primaryDisplay) {
+  if (!minimumThresholds || typeof minimumThresholds !== "object") {
+    return 0;
+  }
+  return sanitizeThresholdValue(minimumThresholds[primaryDisplay]);
+}
+
+function buildAvailabilityAlertMessage(
+  dockName,
+  primaryDisplay,
+  previousValue,
+  currentValue,
+  minimumThreshold = 0
+) {
   const safeDockName =
     typeof dockName === "string" && dockName.trim() ? dockName.trim() : "This dock";
 
+  if (previousValue === currentValue) {
+    return null;
+  }
+
+  const normalizedThreshold = sanitizeThresholdValue(minimumThreshold);
+  if (normalizedThreshold > 0) {
+    if (currentValue < normalizedThreshold) {
+      const metricLabel = metricLabelForValue(primaryDisplay, currentValue);
+      const isIncreaseWhileBelowThreshold = currentValue > previousValue;
+      const qualifier = isIncreaseWhileBelowThreshold ? "now has" : "only has";
+      const prefix = currentValue === 0 ? "‼️" : "⚠️";
+      return `${prefix} ${safeDockName} ${qualifier} ${currentValue} ${metricLabel} available`;
+    }
+  }
+
+  if (normalizedThreshold > 0 && previousValue < normalizedThreshold && currentValue >= normalizedThreshold) {
+    const metricLabel = metricLabelForValue(primaryDisplay, currentValue);
+    return `✅ ${safeDockName} now has ${currentValue} ${metricLabel} available`;
+  }
+
   if (previousValue > 0 && currentValue === 0) {
-    return `⚠️ ${safeDockName} no longer has any ${pluralMetricLabel(primaryDisplay)}`;
+    return `‼️ ${safeDockName} no longer has any ${pluralMetricLabel(primaryDisplay)}`;
   }
 
   if (previousValue === 0 && currentValue > 0) {
-    const metricLabel =
-      currentValue === 1
-        ? singularMetricLabel(primaryDisplay)
-        : pluralMetricLabel(primaryDisplay);
+    const metricLabel = metricLabelForValue(primaryDisplay, currentValue);
     return `✅ ${safeDockName} now has ${currentValue} ${metricLabel} available`;
   }
 
@@ -922,7 +995,8 @@ async function pollDock(dockId) {
   // Check for expired sessions
   const now = Date.now();
   for (const [pushToken, session] of poller.tokens) {
-    const timeoutMs = session.expiryMs || SESSION_TIMEOUT_MS;
+    const timeoutMs =
+      session.expiryMs || Math.min(SESSION_TIMEOUT_MS, EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS);
     const elapsedMs = now - session.startedAt;
     const remainingMs = timeoutMs - elapsedMs;
 
@@ -981,11 +1055,16 @@ async function pollDock(dockId) {
           const primaryDisplay = sanitizePrimaryDisplay(session.primaryDisplay);
           const previousValue = primaryValueForDisplay(previousData, primaryDisplay);
           const currentValue = primaryValueForDisplay(data, primaryDisplay);
+          const minimumThreshold = minimumThresholdForDisplay(
+            session.minimumThresholds,
+            primaryDisplay
+          );
           const alertMessage = buildAvailabilityAlertMessage(
             data.dockName,
             primaryDisplay,
             previousValue,
-            currentValue
+            currentValue,
+            minimumThreshold
           );
 
           if (!alertMessage) continue;
@@ -1803,6 +1882,7 @@ app.post("/live-activity/start", (req, res) => {
     expirySeconds,
     alternatives,
     primaryDisplay,
+    minimumThresholds,
   } = req.body;
 
   if (!dockId || !pushToken || !buildType) {
@@ -1817,14 +1897,15 @@ app.post("/live-activity/start", (req, res) => {
       .json({ error: 'buildType must be "development" or "production"' });
   }
 
-  // Use client-provided expiry or fall back to default session timeout
-  const parsedExpirySeconds = Number(expirySeconds);
-  const expiryMs =
-    Number.isFinite(parsedExpirySeconds) && parsedExpirySeconds > 0
-      ? parsedExpirySeconds * 1000
-      : SESSION_TIMEOUT_MS;
+  // Use client-provided expiry or fall back to default timeout, but always cap the window.
+  const expiryMs = resolveSessionExpiryMs(expirySeconds);
   const normalizedAlternatives = sanitizeAlternatives(alternatives);
   const normalizedPrimaryDisplay = sanitizePrimaryDisplay(primaryDisplay);
+  const normalizedMinimumThresholds = sanitizeMinimumThresholds(minimumThresholds);
+  const activeMinimumThreshold = minimumThresholdForDisplay(
+    normalizedMinimumThresholds,
+    normalizedPrimaryDisplay
+  );
   const deviceToken = normalizeApnsDeviceToken(req.headers["x-device-token"]);
 
   if (!deviceToken && req.headers["x-device-token"]) {
@@ -1834,7 +1915,7 @@ app.post("/live-activity/start", (req, res) => {
   }
 
   logger.info(
-    `Starting live activity: dock=${dockId}, build=${buildType}, primaryDisplay=${normalizedPrimaryDisplay}, expires in ${expiryMs / 1000}s`
+    `Starting live activity: dock=${dockId}, build=${buildType}, primaryDisplay=${normalizedPrimaryDisplay}, minimumThreshold=${activeMinimumThreshold}, expires in ${expiryMs / 1000}s`
   );
   logger.info(`  pushToken: ${pushToken} (alternatives: ${normalizedAlternatives.length})`);
 
@@ -1854,6 +1935,7 @@ app.post("/live-activity/start", (req, res) => {
     expiryMs,
     alternatives: normalizedAlternatives,
     primaryDisplay: normalizedPrimaryDisplay,
+    minimumThresholds: normalizedMinimumThresholds,
     deviceToken,
   });
 
@@ -1873,9 +1955,55 @@ app.post("/live-activity/start", (req, res) => {
     success: true,
     dockId,
     primaryDisplay: normalizedPrimaryDisplay,
+    minimumThreshold: activeMinimumThreshold,
     hasDeviceToken: !!deviceToken,
     message: "Live activity started",
     expiresIn: `${expiryMs / 1000} seconds`,
+  });
+});
+
+app.post("/live-activity/session/update", (req, res) => {
+  const { dockId, pushToken, primaryDisplay, minimumThresholds } = req.body;
+
+  if (!dockId || !pushToken) {
+    return res
+      .status(400)
+      .json({ error: "Missing required fields: dockId, pushToken" });
+  }
+
+  const poller = dockPollers.get(dockId);
+  if (!poller) {
+    return res.status(404).json({ error: "Live activity session not found for dock" });
+  }
+
+  const session = poller.tokens.get(pushToken);
+  if (!session) {
+    return res.status(404).json({ error: "Live activity session token not found" });
+  }
+
+  if (primaryDisplay !== undefined) {
+    session.primaryDisplay = sanitizePrimaryDisplay(primaryDisplay);
+  }
+
+  if (minimumThresholds !== undefined) {
+    session.minimumThresholds = sanitizeMinimumThresholds(minimumThresholds);
+  }
+
+  const resolvedPrimaryDisplay = sanitizePrimaryDisplay(session.primaryDisplay);
+  const resolvedMinimumThreshold = minimumThresholdForDisplay(
+    session.minimumThresholds,
+    resolvedPrimaryDisplay
+  );
+
+  logger.info(
+    `Updated live activity session: dock=${dockId}, token=${pushToken.substring(0, 8)}..., primaryDisplay=${resolvedPrimaryDisplay}, minimumThreshold=${resolvedMinimumThreshold}`
+  );
+
+  res.json({
+    success: true,
+    dockId,
+    primaryDisplay: resolvedPrimaryDisplay,
+    minimumThreshold: resolvedMinimumThreshold,
   });
 });
 
@@ -2125,6 +2253,8 @@ app.get("/status", (_req, res) => {
       port: PORT,
       pollIntervalMs: POLL_INTERVAL_MS,
       sessionTimeoutHours: SESSION_TIMEOUT_MS / 1000 / 60 / 60,
+      maxNotificationWindowHours:
+        EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS / 1000 / 60 / 60,
       apnsEnvironment: {
         keyId: APNS_KEY_ID,
         teamId: APNS_TEAM_ID,
@@ -2156,6 +2286,11 @@ app.get("/live-activity/status", (req, res) => {
         token: token.substring(0, 8) + "...",
         buildType: session.buildType,
         primaryDisplay: sanitizePrimaryDisplay(session.primaryDisplay),
+        minimumThresholds: session.minimumThresholds || null,
+        activeMinimumThreshold: minimumThresholdForDisplay(
+          session.minimumThresholds,
+          sanitizePrimaryDisplay(session.primaryDisplay)
+        ),
         deviceToken: session.deviceToken
           ? `${session.deviceToken.substring(0, 8)}...`
           : null,
@@ -2164,7 +2299,9 @@ app.get("/live-activity/status", (req, res) => {
           : 0,
         startedAt: new Date(session.startedAt).toISOString(),
         expiresAt: new Date(
-          session.startedAt + (session.expiryMs || SESSION_TIMEOUT_MS)
+          session.startedAt +
+            (session.expiryMs ||
+              Math.min(SESSION_TIMEOUT_MS, EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS))
         ).toISOString(),
       })),
     };
@@ -2247,6 +2384,9 @@ app.listen(PORT, () => {
   logger.info(`My Boris Bikes Live Activity server running on port ${PORT}`);
   logger.info(`Poll interval: ${POLL_INTERVAL_MS}ms`);
   logger.info(`Session timeout: ${SESSION_TIMEOUT_MS / 1000 / 60 / 60} hours`);
+  logger.info(
+    `Max notification window: ${EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS / 1000 / 60 / 60} hours`
+  );
   logger.info(`APNS live activity topic: ${APNS_TOPIC}`);
   logger.info(`APNS app/background topic: ${APNS_BACKGROUND_TOPIC}`);
 });

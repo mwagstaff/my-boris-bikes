@@ -38,6 +38,8 @@ struct My_Boris_BikesApp: App {
                 // Schedule the next background refresh when entering background
                 BackgroundRefreshService.shared.scheduleAppRefresh()
             case .active:
+                // Reconcile local/server live activity state after foregrounding
+                LiveActivityService.shared.restoreActivities()
                 // When the app comes to foreground, reload widget timelines
                 // so they pick up the freshest data from the main app
                 WidgetCenter.shared.reloadAllTimelines()

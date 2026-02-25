@@ -73,6 +73,9 @@ struct AppConstants {
         /// Default auto-removal duration (2 hours)
         static let defaultAutoRemoveDurationSeconds: TimeInterval = 2 * 60 * 60
 
+        /// Hard cap for notification updates if an activity isn't explicitly ended
+        static let maxNotificationWindowSeconds: TimeInterval = 2 * 60 * 60
+
         /// Debug auto-removal duration (1 minute)
         static let debugAutoRemoveDurationSeconds: TimeInterval = 60
     }
