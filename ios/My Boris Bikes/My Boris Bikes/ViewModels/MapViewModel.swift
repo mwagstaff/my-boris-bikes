@@ -186,6 +186,10 @@ class MapViewModel: BaseViewModel {
             pendingDockId = id
         }
     }
+
+    func bikePoint(for id: String) -> BikePoint? {
+        allBikePoints.first(where: { $0.id == id })
+    }
     
     private func loadBikePoints(cacheBusting: Bool = false) {
         isLoading = true

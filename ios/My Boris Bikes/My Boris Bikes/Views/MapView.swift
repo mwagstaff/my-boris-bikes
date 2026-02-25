@@ -41,6 +41,7 @@ struct MapView: View {
     @EnvironmentObject var favoritesService: FavoritesService
     @EnvironmentObject var bannerService: BannerService
     @State private var selectedBikePointForDetail: BikePoint?
+    @State private var pendingDockDetailId: String?
     @Binding var selectedBikePointForMap: BikePoint?
     @Binding var selectedDockId: String?
     @AppStorage(AppConstants.UserDefaults.mapDisplayModeKey) private var mapAvailabilityDisplayModeRawValue = MapAvailabilityDisplayMode.docksAndSpaces.rawValue
@@ -97,7 +98,7 @@ struct MapView: View {
                         selectedBikePointForMap = nil // Reset after centering
                         selectedDockId = nil
                     } else if let dockId = selectedDockId {
-                        viewModel.centerOnBikePoint(id: dockId)
+                        handleDockDeepLinkSelection(dockId)
                         selectedDockId = nil
                     }
                     viewModel.setup(locationService: locationService)
@@ -111,8 +112,15 @@ struct MapView: View {
                 }
                 .onChange(of: selectedDockId) { _, newDockId in
                     if selectedBikePointForMap == nil, let dockId = newDockId {
-                        viewModel.centerOnBikePoint(id: dockId)
+                        handleDockDeepLinkSelection(dockId)
                         selectedDockId = nil
+                    }
+                }
+                .onChange(of: viewModel.visibleBikePoints) { _, _ in
+                    guard let pendingDockDetailId else { return }
+                    if let bikePoint = viewModel.bikePoint(for: pendingDockDetailId) {
+                        selectedBikePointForDetail = bikePoint
+                        self.pendingDockDetailId = nil
                     }
                 }
                 .onChange(of: mapAvailabilityDisplayModeRawValue) { _, newValue in
@@ -342,6 +350,17 @@ struct MapView: View {
         .accessibilityLabel("Map pin data mode")
         .accessibilityValue(mapAvailabilityDisplayMode.menuDescription)
     }
+
+    private func handleDockDeepLinkSelection(_ dockId: String) {
+        viewModel.centerOnBikePoint(id: dockId)
+
+        if let bikePoint = viewModel.bikePoint(for: dockId) {
+            selectedBikePointForDetail = bikePoint
+            pendingDockDetailId = nil
+        } else {
+            pendingDockDetailId = dockId
+        }
+    }
 }
 
 struct BikePointMapPin: View {
@@ -443,7 +462,6 @@ struct BikePointDetailView: View {
     let bikePoint: BikePoint
     let isFavorite: Bool
     let onToggleFavorite: (BikePoint) -> Void
-    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var liveActivityService: LiveActivityService
 
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
@@ -473,18 +491,8 @@ struct BikePointDetailView: View {
     
     var body: some View {
         let isActive = liveActivityService.isActivityActive(for: bikePoint.id)
-        let activityColor: Color = isActive ? .red : .accentColor
 
         VStack(spacing: 16) {
-            HStack {
-                Spacer()
-                Button("Done") {
-                    dismiss()
-                }
-            }
-            .padding(.horizontal)
-            .padding(.top, 16)
-            
             VStack(spacing: 12) {
                 HStack(alignment: .top, spacing: 16) {
                     DonutChart(
@@ -560,18 +568,36 @@ struct BikePointDetailView: View {
                     )
                     liveActivityService.startLiveActivity(for: bikePoint, alias: nil)
                 } label: {
-                    HStack {
-                        Image(systemName: "waveform.path.ecg")
-                        Text(isActive ? "End Live Activity" : "Start Live Activity")
+                    VStack(spacing: 6) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "waveform.path.ecg")
+                            Text(isActive ? "End Live Activity" : "Start Live Activity")
+                        }
+                        .font(.system(size: 16, weight: isActive ? .bold : .semibold))
+                        .foregroundColor(isActive ? .white : .accentColor)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(isActive ? AppConstants.Colors.standardBike : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(
+                                    isActive ? AppConstants.Colors.standardBike : .accentColor.opacity(0.35),
+                                    lineWidth: 1
+                                )
+                        )
+
+                        if isActive {
+                            Text("Tap this to end the live activity and stop receiving dock notifications")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: .infinity)
+                        }
                     }
-                    .foregroundColor(activityColor)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.clear)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(activityColor.opacity(0.4), lineWidth: 1)
-                    )
                 }
                 .buttonStyle(.plain)
 
@@ -621,6 +647,7 @@ struct BikePointDetailView: View {
                 }
             }
             .padding()
+            .padding(.top, 16)
         }
         .frame(maxHeight: 420) // Increased to accommodate live activity controls
         .opacity(bikePoint.isAvailable ? 1.0 : 0.7)

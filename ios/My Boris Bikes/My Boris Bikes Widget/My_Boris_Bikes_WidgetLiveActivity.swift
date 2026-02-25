@@ -244,122 +244,135 @@ private struct DockLiveActivityView: View {
 
     @ViewBuilder
     private var lockScreenContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Primary dock row
-            HStack(spacing: 14) {
-                WidgetDonutChart(
-                    standardBikes: state.standardBikes,
-                    eBikes: state.eBikes,
-                    emptySpaces: state.emptySpaces,
-                    size: 42,
-                    strokeWidth: 10,
-                    centerText: extractInitials(from: attributes.alias ?? attributes.dockName)
-                )
-                .fixedSize()
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                // Primary dock row
+                HStack(spacing: 14) {
+                    WidgetDonutChart(
+                        standardBikes: state.standardBikes,
+                        eBikes: state.eBikes,
+                        emptySpaces: state.emptySpaces,
+                        size: 42,
+                        strokeWidth: 10,
+                        centerText: extractInitials(from: attributes.alias ?? attributes.dockName)
+                    )
+                    .fixedSize()
 
-                VStack(alignment: .leading, spacing: 4) {
-                    if let alias = attributes.alias, !alias.isEmpty {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(alias)
-                                .font(.system(size: 16, weight: .semibold))
-                                .lineLimit(1)
-                            Text(attributes.dockName)
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                        }
-                    } else {
-                        Text(attributes.dockName)
-                            .font(.system(size: 14, weight: .semibold))
-                            .lineLimit(2)
-                    }
-
-                    HStack(spacing: 10) {
-                        if bikeDataFilter.showsStandardBikes {
-                            LiveActivityLegendItem(
-                                color: standardBikeColor,
-                                count: filteredCounts.standardBikes,
-                                label: filteredCounts.standardBikes == 1 ? "bike" : "bikes",
-                                threshold: minBikes
-                            )
-                        }
-                        if bikeDataFilter.showsEBikes {
-                            LiveActivityLegendItem(
-                                color: eBikeColor,
-                                count: filteredCounts.eBikes,
-                                label: filteredCounts.eBikes == 1 ? "e-bike" : "e-bikes",
-                                threshold: minEBikes
-                            )
-                        }
-                        LiveActivityLegendItem(
-                            color: emptySpaceColor,
-                            count: filteredCounts.emptySpaces,
-                            label: filteredCounts.emptySpaces == 1 ? "space" : "spaces",
-                            threshold: minSpaces
-                        )
-                    }
-                }
-
-                Spacer()
-            }
-
-            // Nearby alternatives: donut + name + vertical counts
-            if !lockScreenAlternatives.isEmpty {
-                Divider()
-                HStack(spacing: 8) {
-                    ForEach(lockScreenAlternatives, id: \.name) { alt in
-                        let altFiltered = bikeDataFilter.filteredCounts(
-                            standardBikes: alt.standardBikes,
-                            eBikes: alt.eBikes,
-                            emptySpaces: alt.emptySpaces
-                        )
-                        HStack(spacing: 6) {
-                            WidgetDonutChart(
-                                standardBikes: alt.standardBikes,
-                                eBikes: alt.eBikes,
-                                emptySpaces: alt.emptySpaces,
-                                size: 30,
-                                strokeWidth: 5,
-                                centerText: extractInitials(from: alt.name)
-                            )
-                            .fixedSize()
-
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(alt.name)
-                                    .font(.system(size: 11, weight: .semibold))
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let alias = attributes.alias, !alias.isEmpty {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(alias)
+                                    .font(.system(size: 16, weight: .semibold))
                                     .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
-                                if bikeDataFilter.showsStandardBikes {
-                                    LiveActivityLegendItem(
-                                        color: standardBikeColor,
-                                        count: altFiltered.standardBikes,
-                                        label: altFiltered.standardBikes == 1 ? "bike" : "bikes",
-                                        threshold: minBikes
-                                    )
-                                }
-                                if bikeDataFilter.showsEBikes {
-                                    LiveActivityLegendItem(
-                                        color: eBikeColor,
-                                        count: altFiltered.eBikes,
-                                        label: altFiltered.eBikes == 1 ? "e-bike" : "e-bikes",
-                                        threshold: minEBikes
-                                    )
-                                }
+                                Text(attributes.dockName)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                        } else {
+                            Text(attributes.dockName)
+                                .font(.system(size: 14, weight: .semibold))
+                                .lineLimit(2)
+                        }
+
+                        HStack(spacing: 10) {
+                            if bikeDataFilter.showsStandardBikes {
                                 LiveActivityLegendItem(
-                                    color: emptySpaceColor,
-                                    count: altFiltered.emptySpaces,
-                                    label: altFiltered.emptySpaces == 1 ? "space" : "spaces",
-                                    threshold: minSpaces
+                                    color: standardBikeColor,
+                                    count: filteredCounts.standardBikes,
+                                    label: filteredCounts.standardBikes == 1 ? "bike" : "bikes",
+                                    threshold: minBikes
                                 )
                             }
+                            if bikeDataFilter.showsEBikes {
+                                LiveActivityLegendItem(
+                                    color: eBikeColor,
+                                    count: filteredCounts.eBikes,
+                                    label: filteredCounts.eBikes == 1 ? "e-bike" : "e-bikes",
+                                    threshold: minEBikes
+                                )
+                            }
+                            LiveActivityLegendItem(
+                                color: emptySpaceColor,
+                                count: filteredCounts.emptySpaces,
+                                label: filteredCounts.emptySpaces == 1 ? "space" : "spaces",
+                                threshold: minSpaces
+                            )
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    Spacer()
+                }
+
+                // Nearby alternatives: donut + name + vertical counts
+                if !lockScreenAlternatives.isEmpty {
+                    Divider()
+                    HStack(spacing: 8) {
+                        ForEach(lockScreenAlternatives, id: \.name) { alt in
+                            let altFiltered = bikeDataFilter.filteredCounts(
+                                standardBikes: alt.standardBikes,
+                                eBikes: alt.eBikes,
+                                emptySpaces: alt.emptySpaces
+                            )
+                            HStack(spacing: 6) {
+                                WidgetDonutChart(
+                                    standardBikes: alt.standardBikes,
+                                    eBikes: alt.eBikes,
+                                    emptySpaces: alt.emptySpaces,
+                                    size: 30,
+                                    strokeWidth: 5,
+                                    centerText: extractInitials(from: alt.name)
+                                )
+                                .fixedSize()
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(alt.name)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.8)
+                                    if bikeDataFilter.showsStandardBikes {
+                                        LiveActivityLegendItem(
+                                            color: standardBikeColor,
+                                            count: altFiltered.standardBikes,
+                                            label: altFiltered.standardBikes == 1 ? "bike" : "bikes",
+                                            threshold: minBikes
+                                        )
+                                    }
+                                    if bikeDataFilter.showsEBikes {
+                                        LiveActivityLegendItem(
+                                            color: eBikeColor,
+                                            count: altFiltered.eBikes,
+                                            label: altFiltered.eBikes == 1 ? "e-bike" : "e-bikes",
+                                            threshold: minEBikes
+                                        )
+                                    }
+                                    LiveActivityLegendItem(
+                                        color: emptySpaceColor,
+                                        count: altFiltered.emptySpaces,
+                                        label: altFiltered.emptySpaces == 1 ? "space" : "spaces",
+                                        threshold: minSpaces
+                                    )
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+
+            Text("Tap to manage")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.9)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity)
+                .background(standardBikeColor)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
     }
 }
 
@@ -524,6 +537,10 @@ private struct CompactDonutView: View {
 // MARK: - Live Activity Widget
 
 struct My_Boris_Bikes_WidgetLiveActivity: Widget {
+    private func managementURL(for dockId: String) -> URL? {
+        URL(string: "myborisbikes://dock/\(dockId)")
+    }
+
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DockActivityAttributes.self) { context in
             DockLiveActivityView(
@@ -531,6 +548,7 @@ struct My_Boris_Bikes_WidgetLiveActivity: Widget {
                 state: context.state
             )
             .activitySystemActionForegroundColor(Color.primary)
+            .widgetURL(managementURL(for: context.attributes.dockId))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
@@ -552,7 +570,7 @@ struct My_Boris_Bikes_WidgetLiveActivity: Widget {
             } minimal: {
                 PrimaryDisplayText(attributes: context.attributes, state: context.state, fontSize: 12, fontWeight: .bold)
             }
-            .widgetURL(URL(string: "myborisbikes://dock/\(context.attributes.dockId)"))
+            .widgetURL(managementURL(for: context.attributes.dockId))
         }
         .supplementalActivityFamilies([.small, .medium])
     }
