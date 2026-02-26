@@ -11,6 +11,23 @@ import os.log
 
 @MainActor
 class LiveActivityService: ObservableObject {
+    struct ActiveNotificationSession: Equatable {
+        let dockId: String
+        let dockName: String
+        let expiresAt: Date?
+    }
+
+    private struct DeviceNotificationStatusResponse: Decodable {
+        struct Session: Decodable {
+            let dockId: String
+            let dockName: String
+            let expiresAt: String?
+        }
+
+        let active: Bool
+        let session: Session?
+    }
+
     static let shared = LiveActivityService()
     private let serverSessionTokensKey = "liveActivityServerSessionTokensByDock"
 
@@ -21,6 +38,7 @@ class LiveActivityService: ObservableObject {
 
     /// Notify observers when per-dock primary display changes
     @Published private(set) var primaryDisplayChangeToken = UUID()
+    @Published private(set) var activeNotificationSession: ActiveNotificationSession?
 
     /// Track stale dates for active activities (keyed by dock ID)
     private var staleDates: [String: Date] = [:]
@@ -69,6 +87,18 @@ class LiveActivityService: ObservableObject {
 
     private func notifyPrimaryDisplayChanged() {
         primaryDisplayChangeToken = UUID()
+    }
+
+    private func parseServerISODate(_ rawValue: String?) -> Date? {
+        guard let rawValue else { return nil }
+        let formatterWithFractionalSeconds = ISO8601DateFormatter()
+        formatterWithFractionalSeconds.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let parsed = formatterWithFractionalSeconds.date(from: rawValue) {
+            return parsed
+        }
+
+        let fallbackFormatter = ISO8601DateFormatter()
+        return fallbackFormatter.date(from: rawValue)
     }
 
     private func configuredLiveActivityExpirySeconds() -> TimeInterval {
@@ -225,6 +255,7 @@ class LiveActivityService: ObservableObject {
                     await self.registerWithServer(
                         dockId: dockId,
                         pushToken: tokenString,
+                        dockName: bikePoint.commonName,
                         alternatives: activity.content.state.alternatives
                     )
                 }
@@ -310,6 +341,58 @@ class LiveActivityService: ObservableObject {
         activeActivities[dockId] != nil
     }
 
+    func refreshNotificationStatusFromServer() async {
+        guard let deviceToken = DeviceTokenHelper.apnsDeviceToken else {
+            activeNotificationSession = nil
+            return
+        }
+
+        let urlString = "\(serverBaseURL)\(AppConstants.Server.liveActivityDeviceStatusEndpoint)"
+        guard let url = URL(string: urlString) else {
+            logger.error("Invalid notification status URL: \(urlString)")
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
+
+        let body: [String: String] = [
+            "deviceToken": deviceToken,
+            "buildType": buildType,
+        ]
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                logger.warning("Non-HTTP response while checking notification status")
+                return
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                logger.warning("Unexpected status (\(httpResponse.statusCode)) while checking notification status")
+                return
+            }
+
+            let decoded = try JSONDecoder().decode(DeviceNotificationStatusResponse.self, from: data)
+
+            if decoded.active, let session = decoded.session {
+                activeNotificationSession = ActiveNotificationSession(
+                    dockId: session.dockId,
+                    dockName: session.dockName,
+                    expiresAt: parseServerISODate(session.expiresAt)
+                )
+            } else {
+                activeNotificationSession = nil
+            }
+        } catch {
+            logger.error("Failed to refresh notification status: \(error.localizedDescription)")
+        }
+    }
+
     /// Set the primary display override for a specific dock's live activity
     func setPrimaryDisplay(_ display: LiveActivityPrimaryDisplay, for dockId: String) {
         LiveActivityDockSettings.setPrimaryDisplay(display, for: dockId)
@@ -333,6 +416,7 @@ class LiveActivityService: ObservableObject {
                     await self.updateSessionConfigurationOnServer(
                         dockId: dockId,
                         pushToken: tokenString,
+                        dockName: activity.attributes.dockName,
                         primaryDisplay: display
                     )
                 }
@@ -433,6 +517,10 @@ class LiveActivityService: ObservableObject {
         if !runningActivities.isEmpty {
             logger.info("Restored \(self.activeActivities.count) live activities")
         }
+
+        Task { [weak self] in
+            await self?.refreshNotificationStatusFromServer()
+        }
     }
 
     // MARK: - Server Communication
@@ -456,6 +544,7 @@ class LiveActivityService: ObservableObject {
     private func registerWithServer(
         dockId: String,
         pushToken: String,
+        dockName: String,
         alternatives: [DockActivityAttributes.AlternativeDock]
     ) async {
         let urlString = "\(serverBaseURL)/live-activity/start"
@@ -493,6 +582,7 @@ class LiveActivityService: ObservableObject {
 
         let body: [String: Any] = [
             "dockId": dockId,
+            "dockName": dockName,
             "pushToken": pushToken,
             "buildType": buildType,
             "expirySeconds": finalExpirySeconds,
@@ -508,6 +598,7 @@ class LiveActivityService: ObservableObject {
                 trackServerSession(dockId: dockId, pushToken: pushToken)
                 let activeThreshold = minimumThresholds[primaryDisplayRawValue] ?? 0
                 logger.info("Registered live activity with server for dock \(dockId) (expires in \(Int(finalExpirySeconds))s, alternatives: \(serializedAlternatives.count), primaryDisplay: \(primaryDisplayRawValue), minimumThreshold: \(activeThreshold))")
+                await refreshNotificationStatusFromServer()
             } else {
                 logger.warning("Server returned unexpected response for dock \(dockId)")
             }
@@ -519,6 +610,7 @@ class LiveActivityService: ObservableObject {
     private func updateSessionConfigurationOnServer(
         dockId: String,
         pushToken: String,
+        dockName: String?,
         primaryDisplay: LiveActivityPrimaryDisplay
     ) async {
         let urlString = "\(serverBaseURL)/live-activity/session/update"
@@ -536,12 +628,15 @@ class LiveActivityService: ObservableObject {
             request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
         }
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "dockId": dockId,
             "pushToken": pushToken,
             "primaryDisplay": primaryDisplay.rawValue,
             "minimumThresholds": minimumThresholdsPayload(),
         ]
+        if let dockName, !dockName.isEmpty {
+            body["dockName"] = dockName
+        }
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -584,6 +679,7 @@ class LiveActivityService: ObservableObject {
                 if (200...299).contains(statusCode) || statusCode == 404 {
                     untrackServerSession(dockId: dockId, pushToken: pushToken)
                     logger.info("Unregistered live activity from server for dock \(dockId) (status \(statusCode))")
+                    await refreshNotificationStatusFromServer()
                 } else {
                     logger.warning("Server returned unexpected response while unregistering live activity for dock \(dockId) (status \(statusCode))")
                 }

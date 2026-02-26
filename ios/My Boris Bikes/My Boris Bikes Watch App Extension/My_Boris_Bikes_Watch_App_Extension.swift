@@ -1505,17 +1505,21 @@ fileprivate struct RectangularWidgetLegend: View {
                 RectangularLegendItem(
                     color: WidgetColors.standardBike,
                     count: filter.visibleStandard(standardBikes),
-                    label: "bikes"
+                    label: filter.visibleStandard(standardBikes) == 1 ? "bike" : "bikes"
                 )
             }
             if filter.showsEBike {
                 RectangularLegendItem(
                     color: WidgetColors.eBike,
                     count: filter.visibleEBike(eBikes),
-                    label: "e-bikes"
+                    label: filter.visibleEBike(eBikes) == 1 ? "e-bike" : "e-bikes"
                 )
             }
-            RectangularLegendItem(color: WidgetColors.emptySpace, count: emptySpaces, label: "spaces")
+            RectangularLegendItem(
+                color: WidgetColors.emptySpace,
+                count: emptySpaces,
+                label: emptySpaces == 1 ? "space" : "spaces"
+            )
         }
     }
 }

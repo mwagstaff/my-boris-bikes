@@ -9,6 +9,12 @@ import SwiftUI
 import WidgetKit
 import WatchKit
 
+private enum WatchDeepLinkPreferenceKeys {
+    static let minSpacesKey = "alternativeDocksMinSpaces"
+    static let minBikesKey = "alternativeDocksMinBikes"
+    static let minEBikesKey = "alternativeDocksMinEBikes"
+}
+
 @main
 struct My_Boris_Bikes_Watch_Watch_AppApp: App {
     @State private var selectedDockId: String?
@@ -98,9 +104,14 @@ struct My_Boris_Bikes_Watch_Watch_AppApp: App {
     }
     
     private func handleDeepLink(_ url: URL) {
+        let supportsWatchRouting = url.scheme == "myborisbikes" || url.scheme == "myborisbikeswatch"
+
+        if supportsWatchRouting {
+            applyPreferenceOverrides(from: url)
+        }
         
         // Handle myborisbikes://dock/{dockId}
-        if url.scheme == "myborisbikes",
+        if supportsWatchRouting,
            url.host == "dock",
            url.pathComponents.count > 1 {
             let dockId = url.pathComponents[1]
@@ -116,7 +127,7 @@ struct My_Boris_Bikes_Watch_Watch_AppApp: App {
             }
         }
         // Handle myborisbikes://configure-widget/{widgetId} (for widget tap-to-configure)
-        else if url.scheme == "myborisbikes",
+        else if supportsWatchRouting,
                 url.host == "configure-widget",
                 url.pathComponents.count > 1 {
             let widgetId = url.pathComponents[1]
@@ -127,7 +138,7 @@ struct My_Boris_Bikes_Watch_Watch_AppApp: App {
             selectedDockId = "SELECT_DOCK_MODE"
         }
         // Handle myborisbikes://custom-dock/{widgetId}/{dockId} (for configured widget tap)
-        else if url.scheme == "myborisbikes",
+        else if supportsWatchRouting,
                 url.host == "custom-dock",
                 url.pathComponents.count > 2 {
             let widgetId = url.pathComponents[1]
@@ -147,7 +158,7 @@ struct My_Boris_Bikes_Watch_Watch_AppApp: App {
             }
         }
         // Handle myborisbikes://selectdock?widget={widgetId} (for widget tap-to-configure - legacy support)
-        else if url.scheme == "myborisbikes",
+        else if supportsWatchRouting,
                 url.host == "selectdock" {
             
             // Extract widget ID from URL parameters
@@ -160,6 +171,51 @@ struct My_Boris_Bikes_Watch_Watch_AppApp: App {
             
             // Set a special flag to show dock selection mode
             selectedDockId = "SELECT_DOCK_MODE"
+        }
+    }
+
+    private func applyPreferenceOverrides(from url: URL) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let defaults = UserDefaults(suiteName: "group.dev.skynolimit.myborisbikes") else {
+            return
+        }
+
+        let items = components.queryItems ?? []
+        func value(for name: String) -> String? {
+            items.first(where: { $0.name == name })?.value
+        }
+
+        var didUpdate = false
+
+        if let bikeFilterRaw = value(for: "bikeFilter"),
+           BikeDataFilter(rawValue: bikeFilterRaw) != nil {
+            defaults.set(bikeFilterRaw, forKey: BikeDataFilter.userDefaultsKey)
+            didUpdate = true
+        }
+
+        if let minBikesRaw = value(for: "minBikes"),
+           let minBikes = Int(minBikesRaw),
+           minBikes >= 0 {
+            defaults.set(minBikes, forKey: WatchDeepLinkPreferenceKeys.minBikesKey)
+            didUpdate = true
+        }
+
+        if let minEBikesRaw = value(for: "minEBikes"),
+           let minEBikes = Int(minEBikesRaw),
+           minEBikes >= 0 {
+            defaults.set(minEBikes, forKey: WatchDeepLinkPreferenceKeys.minEBikesKey)
+            didUpdate = true
+        }
+
+        if let minSpacesRaw = value(for: "minSpaces"),
+           let minSpaces = Int(minSpacesRaw),
+           minSpaces >= 0 {
+            defaults.set(minSpaces, forKey: WatchDeepLinkPreferenceKeys.minSpacesKey)
+            didUpdate = true
+        }
+
+        if didUpdate {
+            defaults.synchronize()
         }
     }
     

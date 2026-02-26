@@ -7,6 +7,7 @@
 
 import SwiftUI
 import UIKit
+import Combine
 
 struct ContentView: View {
     @Binding var selectedTab: Int
@@ -19,6 +20,7 @@ struct ContentView: View {
     @State private var selectedTabIndex = 0
     @State private var selectedBikePointForMap: BikePoint?
     @State private var isServiceBannerDismissed = false
+    private let notificationStatusRefreshTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     private var shouldShowLocationBanner: Bool {
         locationService.authorizationStatus == .denied ||
@@ -29,6 +31,10 @@ struct ContentView: View {
 
     private var shouldShowServiceBanner: Bool {
         bannerService.currentBanner != nil && !isServiceBannerDismissed
+    }
+
+    private var notificationSession: LiveActivityService.ActiveNotificationSession? {
+        liveActivityService.activeNotificationSession
     }
     
     var body: some View {
@@ -98,21 +104,30 @@ struct ContentView: View {
                 }
             }
 
-            // Location permission banner overlay
-            if shouldShowLocationBanner {
-                VStack {
+            VStack(spacing: 8) {
+                if let notificationSession {
+                    ActiveNotificationsBanner(
+                        dockName: notificationSession.dockName,
+                        onTap: { handleNotificationBannerTap(for: notificationSession.dockId) }
+                    )
+                    .padding(.horizontal)
+                }
+
+                if shouldShowLocationBanner {
                     LocationPermissionBanner(
                         locationService: locationService,
                         onRequestPermission: handleLocationPermissionRequest
                     )
-                    Spacer()
                 }
+
+                Spacer()
             }
         }
         .onAppear {
             locationService.requestLocationPermission()
             // Fetch banner config on app launch
             bannerService.fetchBannerConfig()
+            Task { await liveActivityService.refreshNotificationStatusFromServer() }
             AnalyticsService.shared.trackAppLaunch(screen: analyticsScreen(for: selectedTabIndex))
 
             // Debug: Force sync with watch on app launch
@@ -125,14 +140,21 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             // Fetch banner config when returning to foreground
             bannerService.fetchBannerConfig()
+            Task { await liveActivityService.refreshNotificationStatusFromServer() }
             // Reset dismissal state when returning to foreground
             isServiceBannerDismissed = false
+        }
+        .onReceive(notificationStatusRefreshTimer) { _ in
+            Task { await liveActivityService.refreshNotificationStatusFromServer() }
         }
         .onChange(of: bannerService.currentBanner) { _, newBanner in
             // Reset dismissal state when banner content changes
             if newBanner != nil {
                 isServiceBannerDismissed = false
             }
+        }
+        .onChange(of: liveActivityService.activeActivities.count) { _, _ in
+            Task { await liveActivityService.refreshNotificationStatusFromServer() }
         }
         .onChange(of: selectedTab) { _, newTab in
             selectedTabIndex = newTab
@@ -146,6 +168,13 @@ struct ContentView: View {
                 selectedTabIndex = 1
             }
         }
+    }
+
+    private func handleNotificationBannerTap(for dockId: String) {
+        selectedBikePointForMap = nil
+        selectedDockId = dockId
+        selectedTab = 1
+        selectedTabIndex = 1
     }
     
     private func handleLocationPermissionRequest() {
@@ -179,6 +208,33 @@ struct ContentView: View {
         default:
             return .unknown
         }
+    }
+}
+
+private struct ActiveNotificationsBanner: View {
+    let dockName: String
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                Image(systemName: "bell.badge.fill")
+                    .foregroundColor(.white)
+                Text("Notifications active for \(dockName) | Tap to manage")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.accentColor.opacity(0.95))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .shadow(color: .black.opacity(0.12), radius: 4, x: 0, y: 1)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Notifications active for \(dockName). Tap to manage")
     }
 }
 

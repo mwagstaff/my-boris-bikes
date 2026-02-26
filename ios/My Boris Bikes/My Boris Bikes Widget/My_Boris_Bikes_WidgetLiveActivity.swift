@@ -89,6 +89,20 @@ private struct WatchLiveActivityView: View {
         Array(state.alternatives.prefix(3))
     }
 
+    private var watchDetailURL: URL? {
+        var components = URLComponents()
+        components.scheme = "myborisbikes"
+        components.host = "dock"
+        components.path = "/\(attributes.dockId)"
+        components.queryItems = [
+            URLQueryItem(name: "bikeFilter", value: bikeDataFilter.rawValue),
+            URLQueryItem(name: "minBikes", value: String(minBikes)),
+            URLQueryItem(name: "minEBikes", value: String(minEBikes)),
+            URLQueryItem(name: "minSpaces", value: String(minSpaces))
+        ]
+        return components.url
+    }
+
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -123,12 +137,27 @@ private struct WatchLiveActivityView: View {
 
                     HStack(spacing: 8) {
                         if bikeDataFilter.showsStandardBikes {
-                            SmallLegendItem(color: standardBikeColor, count: filteredCounts.standardBikes, label: "bikes", threshold: minBikes)
+                            SmallLegendItem(
+                                color: standardBikeColor,
+                                count: filteredCounts.standardBikes,
+                                label: filteredCounts.standardBikes == 1 ? "bike" : "bikes",
+                                threshold: minBikes
+                            )
                         }
                         if bikeDataFilter.showsEBikes {
-                            SmallLegendItem(color: eBikeColor, count: filteredCounts.eBikes, label: "e-bikes", threshold: minEBikes)
+                            SmallLegendItem(
+                                color: eBikeColor,
+                                count: filteredCounts.eBikes,
+                                label: filteredCounts.eBikes == 1 ? "e-bike" : "e-bikes",
+                                threshold: minEBikes
+                            )
                         }
-                        SmallLegendItem(color: emptySpaceColor, count: filteredCounts.emptySpaces, label: "spaces", threshold: minSpaces)
+                        SmallLegendItem(
+                            color: emptySpaceColor,
+                            count: filteredCounts.emptySpaces,
+                            label: filteredCounts.emptySpaces == 1 ? "space" : "spaces",
+                            threshold: minSpaces
+                        )
                     }
                 }
 
@@ -163,7 +192,7 @@ private struct WatchLiveActivityView: View {
         .background(Color.black)
         .foregroundColor(.white)
         // Tap opens the watch app and routes to WatchWidgetDetailView via the dock deep link
-        .widgetURL(URL(string: "myborisbikes://dock/\(attributes.dockId)"))
+        .widgetURL(watchDetailURL)
     }
 }
 
@@ -538,7 +567,25 @@ private struct CompactDonutView: View {
 
 struct My_Boris_Bikes_WidgetLiveActivity: Widget {
     private func managementURL(for dockId: String) -> URL? {
-        URL(string: "myborisbikes://dock/\(dockId)")
+        var components = URLComponents()
+        components.scheme = "myborisbikes"
+        components.host = "dock"
+        components.path = "/\(dockId)"
+
+        let defaults = BikeDataFilter.userDefaultsStore
+        let bikeFilter = defaults.string(forKey: BikeDataFilter.userDefaultsKey) ?? BikeDataFilter.both.rawValue
+        let minBikes = defaults.object(forKey: AlternativeDockSettings.minBikesKey) as? Int ?? AlternativeDockSettings.defaultMinBikes
+        let minEBikes = defaults.object(forKey: AlternativeDockSettings.minEBikesKey) as? Int ?? AlternativeDockSettings.defaultMinEBikes
+        let minSpaces = defaults.object(forKey: AlternativeDockSettings.minSpacesKey) as? Int ?? AlternativeDockSettings.defaultMinSpaces
+
+        components.queryItems = [
+            URLQueryItem(name: "bikeFilter", value: bikeFilter),
+            URLQueryItem(name: "minBikes", value: String(minBikes)),
+            URLQueryItem(name: "minEBikes", value: String(minEBikes)),
+            URLQueryItem(name: "minSpaces", value: String(minSpaces))
+        ]
+
+        return components.url
     }
 
     var body: some WidgetConfiguration {

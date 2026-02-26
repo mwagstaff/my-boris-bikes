@@ -30,6 +30,7 @@ struct AppConstants {
         static let analyticsEndpoint = "/app/metrics"
         static let complicationRegisterEndpoint = "/complication/register"
         static let complicationUnregisterEndpoint = "/complication/unregister"
+        static let liveActivityDeviceStatusEndpoint = "/live-activity/device/status"
 
         static var baseURL: String {
             #if DEBUG

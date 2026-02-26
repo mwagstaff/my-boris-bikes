@@ -42,6 +42,7 @@ const COMPLICATION_REFRESH_INTERVAL_MS = parseInt(
   10
 );
 const DEFAULT_NOTIFICATION_WINDOW_MS = 2 * 60 * 60 * 1000;
+const HARD_NOTIFICATION_CUTOFF_MS = 2 * 60 * 60 * 1000;
 const EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS =
   Number.isFinite(MAX_NOTIFICATION_WINDOW_MS) && MAX_NOTIFICATION_WINDOW_MS > 0
     ? MAX_NOTIFICATION_WINDOW_MS
@@ -297,6 +298,17 @@ const dockStatsTotal = new promClient.Counter({
   registers: [register],
 });
 
+function activeLiveActivityTokenCount() {
+  return Array.from(dockPollers.values()).reduce(
+    (sum, poller) => sum + poller.tokens.size,
+    0
+  );
+}
+
+function updateLiveActivitiesActiveGauge() {
+  liveActivitiesActive.set(activeLiveActivityTokenCount());
+}
+
 // Unique users gauge
 const uniqueUsersGauge = new promClient.Gauge({
   name: "unique_users",
@@ -312,7 +324,7 @@ const uniqueUsersGauge = new promClient.Gauge({
 });
 
 // ── Active Sessions ──────────────────────────────────────────────────
-// dockPollers: Map<dockId, { interval, lastData, tokens: Map<pushToken, { buildType, startedAt, alternatives, primaryDisplay, minimumThresholds, deviceToken }> }>
+// dockPollers: Map<dockId, { interval, lastData, tokens: Map<pushToken, { buildType, startedAt, hardStopAt, expiryMs, alternatives, primaryDisplay, minimumThresholds, deviceToken, dockName }> }>
 const dockPollers = new Map();
 
 // ── Dock Value Overrides ─────────────────────────────────────────────
@@ -591,14 +603,99 @@ function sanitizeMinimumThresholds(rawThresholds) {
   };
 }
 
+function sanitizeDockName(rawDockName) {
+  if (typeof rawDockName !== "string") return null;
+  const trimmed = rawDockName.trim();
+  return trimmed || null;
+}
+
 function resolveSessionExpiryMs(expirySeconds) {
   const parsedExpirySeconds = Number(expirySeconds);
-  const defaultExpiryMs = Math.min(SESSION_TIMEOUT_MS, EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS);
+  const defaultExpiryMs = Math.min(
+    SESSION_TIMEOUT_MS,
+    EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS,
+    HARD_NOTIFICATION_CUTOFF_MS
+  );
   const requestedExpiryMs =
     Number.isFinite(parsedExpirySeconds) && parsedExpirySeconds > 0
       ? parsedExpirySeconds * 1000
       : defaultExpiryMs;
-  return Math.min(requestedExpiryMs, EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS);
+  return Math.min(
+    requestedExpiryMs,
+    EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS,
+    HARD_NOTIFICATION_CUTOFF_MS
+  );
+}
+
+function sessionTimeoutMs(session) {
+  const parsedExpiryMs = Number(session?.expiryMs);
+  const fallbackExpiryMs = Math.min(
+    SESSION_TIMEOUT_MS,
+    EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS,
+    HARD_NOTIFICATION_CUTOFF_MS
+  );
+  const requestedExpiryMs =
+    Number.isFinite(parsedExpiryMs) && parsedExpiryMs > 0
+      ? parsedExpiryMs
+      : fallbackExpiryMs;
+
+  return Math.min(
+    requestedExpiryMs,
+    EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS,
+    HARD_NOTIFICATION_CUTOFF_MS
+  );
+}
+
+function sessionStartedAtMs(session) {
+  const startedAt = Number(session?.startedAt);
+  return Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now();
+}
+
+function sessionHardStopAtMs(session) {
+  const startedAt = sessionStartedAtMs(session);
+  const requestedHardStopAt = Number(session?.hardStopAt);
+  const cappedHardStopAt = startedAt + HARD_NOTIFICATION_CUTOFF_MS;
+  if (!Number.isFinite(requestedHardStopAt) || requestedHardStopAt <= 0) {
+    return cappedHardStopAt;
+  }
+  return Math.min(requestedHardStopAt, cappedHardStopAt);
+}
+
+function sessionExpiresAtMs(session) {
+  const startedAt = sessionStartedAtMs(session);
+  const timeoutExpiryMs = startedAt + sessionTimeoutMs(session);
+  return Math.min(timeoutExpiryMs, sessionHardStopAtMs(session));
+}
+
+function collectSessionsForDevice(deviceToken, buildType = null) {
+  const now = Date.now();
+  const matches = [];
+  for (const [dockId, poller] of dockPollers) {
+    for (const [pushToken, session] of poller.tokens) {
+      if (session.deviceToken !== deviceToken) continue;
+      if (buildType && session.buildType !== buildType) continue;
+      const startedAt = sessionStartedAtMs(session);
+      const expiresAtMs = sessionExpiresAtMs(session);
+      if (expiresAtMs <= now) continue;
+      const dockName =
+        session.dockName ||
+        (typeof poller.lastData?.dockName === "string" &&
+        poller.lastData.dockName.trim()
+          ? poller.lastData.dockName.trim()
+          : dockId);
+
+      matches.push({
+        dockId,
+        dockName,
+        pushToken,
+        buildType: session.buildType,
+        startedAt,
+        expiresAtMs,
+      });
+    }
+  }
+
+  return matches.sort((a, b) => b.startedAt - a.startedAt);
 }
 
 function primaryValueForDisplay(data, primaryDisplay) {
@@ -667,10 +764,14 @@ function buildAvailabilityAlertMessage(
   const normalizedThreshold = sanitizeThresholdValue(minimumThreshold);
   if (normalizedThreshold > 0) {
     if (currentValue < normalizedThreshold) {
+      const prefix = currentValue === 0 ? "‼️" : "⚠️";
+      if (currentValue === 0) {
+        return `${prefix} ${safeDockName} now has no ${pluralMetricLabel(primaryDisplay)} available`;
+      }
+
       const metricLabel = metricLabelForValue(primaryDisplay, currentValue);
       const isIncreaseWhileBelowThreshold = currentValue > previousValue;
       const qualifier = isIncreaseWhileBelowThreshold ? "now has" : "only has";
-      const prefix = currentValue === 0 ? "‼️" : "⚠️";
       return `${prefix} ${safeDockName} ${qualifier} ${currentValue} ${metricLabel} available`;
     }
   }
@@ -994,11 +1095,13 @@ async function pollDock(dockId) {
 
   // Check for expired sessions
   const now = Date.now();
+  let expiredSessionRemoved = false;
   for (const [pushToken, session] of poller.tokens) {
-    const timeoutMs =
-      session.expiryMs || Math.min(SESSION_TIMEOUT_MS, EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS);
-    const elapsedMs = now - session.startedAt;
-    const remainingMs = timeoutMs - elapsedMs;
+    const startedAt = sessionStartedAtMs(session);
+    const timeoutMs = sessionTimeoutMs(session);
+    const expiresAtMs = sessionExpiresAtMs(session);
+    const elapsedMs = now - startedAt;
+    const remainingMs = expiresAtMs - now;
 
     // Debug log every poll to track time to expiry
     if (timeoutMs <= 120000) { // Only log for sessions with short expiry (<=2 minutes)
@@ -1007,9 +1110,9 @@ async function pollDock(dockId) {
       );
     }
 
-    if (elapsedMs >= timeoutMs) {
+    if (now >= expiresAtMs) {
       logger.info(
-        `Session expired for dock ${dockId}, token ${pushToken.substring(0, 8)}... (after ${timeoutMs / 1000}s)`
+        `Session expired for dock ${dockId}, token ${pushToken.substring(0, 8)}... (after ${Math.floor((expiresAtMs - startedAt) / 1000)}s)`
       );
       // Send end event before removing
       try {
@@ -1026,7 +1129,12 @@ async function pollDock(dockId) {
       }
       poller.tokens.delete(pushToken);
       liveActivitiesEnded.inc({ reason: "expired" });
+      expiredSessionRemoved = true;
     }
+  }
+
+  if (expiredSessionRemoved) {
+    updateLiveActivitiesActiveGauge();
   }
 
   // If no tokens left after expiry check, stop polling
@@ -1877,6 +1985,7 @@ app.delete(adminRoutePaths("/api/overrides/:dockId"), (req, res) => {
 app.post("/live-activity/start", (req, res) => {
   const {
     dockId,
+    dockName,
     pushToken,
     buildType,
     expirySeconds,
@@ -1902,11 +2011,14 @@ app.post("/live-activity/start", (req, res) => {
   const normalizedAlternatives = sanitizeAlternatives(alternatives);
   const normalizedPrimaryDisplay = sanitizePrimaryDisplay(primaryDisplay);
   const normalizedMinimumThresholds = sanitizeMinimumThresholds(minimumThresholds);
+  const normalizedDockName = sanitizeDockName(dockName);
   const activeMinimumThreshold = minimumThresholdForDisplay(
     normalizedMinimumThresholds,
     normalizedPrimaryDisplay
   );
   const deviceToken = normalizeApnsDeviceToken(req.headers["x-device-token"]);
+  const startedAt = Date.now();
+  const hardStopAt = startedAt + HARD_NOTIFICATION_CUTOFF_MS;
 
   if (!deviceToken && req.headers["x-device-token"]) {
     logger.warn(
@@ -1931,8 +2043,10 @@ app.post("/live-activity/start", (req, res) => {
   const poller = dockPollers.get(dockId);
   poller.tokens.set(pushToken, {
     buildType,
-    startedAt: Date.now(),
+    startedAt,
+    hardStopAt,
     expiryMs,
+    dockName: normalizedDockName,
     alternatives: normalizedAlternatives,
     primaryDisplay: normalizedPrimaryDisplay,
     minimumThresholds: normalizedMinimumThresholds,
@@ -1944,26 +2058,22 @@ app.post("/live-activity/start", (req, res) => {
 
   // Update metrics
   liveActivitiesTotal.inc({ build_type: buildType });
-  liveActivitiesActive.set(
-    Array.from(dockPollers.values()).reduce(
-      (sum, poller) => sum + poller.tokens.size,
-      0
-    )
-  );
+  updateLiveActivitiesActiveGauge();
 
   res.json({
     success: true,
     dockId,
+    dockName: normalizedDockName || dockId,
     primaryDisplay: normalizedPrimaryDisplay,
     minimumThreshold: activeMinimumThreshold,
     hasDeviceToken: !!deviceToken,
     message: "Live activity started",
-    expiresIn: `${expiryMs / 1000} seconds`,
+    expiresIn: `${Math.floor((sessionExpiresAtMs({ startedAt, hardStopAt, expiryMs }) - startedAt) / 1000)} seconds`,
   });
 });
 
 app.post("/live-activity/session/update", (req, res) => {
-  const { dockId, pushToken, primaryDisplay, minimumThresholds } = req.body;
+  const { dockId, pushToken, dockName, primaryDisplay, minimumThresholds } = req.body;
 
   if (!dockId || !pushToken) {
     return res
@@ -1989,6 +2099,19 @@ app.post("/live-activity/session/update", (req, res) => {
     session.minimumThresholds = sanitizeMinimumThresholds(minimumThresholds);
   }
 
+  if (dockName !== undefined) {
+    session.dockName = sanitizeDockName(dockName);
+  }
+
+  const deviceToken = normalizeApnsDeviceToken(req.headers["x-device-token"]);
+  if (deviceToken) {
+    session.deviceToken = deviceToken;
+  } else if (req.headers["x-device-token"]) {
+    logger.warn(
+      `Ignoring invalid APNs device token for live activity session update (dock=${dockId})`
+    );
+  }
+
   const resolvedPrimaryDisplay = sanitizePrimaryDisplay(session.primaryDisplay);
   const resolvedMinimumThreshold = minimumThresholdForDisplay(
     session.minimumThresholds,
@@ -2002,6 +2125,12 @@ app.post("/live-activity/session/update", (req, res) => {
   res.json({
     success: true,
     dockId,
+    dockName:
+      session.dockName ||
+      (typeof poller.lastData?.dockName === "string" &&
+      poller.lastData.dockName.trim()
+        ? poller.lastData.dockName.trim()
+        : dockId),
     primaryDisplay: resolvedPrimaryDisplay,
     minimumThreshold: resolvedMinimumThreshold,
   });
@@ -2049,12 +2178,7 @@ app.post("/live-activity/end", async (req, res) => {
   }
 
   // Update active count
-  liveActivitiesActive.set(
-    Array.from(dockPollers.values()).reduce(
-      (sum, poller) => sum + poller.tokens.size,
-      0
-    )
-  );
+  updateLiveActivitiesActiveGauge();
 
   res.json({ success: true, dockId, message: "Live activity ended" });
 });
@@ -2264,10 +2388,7 @@ app.get("/status", (_req, res) => {
     },
     activity: {
       activeDockPollers: dockPollers.size,
-      totalTrackedTokens: Array.from(dockPollers.values()).reduce(
-        (sum, poller) => sum + poller.tokens.size,
-        0
-      ),
+      totalTrackedTokens: activeLiveActivityTokenCount(),
       activeTestSessions: testSessions.size,
       activeDockOverrides: dockOverrides.size,
       complicationTokens: complicationTokens.size,
@@ -2297,12 +2418,14 @@ app.get("/live-activity/status", (req, res) => {
         alternativesCount: Array.isArray(session.alternatives)
           ? session.alternatives.length
           : 0,
-        startedAt: new Date(session.startedAt).toISOString(),
-        expiresAt: new Date(
-          session.startedAt +
-            (session.expiryMs ||
-              Math.min(SESSION_TIMEOUT_MS, EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS))
-        ).toISOString(),
+        dockName:
+          session.dockName ||
+          (typeof poller.lastData?.dockName === "string" &&
+          poller.lastData.dockName.trim()
+            ? poller.lastData.dockName.trim()
+            : dockId),
+        startedAt: new Date(sessionStartedAtMs(session)).toISOString(),
+        expiresAt: new Date(sessionExpiresAtMs(session)).toISOString(),
       })),
     };
   }
@@ -2314,6 +2437,40 @@ app.get("/live-activity/status", (req, res) => {
   );
 
   res.json({ activeSessions: status, testSessions: testStatus });
+});
+
+app.post("/live-activity/device/status", (req, res) => {
+  const bodyDeviceToken = normalizeApnsDeviceToken(req.body?.deviceToken);
+  const headerDeviceToken = normalizeApnsDeviceToken(req.headers["x-device-token"]);
+  const deviceToken = bodyDeviceToken || headerDeviceToken;
+  const requestedBuildType =
+    req.body?.buildType === "development" || req.body?.buildType === "production"
+      ? req.body.buildType
+      : null;
+
+  if (!deviceToken) {
+    return res
+      .status(400)
+      .json({ error: "Missing or invalid deviceToken (body.deviceToken or X-Device-Token)" });
+  }
+
+  const matchingSessions = collectSessionsForDevice(deviceToken, requestedBuildType);
+  const latestSession = matchingSessions[0] || null;
+
+  res.json({
+    success: true,
+    active: matchingSessions.length > 0,
+    activeCount: matchingSessions.length,
+    session: latestSession
+      ? {
+          dockId: latestSession.dockId,
+          dockName: latestSession.dockName,
+          startedAt: new Date(latestSession.startedAt).toISOString(),
+          expiresAt: new Date(latestSession.expiresAtMs).toISOString(),
+          buildType: latestSession.buildType,
+        }
+      : null,
+  });
 });
 
 // ── Complication Refresh Endpoints ────────────────────────────────────

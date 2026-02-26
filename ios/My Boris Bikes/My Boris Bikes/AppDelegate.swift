@@ -47,7 +47,10 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
         // Register the token with our server so it can send periodic silent background
         // pushes that wake this app to refresh complication data for the watch face.
-        Task { await registerComplicationToken(tokenString) }
+        Task {
+            await registerComplicationToken(tokenString)
+            await LiveActivityService.shared.refreshNotificationStatusFromServer()
+        }
     }
 
     func application(

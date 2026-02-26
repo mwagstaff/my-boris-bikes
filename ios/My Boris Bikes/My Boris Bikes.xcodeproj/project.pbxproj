@@ -1057,6 +1057,13 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "My Boris Bikes Watch";
+				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLName = myborisbikes;
+				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLSchemes_0 = myborisbikes;
+				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLName = myborisbikeswatch;
+				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLSchemes_0 = myborisbikeswatch;
+				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = (
+					DockActivityAttributes,
+				);
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "dev.skynolimit.myborisbikes.My-Boris-Bikes";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1087,6 +1094,13 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "My Boris Bikes Watch";
+				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLName = myborisbikes;
+				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLSchemes_0 = myborisbikes;
+				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLName = myborisbikeswatch;
+				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLSchemes_0 = myborisbikeswatch;
+				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = (
+					DockActivityAttributes,
+				);
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "dev.skynolimit.myborisbikes.My-Boris-Bikes";
 				LD_RUNPATH_SEARCH_PATHS = (

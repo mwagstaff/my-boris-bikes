@@ -13,7 +13,9 @@ class WatchTfLAPIService: ObservableObject {
     private var lastRequestTime: Date = Date.distantPast
     private var requestQueue = DispatchQueue(label: "watchapi.queue", qos: .utility)
     private var cache: [String: (data: WatchBikePoint, timestamp: Date)] = [:]
+    private var nearbyCache: [String: (data: [WatchBikePoint], timestamp: Date)] = [:]
     private let cacheExpirationInterval: TimeInterval = 60.0 // 60 seconds - longer cache to reduce API calls
+    private let nearbyCacheExpirationInterval: TimeInterval = 45.0
     private var pendingRequests: [String: AnyPublisher<WatchBikePoint, WatchNetworkError>] = [:]
     
     private init() {}
@@ -175,6 +177,7 @@ class WatchTfLAPIService: ObservableObject {
     
     func clearCache() {
         cache.removeAll()
+        nearbyCache.removeAll()
     }
     
     func getCacheStatus() -> (count: Int, oldestAge: TimeInterval?) {
@@ -186,13 +189,50 @@ class WatchTfLAPIService: ObservableObject {
     /// Fetches all bike points within `radiusMeters` of a coordinate using TfL's Place API.
     /// Far more efficient than loading all ~800 London docks and filtering locally.
     func fetchNearbyBikePoints(lat: Double, lon: Double, radiusMeters: Int = 500) async throws -> [WatchBikePoint] {
+        let cacheKey = nearbyCacheKey(lat: lat, lon: lon, radiusMeters: radiusMeters)
+        if let cached = nearbyCache[cacheKey],
+           Date().timeIntervalSince(cached.timestamp) < nearbyCacheExpirationInterval {
+            return cached.data
+        }
+
         let urlString = "\(baseURL)/Place?lat=\(lat)&lon=\(lon)&radius=\(radiusMeters)&type=BikePoint"
         guard let url = URL(string: urlString) else { throw WatchNetworkError.invalidURL }
         let (data, response) = try await URLSession.shared.data(from: url)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw WatchNetworkError.httpError((response as? HTTPURLResponse)?.statusCode ?? 0)
         }
-        return (try? JSONDecoder().decode([WatchBikePoint].self, from: data)) ?? []
+
+        let decoder = JSONDecoder()
+        let bikePoints: [WatchBikePoint]
+        if let wrapped = try? decoder.decode(WatchNearbyBikePointResponse.self, from: data) {
+            bikePoints = wrapped.places
+        } else if let array = try? decoder.decode([WatchBikePoint].self, from: data) {
+            bikePoints = array
+        } else {
+            throw WatchNetworkError.decodingError(
+                NSError(
+                    domain: "WatchTfLAPIService",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Unable to decode nearby bike points response"]
+                )
+            )
+        }
+
+        nearbyCache[cacheKey] = (data: bikePoints, timestamp: Date())
+
+        // Warm the single-dock cache with nearby results so follow-up detail loads are faster.
+        let timestamp = Date()
+        for point in bikePoints {
+            cache[point.id] = (data: point, timestamp: timestamp)
+        }
+
+        return bikePoints
+    }
+
+    private func nearbyCacheKey(lat: Double, lon: Double, radiusMeters: Int) -> String {
+        let roundedLat = (lat * 10_000).rounded() / 10_000
+        let roundedLon = (lon * 10_000).rounded() / 10_000
+        return "\(roundedLat)_\(roundedLon)_\(radiusMeters)"
     }
     
     private func fetchBikePointsInParallel(ids: [String], cacheBusting: Bool = false) -> AnyPublisher<[WatchBikePoint], WatchNetworkError> {
@@ -334,6 +374,10 @@ struct WatchBikePoint: Codable, Identifiable, Hashable {
 struct WatchAdditionalProperty: Codable, Hashable {
     let key: String
     let value: String
+}
+
+private struct WatchNearbyBikePointResponse: Codable {
+    let places: [WatchBikePoint]
 }
 
 enum WatchNetworkError: LocalizedError {
