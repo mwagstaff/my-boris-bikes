@@ -243,6 +243,23 @@ class LiveActivityService: ObservableObject {
             staleDates[dockId] = staleDate
             logger.info("Started live activity for dock \(dockId) with stale date: \(staleDate)")
 
+            // Register immediately if the token is already available.
+            // In some launches the first push token can be present synchronously and
+            // we should not rely solely on the async updates sequence.
+            if let pushToken = activity.pushToken {
+                let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
+                logger.info("Initial push token for dock \(dockId): \(tokenString)")
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.registerWithServer(
+                        dockId: dockId,
+                        pushToken: tokenString,
+                        dockName: bikePoint.commonName,
+                        alternatives: activity.content.state.alternatives
+                    )
+                }
+            }
+
             // Cancel any existing observation tasks for this dock
             cancelObservationTasks(for: dockId)
 
@@ -486,6 +503,35 @@ class LiveActivityService: ObservableObject {
                 // Cancel any existing observation tasks
                 cancelObservationTasks(for: dockId)
 
+                // Re-register restored activities with the server so push updates
+                // resume even after process/server restarts.
+                if let pushToken = activity.pushToken {
+                    let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
+                    Task { [weak self] in
+                        guard let self else { return }
+                        await self.registerWithServer(
+                            dockId: dockId,
+                            pushToken: tokenString,
+                            dockName: activity.attributes.dockName,
+                            alternatives: activity.content.state.alternatives
+                        )
+                    }
+                }
+
+                let pushTokenTask = Task { [weak self] in
+                    for await pushToken in activity.pushTokenUpdates {
+                        guard let self = self else { break }
+                        let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
+                        self.logger.info("Restored push token for dock \(dockId): \(tokenString)")
+                        await self.registerWithServer(
+                            dockId: dockId,
+                            pushToken: tokenString,
+                            dockName: activity.attributes.dockName,
+                            alternatives: activity.content.state.alternatives
+                        )
+                    }
+                }
+
                 // Re-observe state changes
                 let stateTask = Task { [weak self] in
                     for await state in activity.activityStateUpdates {
@@ -510,7 +556,7 @@ class LiveActivityService: ObservableObject {
                 }
 
                 // Store task so it can be cancelled later
-                observationTasks[dockId] = [stateTask]
+                observationTasks[dockId] = [pushTokenTask, stateTask]
             }
         }
 
