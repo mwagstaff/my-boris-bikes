@@ -81,7 +81,7 @@ struct MapView: View {
                     // User location indicator
                     if let userLocation = locationService.location {
                         Annotation("", coordinate: userLocation.coordinate) {
-                            UserLocationIndicator()
+                            UserLocationIndicator(heading: locationService.heading)
                         }
                     }
                 }
@@ -102,6 +102,10 @@ struct MapView: View {
                         selectedDockId = nil
                     }
                     viewModel.setup(locationService: locationService)
+                    locationService.startHeadingUpdates()
+                }
+                .onDisappear {
+                    locationService.stopHeadingUpdates()
                 }
                 .onChange(of: selectedBikePointForMap) { _, newBikePoint in
                     if let bikePoint = newBikePoint {

@@ -7,6 +7,7 @@ class LocationService: NSObject, ObservableObject {
     static let shared = LocationService()
     
     @Published var location: CLLocation?
+    @Published var heading: CLLocationDirection?
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
     @Published var error: String?
     
@@ -18,6 +19,7 @@ class LocationService: NSObject, ObservableObject {
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
         locationManager.distanceFilter = 10
+        locationManager.headingFilter = 5
         
         // Initialize with current authorization status
         authorizationStatus = locationManager.authorizationStatus
@@ -50,10 +52,31 @@ class LocationService: NSObject, ObservableObject {
         logger.info("Starting CLLocationManager location updates")
         locationManager.startUpdatingLocation()
     }
+
+    func startHeadingUpdates() {
+        guard CLLocationManager.headingAvailable() else {
+            logger.info("Heading updates unavailable on this device")
+            return
+        }
+
+        guard authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways else {
+            logger.warning("Cannot start heading updates - insufficient authorization")
+            return
+        }
+
+        logger.info("Starting CLLocationManager heading updates")
+        locationManager.startUpdatingHeading()
+    }
     
     func stopLocationUpdates() {
         logger.info("Stopping location updates")
         locationManager.stopUpdatingLocation()
+    }
+
+    func stopHeadingUpdates() {
+        logger.info("Stopping heading updates")
+        locationManager.stopUpdatingHeading()
+        heading = nil
     }
     
     func distance(to coordinate: CLLocationCoordinate2D) -> CLLocationDistance? {
@@ -90,6 +113,25 @@ extension LocationService: CLLocationManagerDelegate {
         logger.info("Received location update: lat=\(newLocation.coordinate.latitude), lon=\(newLocation.coordinate.longitude), accuracy=\(newLocation.horizontalAccuracy)m")
         location = newLocation
         error = nil
+
+        // Fallback for devices where compass heading is unavailable.
+        if !CLLocationManager.headingAvailable(), newLocation.course >= 0 {
+            heading = newLocation.course
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        let resolvedHeading: CLLocationDirection?
+
+        if newHeading.trueHeading >= 0 {
+            resolvedHeading = newHeading.trueHeading
+        } else if newHeading.magneticHeading >= 0 {
+            resolvedHeading = newHeading.magneticHeading
+        } else {
+            resolvedHeading = nil
+        }
+
+        heading = resolvedHeading
     }
     
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
@@ -107,10 +149,12 @@ extension LocationService: CLLocationManagerDelegate {
             logger.info("Location authorized, clearing error and starting updates")
             error = nil
             startLocationUpdates()
+            startHeadingUpdates()
         case .denied, .restricted:
             logger.warning("Location access denied or restricted, stopping updates")
             error = "Location access denied. Distance sorting will not be available."
             stopLocationUpdates()
+            stopHeadingUpdates()
         case .notDetermined:
             logger.info("Location authorization not determined")
         @unknown default:
