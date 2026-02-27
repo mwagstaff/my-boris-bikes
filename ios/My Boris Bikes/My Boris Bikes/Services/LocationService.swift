@@ -19,7 +19,8 @@ class LocationService: NSObject, ObservableObject {
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
         locationManager.distanceFilter = 10
-        locationManager.headingFilter = 5
+        locationManager.headingFilter = 1
+        locationManager.headingOrientation = .portrait
         
         // Initialize with current authorization status
         authorizationStatus = locationManager.authorizationStatus
@@ -121,6 +122,8 @@ extension LocationService: CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        guard newHeading.headingAccuracy >= 0 else { return }
+
         let resolvedHeading: CLLocationDirection?
 
         if newHeading.trueHeading >= 0 {

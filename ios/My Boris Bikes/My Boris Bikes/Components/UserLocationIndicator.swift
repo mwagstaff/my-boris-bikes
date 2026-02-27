@@ -83,10 +83,16 @@ struct UserLocationIndicator: View {
             from: normalize(currentHeading),
             to: normalizedNewHeading
         )
+
+        // Ignore tiny jitter from the compass sensor.
+        if abs(delta) < 0.8 { return }
+
         let targetHeading = currentHeading + delta
 
         if animated {
-            withAnimation(.easeOut(duration: 0.35)) {
+            // Short, adaptive duration keeps the cone responsive while still smoothing jumps.
+            let duration = animationDuration(for: delta)
+            withAnimation(.easeInOut(duration: duration)) {
                 displayedHeading = targetHeading
             }
         } else {
@@ -104,6 +110,11 @@ struct UserLocationIndicator: View {
     private func normalize(_ angle: Double) -> Double {
         let normalized = angle.truncatingRemainder(dividingBy: 360)
         return normalized >= 0 ? normalized : normalized + 360
+    }
+
+    private func animationDuration(for delta: Double) -> Double {
+        let magnitude = abs(delta)
+        return min(0.30, max(0.14, magnitude / 360))
     }
 }
 
