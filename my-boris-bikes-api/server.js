@@ -837,198 +837,287 @@ function getApnsHost(buildType) {
     : "api.sandbox.push.apple.com";
 }
 
-function sendApnsPush(pushToken, contentState, event, buildType) {
+function oppositeBuildType(buildType) {
+  return buildType === "production" ? "development" : "production";
+}
+
+function parseApnsReason(responseData) {
+  if (!responseData) return null;
+  try {
+    const parsed = JSON.parse(responseData);
+    return typeof parsed?.reason === "string" ? parsed.reason : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildApnsError(statusCode, responseData, buildType, deviceToken, logLabel) {
+  const reason = parseApnsReason(responseData);
+  const error = new Error(`APNS returned ${statusCode}: ${responseData}`);
+  error.apns = {
+    statusCode,
+    responseData,
+    reason,
+    buildType,
+    deviceToken,
+    logLabel,
+  };
+  return error;
+}
+
+function isApnsTokenInvalidError(err) {
+  const reason = err?.apns?.reason;
+  if (reason === "BadDeviceToken" || reason === "Unregistered") {
+    return true;
+  }
+  const body = `${err?.apns?.responseData || ""} ${err?.message || ""}`;
+  return body.includes("BadDeviceToken") || body.includes("Unregistered");
+}
+
+function shouldRetryOnAlternateApnsHost(err) {
+  return err?.apns?.statusCode === 400 && err?.apns?.reason === "BadDeviceToken";
+}
+
+function sendApnsRequestOnce(deviceToken, buildType, payload, buildHeaders, logLabel) {
   return new Promise((resolve, reject) => {
     const host = getApnsHost(buildType);
-    const token = getApnsJwt();
-
+    const authToken = getApnsJwt();
     const client = http2.connect(`https://${host}`);
-
-    client.on("error", (err) => {
-      logger.error(`APNS connection error (${host}):`, err.message);
-      reject(err);
-    });
-
-    const aps = {
-      timestamp: Math.floor(Date.now() / 1000),
-      event: event,
-      "content-state": contentState,
-    };
-
-    // For "end" events, add dismissal-date to immediately dismiss the activity
-    if (event === "end") {
-      aps["dismissal-date"] = Math.floor(Date.now() / 1000);
-      logger.info(`Sending "end" push with dismissal-date to ${pushToken.substring(0, 8)}...`);
-    }
-
-    const payload = JSON.stringify({ aps });
-
-    const headers = {
-      ":method": "POST",
-      ":path": `/3/device/${pushToken}`,
-      authorization: `bearer ${token}`,
-      "apns-topic": APNS_TOPIC,
-      "apns-push-type": "liveactivity",
-      "apns-priority": "10",
-      "content-type": "application/json",
-    };
-
-    const req = client.request(headers);
-
+    let settled = false;
     let responseData = "";
     let statusCode;
 
+    const settleReject = (error) => {
+      if (settled) return;
+      settled = true;
+      try {
+        client.close();
+      } catch {
+        // noop
+      }
+      reject(error);
+    };
+
+    const settleResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      try {
+        client.close();
+      } catch {
+        // noop
+      }
+      resolve(value);
+    };
+
+    client.on("error", (err) => {
+      const wrapped = new Error(`APNS connection error (${host}): ${err.message}`);
+      wrapped.apns = {
+        statusCode: null,
+        responseData: err.message,
+        reason: null,
+        buildType,
+        deviceToken,
+        logLabel,
+      };
+      settleReject(wrapped);
+    });
+
+    const req = client.request(buildHeaders(deviceToken, authToken));
     req.on("response", (headers) => {
       statusCode = headers[":status"];
     });
-
     req.on("data", (chunk) => {
       responseData += chunk;
     });
-
     req.on("end", () => {
-      client.close();
       if (statusCode === 200) {
-        apnsPushesTotal.inc({ event, build_type: buildType, status: "success" });
-        resolve({ status: statusCode });
-      } else {
-        apnsPushesTotal.inc({ event, build_type: buildType, status: "failure" });
-        logger.error(
-          `APNS push failed (${statusCode}): ${responseData} [token: ${pushToken.substring(0, 8)}...]`
-        );
-        reject(
-          new Error(`APNS returned ${statusCode}: ${responseData}`)
-        );
+        settleResolve({ statusCode, buildType, host });
+        return;
       }
+      settleReject(
+        buildApnsError(statusCode, responseData, buildType, deviceToken, logLabel)
+      );
     });
-
     req.on("error", (err) => {
-      client.close();
-      reject(err);
+      const wrapped = new Error(`APNS request error (${host}): ${err.message}`);
+      wrapped.apns = {
+        statusCode,
+        responseData: err.message,
+        reason: null,
+        buildType,
+        deviceToken,
+        logLabel,
+      };
+      settleReject(wrapped);
     });
 
     req.end(payload);
   });
 }
 
-function sendAvailabilityAlertPush(deviceToken, buildType, alertBody) {
-  return new Promise((resolve, reject) => {
-    const host = getApnsHost(buildType);
-    const token = getApnsJwt();
+async function sendApnsRequestWithFallback(
+  deviceToken,
+  buildType,
+  payload,
+  buildHeaders,
+  logLabel
+) {
+  try {
+    return await sendApnsRequestOnce(
+      deviceToken,
+      buildType,
+      payload,
+      buildHeaders,
+      logLabel
+    );
+  } catch (primaryError) {
+    if (!shouldRetryOnAlternateApnsHost(primaryError)) {
+      throw primaryError;
+    }
 
-    const client = http2.connect(`https://${host}`);
+    const fallbackBuildType = oppositeBuildType(buildType);
+    logger.warn(
+      `APNS ${logLabel} returned BadDeviceToken on ${buildType}; retrying ${fallbackBuildType} for ${deviceToken.substring(0, 8)}...`
+    );
 
-    client.on("error", (err) => {
-      logger.error(`APNS alert push connection error (${host}):`, err.message);
-      reject(err);
-    });
+    const fallbackResult = await sendApnsRequestOnce(
+      deviceToken,
+      fallbackBuildType,
+      payload,
+      buildHeaders,
+      logLabel
+    );
 
-    const payload = JSON.stringify({
-      aps: {
-        alert: {
-          title: "Dock availability update",
-          body: alertBody,
-        },
-        sound: "default",
+    logger.info(
+      `APNS ${logLabel} succeeded on fallback host (${fallbackBuildType}) for ${deviceToken.substring(0, 8)}...`
+    );
+    return fallbackResult;
+  }
+}
+
+async function sendApnsPush(pushToken, contentState, event, buildType) {
+  const aps = {
+    timestamp: Math.floor(Date.now() / 1000),
+    event: event,
+    "content-state": contentState,
+  };
+
+  // For "end" events, add dismissal-date to immediately dismiss the activity
+  if (event === "end") {
+    aps["dismissal-date"] = Math.floor(Date.now() / 1000);
+    logger.info(`Sending "end" push with dismissal-date to ${pushToken.substring(0, 8)}...`);
+  }
+
+  const payload = JSON.stringify({ aps });
+
+  try {
+    const result = await sendApnsRequestWithFallback(
+      pushToken,
+      buildType,
+      payload,
+      (token, authToken) => ({
+        ":method": "POST",
+        ":path": `/3/device/${token}`,
+        authorization: `bearer ${authToken}`,
+        "apns-topic": APNS_TOPIC,
+        "apns-push-type": "liveactivity",
+        "apns-priority": "10",
+        "content-type": "application/json",
+      }),
+      `liveactivity ${event}`
+    );
+    apnsPushesTotal.inc({ event, build_type: result.buildType, status: "success" });
+    return { status: result.statusCode, buildType: result.buildType };
+  } catch (err) {
+    const metricBuildType = err?.apns?.buildType || buildType;
+    const statusCode = err?.apns?.statusCode ?? "unknown";
+    const responseData = err?.apns?.responseData || err.message;
+    apnsPushesTotal.inc({ event, build_type: metricBuildType, status: "failure" });
+    logger.error(
+      `APNS push failed (${statusCode}): ${responseData} [token: ${pushToken.substring(0, 8)}...]`
+    );
+    throw err;
+  }
+}
+
+async function sendAvailabilityAlertPush(deviceToken, buildType, alertBody) {
+  const payload = JSON.stringify({
+    aps: {
+      alert: {
+        title: "Dock availability update",
+        body: alertBody,
       },
-    });
-
-    const headers = {
-      ":method": "POST",
-      ":path": `/3/device/${deviceToken}`,
-      authorization: `bearer ${token}`,
-      "apns-topic": APNS_BACKGROUND_TOPIC,
-      "apns-push-type": "alert",
-      "apns-priority": "10",
-      "content-type": "application/json",
-    };
-
-    const req = client.request(headers);
-    let responseData = "";
-    let statusCode;
-
-    req.on("response", (hdrs) => {
-      statusCode = hdrs[":status"];
-    });
-
-    req.on("data", (chunk) => {
-      responseData += chunk;
-    });
-
-    req.on("end", () => {
-      client.close();
-      const event = "availability_alert";
-      if (statusCode === 200) {
-        apnsPushesTotal.inc({ event, build_type: buildType, status: "success" });
-        resolve({ status: statusCode });
-      } else {
-        apnsPushesTotal.inc({ event, build_type: buildType, status: "failure" });
-        logger.error(
-          `Availability alert push failed (${statusCode}): ${responseData} [token: ${deviceToken.substring(0, 8)}...]`
-        );
-        reject(new Error(`APNS returned ${statusCode}: ${responseData}`));
-      }
-    });
-
-    req.on("error", (err) => {
-      client.close();
-      reject(err);
-    });
-
-    req.end(payload);
+      sound: "default",
+    },
   });
+
+  const event = "availability_alert";
+  try {
+    const result = await sendApnsRequestWithFallback(
+      deviceToken,
+      buildType,
+      payload,
+      (token, authToken) => ({
+        ":method": "POST",
+        ":path": `/3/device/${token}`,
+        authorization: `bearer ${authToken}`,
+        "apns-topic": APNS_BACKGROUND_TOPIC,
+        "apns-push-type": "alert",
+        "apns-priority": "10",
+        "content-type": "application/json",
+      }),
+      "availability alert"
+    );
+    apnsPushesTotal.inc({ event, build_type: result.buildType, status: "success" });
+    return { status: result.statusCode, buildType: result.buildType };
+  } catch (err) {
+    const metricBuildType = err?.apns?.buildType || buildType;
+    const statusCode = err?.apns?.statusCode ?? "unknown";
+    const responseData = err?.apns?.responseData || err.message;
+    apnsPushesTotal.inc({ event, build_type: metricBuildType, status: "failure" });
+    logger.error(
+      `Availability alert push failed (${statusCode}): ${responseData} [token: ${deviceToken.substring(0, 8)}...]`
+    );
+    throw err;
+  }
 }
 
 // ── Silent Background Push (complication refresh) ─────────────────────
 // Sends a content-available:1 push to wake the iOS app so it can fetch
 // fresh dock data and relay it to the watch via transferCurrentComplicationUserInfo.
 // Background pushes MUST use apns-priority: 5 (not 10).
-function sendBackgroundPush(deviceToken, buildType) {
-  return new Promise((resolve, reject) => {
-    const host = getApnsHost(buildType);
-    const token = getApnsJwt();
+async function sendBackgroundPush(deviceToken, buildType) {
+  const payload = JSON.stringify({ aps: { "content-available": 1 } });
 
-    const client = http2.connect(`https://${host}`);
-    client.on("error", (err) => {
-      logger.error(`APNS background push connection error: ${err.message}`);
-      reject(err);
-    });
-
-    const payload = JSON.stringify({ aps: { "content-available": 1 } });
-
-    const headers = {
-      ":method": "POST",
-      ":path": `/3/device/${deviceToken}`,
-      authorization: `bearer ${token}`,
-      "apns-topic": APNS_BACKGROUND_TOPIC,
-      "apns-push-type": "background",
-      "apns-priority": "5",          // MUST be 5 for background pushes
-      "apns-expiration": "0",        // Don't deliver stale wake-ups
-      "content-type": "application/json",
-    };
-
-    const req = client.request(headers);
-    let responseData = "";
-    let statusCode;
-
-    req.on("response", (hdrs) => { statusCode = hdrs[":status"]; });
-    req.on("data", (chunk) => { responseData += chunk; });
-    req.on("end", () => {
-      client.close();
-      if (statusCode === 200) {
-        complicationPushesTotal.inc({ build_type: buildType, status: "success" });
-        resolve({ status: statusCode });
-      } else {
-        complicationPushesTotal.inc({ build_type: buildType, status: "failure" });
-        logger.error(
-          `Background push failed (${statusCode}): ${responseData} [token: ${deviceToken.substring(0, 8)}...]`
-        );
-        reject(new Error(`APNS returned ${statusCode}: ${responseData}`));
-      }
-    });
-    req.on("error", (err) => { client.close(); reject(err); });
-    req.end(payload);
-  });
+  try {
+    const result = await sendApnsRequestWithFallback(
+      deviceToken,
+      buildType,
+      payload,
+      (token, authToken) => ({
+        ":method": "POST",
+        ":path": `/3/device/${token}`,
+        authorization: `bearer ${authToken}`,
+        "apns-topic": APNS_BACKGROUND_TOPIC,
+        "apns-push-type": "background",
+        "apns-priority": "5", // MUST be 5 for background pushes
+        "apns-expiration": "0", // Don't deliver stale wake-ups
+        "content-type": "application/json",
+      }),
+      "background"
+    );
+    complicationPushesTotal.inc({ build_type: result.buildType, status: "success" });
+    return { status: result.statusCode, buildType: result.buildType };
+  } catch (err) {
+    const metricBuildType = err?.apns?.buildType || buildType;
+    const statusCode = err?.apns?.statusCode ?? "unknown";
+    const responseData = err?.apns?.responseData || err.message;
+    complicationPushesTotal.inc({ build_type: metricBuildType, status: "failure" });
+    logger.error(
+      `Background push failed (${statusCode}): ${responseData} [token: ${deviceToken.substring(0, 8)}...]`
+    );
+    throw err;
+  }
 }
 
 // ── Complication Refresh Scheduler ────────────────────────────────────
@@ -1045,15 +1134,23 @@ setInterval(async () => {
   );
 
   const staleTokens = [];
+  let didUpdateBuildTypes = false;
 
   await Promise.all(
-    Array.from(complicationTokens.entries()).map(async ([deviceToken, { buildType }]) => {
+    Array.from(complicationTokens.entries()).map(async ([deviceToken, metadata]) => {
+      const currentBuildType = metadata.buildType;
       try {
-        await sendBackgroundPush(deviceToken, buildType);
+        const result = await sendBackgroundPush(deviceToken, currentBuildType);
+        if (result.buildType !== currentBuildType) {
+          metadata.buildType = result.buildType;
+          didUpdateBuildTypes = true;
+          logger.info(
+            `Updated complication token environment to ${result.buildType}: ${deviceToken.substring(0, 8)}...`
+          );
+        }
       } catch (err) {
         // Remove tokens that APNs has flagged as bad
-        const body = err.message || "";
-        if (body.includes("BadDeviceToken") || body.includes("Unregistered")) {
+        if (isApnsTokenInvalidError(err)) {
           staleTokens.push(deviceToken);
           logger.info(`Removing stale complication token: ${deviceToken.substring(0, 8)}...`);
         }
@@ -1062,7 +1159,7 @@ setInterval(async () => {
   );
 
   for (const token of staleTokens) complicationTokens.delete(token);
-  if (staleTokens.length > 0) saveComplicationTokens();
+  if (staleTokens.length > 0 || didUpdateBuildTypes) saveComplicationTokens();
 }, COMPLICATION_REFRESH_INTERVAL_MS);
 
 // ── Polling Logic ────────────────────────────────────────────────────
@@ -1157,6 +1254,7 @@ async function pollDock(dockId) {
         `Dock ${dockId} changed: bikes=${data.standardBikes}, eBikes=${data.eBikes}, spaces=${data.emptySpaces}`
       );
       const availabilityAlertPromises = [];
+      const staleLiveActivityTokens = new Set();
       if (previousData) {
         const sentAlerts = new Set();
         for (const [pushToken, session] of poller.tokens) {
@@ -1182,22 +1280,34 @@ async function pollDock(dockId) {
             );
             continue;
           }
+          const sessionDeviceToken = session.deviceToken;
 
-          const dedupeKey = `${session.deviceToken}:${primaryDisplay}:${alertMessage}`;
+          const dedupeKey = `${sessionDeviceToken}:${primaryDisplay}:${alertMessage}`;
           if (sentAlerts.has(dedupeKey)) continue;
           sentAlerts.add(dedupeKey);
 
           availabilityAlertPromises.push(
-            sendAvailabilityAlertPush(
-              session.deviceToken,
-              session.buildType,
-              alertMessage
-            ).catch((err) => {
-              logger.error(
-                `Failed to send availability alert to ${session.deviceToken.substring(0, 8)}...:`,
-                err.message
-              );
-            })
+            sendAvailabilityAlertPush(sessionDeviceToken, session.buildType, alertMessage)
+              .then((result) => {
+                if (result.buildType !== session.buildType) {
+                  session.buildType = result.buildType;
+                  logger.info(
+                    `Updated live activity session environment to ${result.buildType} for alert token ${sessionDeviceToken.substring(0, 8)}...`
+                  );
+                }
+              })
+              .catch((err) => {
+                if (isApnsTokenInvalidError(err)) {
+                  session.deviceToken = null;
+                  logger.info(
+                    `Cleared stale availability alert token: ${sessionDeviceToken.substring(0, 8)}...`
+                  );
+                }
+                logger.error(
+                  `Failed to send availability alert to ${sessionDeviceToken.substring(0, 8)}...:`,
+                  err.message
+                );
+              })
           );
         }
       }
@@ -1207,8 +1317,19 @@ async function pollDock(dockId) {
       for (const [pushToken, session] of poller.tokens) {
         const contentState = contentStateWithAlternatives(data, session);
         pushPromises.push(
-          sendApnsPush(pushToken, contentState, "update", session.buildType).catch(
-            (err) => {
+          sendApnsPush(pushToken, contentState, "update", session.buildType)
+            .then((result) => {
+              if (result.buildType !== session.buildType) {
+                session.buildType = result.buildType;
+                logger.info(
+                  `Updated live activity session environment to ${result.buildType} for ${pushToken.substring(0, 8)}...`
+                );
+              }
+            })
+            .catch((err) => {
+              if (isApnsTokenInvalidError(err)) {
+                staleLiveActivityTokens.add(pushToken);
+              }
               logger.error(
                 `Failed to push to ${pushToken.substring(0, 8)}...:`,
                 err.message
@@ -1220,6 +1341,29 @@ async function pollDock(dockId) {
 
       poller.lastData = data;
       await Promise.all([...pushPromises, ...availabilityAlertPromises]);
+
+      if (staleLiveActivityTokens.size > 0) {
+        let removedCount = 0;
+        for (const staleToken of staleLiveActivityTokens) {
+          if (poller.tokens.delete(staleToken)) {
+            removedCount++;
+            logger.info(
+              `Removing stale live activity token after APNS rejection: ${staleToken.substring(0, 8)}...`
+            );
+          }
+        }
+        if (removedCount > 0) {
+          for (let i = 0; i < removedCount; i++) {
+            liveActivitiesEnded.inc({ reason: "error" });
+          }
+          updateLiveActivitiesActiveGauge();
+        }
+      }
+
+      if (poller.tokens.size === 0) {
+        stopPollingForDock(dockId);
+        return;
+      }
     }
   } catch (err) {
     logger.error(`Failed to poll dock ${dockId}:`, err.message);
@@ -1238,6 +1382,66 @@ function stopPollingForDock(dockId) {
       logger.info(`Stopped polling for dock ${dockId} (no active tokens)`);
     }
   }
+}
+
+async function sendEndPushForSession(pushToken, session, lastData) {
+  const contentState = contentStateWithAlternatives(lastData, session);
+  const result = await sendApnsPush(pushToken, contentState, "end", session.buildType);
+  if (result.buildType !== session.buildType) {
+    session.buildType = result.buildType;
+    logger.info(
+      `Updated live activity session environment to ${result.buildType} for ${pushToken.substring(0, 8)}...`
+    );
+  }
+}
+
+async function endTrackedSessionsForDock(dockId, matcher, reason) {
+  const poller = dockPollers.get(dockId);
+  if (!poller) {
+    return { endedCount: 0, remainingCount: 0 };
+  }
+
+  const matchingSessions = [];
+  for (const [pushToken, session] of poller.tokens) {
+    if (!matcher(pushToken, session)) continue;
+    matchingSessions.push([pushToken, session]);
+  }
+
+  if (matchingSessions.length === 0) {
+    return { endedCount: 0, remainingCount: poller.tokens.size };
+  }
+
+  const lastData = poller.lastData || {
+    standardBikes: 0,
+    eBikes: 0,
+    emptySpaces: 0,
+  };
+
+  let endedCount = 0;
+
+  for (const [pushToken, session] of matchingSessions) {
+    try {
+      await sendEndPushForSession(pushToken, session, lastData);
+    } catch (err) {
+      logger.error(`Failed to send end push:`, err.message);
+    }
+
+    if (poller.tokens.delete(pushToken)) {
+      endedCount += 1;
+      liveActivitiesEnded.inc({ reason });
+    }
+  }
+
+  if (poller.tokens.size === 0) {
+    stopPollingForDock(dockId);
+  }
+
+  updateLiveActivitiesActiveGauge();
+
+  return {
+    endedCount,
+    remainingCount: poller.tokens.size,
+  };
 }
 
 // ── Express Server ───────────────────────────────────────────────────
@@ -1993,8 +2197,9 @@ app.post("/live-activity/start", (req, res) => {
     primaryDisplay,
     minimumThresholds,
   } = req.body;
+  const normalizedPushToken = normalizeApnsDeviceToken(pushToken);
 
-  if (!dockId || !pushToken || !buildType) {
+  if (!dockId || !normalizedPushToken || !buildType) {
     return res
       .status(400)
       .json({ error: "Missing required fields: dockId, pushToken, buildType" });
@@ -2017,19 +2222,13 @@ app.post("/live-activity/start", (req, res) => {
     normalizedPrimaryDisplay
   );
   const deviceToken = normalizeApnsDeviceToken(req.headers["x-device-token"]);
-  const startedAt = Date.now();
-  const hardStopAt = startedAt + HARD_NOTIFICATION_CUTOFF_MS;
+  const now = Date.now();
 
   if (!deviceToken && req.headers["x-device-token"]) {
     logger.warn(
       `Ignoring invalid APNs device token for live activity start (dock=${dockId})`
     );
   }
-
-  logger.info(
-    `Starting live activity: dock=${dockId}, build=${buildType}, primaryDisplay=${normalizedPrimaryDisplay}, minimumThreshold=${activeMinimumThreshold}, expires in ${expiryMs / 1000}s`
-  );
-  logger.info(`  pushToken: ${pushToken} (alternatives: ${normalizedAlternatives.length})`);
 
   // Register the token for this dock
   if (!dockPollers.has(dockId)) {
@@ -2041,7 +2240,67 @@ app.post("/live-activity/start", (req, res) => {
   }
 
   const poller = dockPollers.get(dockId);
-  poller.tokens.set(pushToken, {
+  const existingSessionForPushToken = poller.tokens.get(normalizedPushToken);
+  let startedAt = now;
+  let hardStopAt = startedAt + HARD_NOTIFICATION_CUTOFF_MS;
+
+  if (existingSessionForPushToken) {
+    startedAt = sessionStartedAtMs(existingSessionForPushToken);
+    hardStopAt = sessionHardStopAtMs(existingSessionForPushToken);
+  } else if (deviceToken) {
+    const matchingDeviceSessions = [];
+    for (const [existingPushToken, existingSession] of poller.tokens) {
+      if (existingSession.deviceToken !== deviceToken) continue;
+      if (existingSession.buildType !== buildType) continue;
+
+      const existingExpiresAtMs = sessionExpiresAtMs(existingSession);
+      if (existingExpiresAtMs <= now) {
+        // Clean up stale tokens first so a new session can start cleanly.
+        poller.tokens.delete(existingPushToken);
+        continue;
+      }
+
+      matchingDeviceSessions.push({
+        pushToken: existingPushToken,
+        session: existingSession,
+      });
+    }
+
+    if (matchingDeviceSessions.length > 0) {
+      startedAt = matchingDeviceSessions.reduce(
+        (earliestStartAt, item) =>
+          Math.min(earliestStartAt, sessionStartedAtMs(item.session)),
+        now
+      );
+      hardStopAt = matchingDeviceSessions.reduce(
+        (earliestHardStopAt, item) =>
+          Math.min(earliestHardStopAt, sessionHardStopAtMs(item.session)),
+        startedAt + HARD_NOTIFICATION_CUTOFF_MS
+      );
+
+      for (const item of matchingDeviceSessions) {
+        if (item.pushToken === normalizedPushToken) continue;
+        poller.tokens.delete(item.pushToken);
+      }
+    }
+  }
+
+  const effectiveExpiresAtMs = sessionExpiresAtMs({
+    startedAt,
+    hardStopAt,
+    expiryMs,
+  });
+  const effectiveRemainingSeconds = Math.max(
+    0,
+    Math.floor((effectiveExpiresAtMs - now) / 1000)
+  );
+
+  logger.info(
+    `Starting live activity: dock=${dockId}, build=${buildType}, primaryDisplay=${normalizedPrimaryDisplay}, minimumThreshold=${activeMinimumThreshold}, expires in ${effectiveRemainingSeconds}s`
+  );
+  logger.info(`  pushToken: ${normalizedPushToken} (alternatives: ${normalizedAlternatives.length})`);
+
+  poller.tokens.set(normalizedPushToken, {
     buildType,
     startedAt,
     hardStopAt,
@@ -2068,14 +2327,15 @@ app.post("/live-activity/start", (req, res) => {
     minimumThreshold: activeMinimumThreshold,
     hasDeviceToken: !!deviceToken,
     message: "Live activity started",
-    expiresIn: `${Math.floor((sessionExpiresAtMs({ startedAt, hardStopAt, expiryMs }) - startedAt) / 1000)} seconds`,
+    expiresIn: `${effectiveRemainingSeconds} seconds`,
   });
 });
 
 app.post("/live-activity/session/update", (req, res) => {
   const { dockId, pushToken, dockName, primaryDisplay, minimumThresholds } = req.body;
+  const normalizedPushToken = normalizeApnsDeviceToken(pushToken);
 
-  if (!dockId || !pushToken) {
+  if (!dockId || !normalizedPushToken) {
     return res
       .status(400)
       .json({ error: "Missing required fields: dockId, pushToken" });
@@ -2086,7 +2346,7 @@ app.post("/live-activity/session/update", (req, res) => {
     return res.status(404).json({ error: "Live activity session not found for dock" });
   }
 
-  const session = poller.tokens.get(pushToken);
+  const session = poller.tokens.get(normalizedPushToken);
   if (!session) {
     return res.status(404).json({ error: "Live activity session token not found" });
   }
@@ -2119,7 +2379,7 @@ app.post("/live-activity/session/update", (req, res) => {
   );
 
   logger.info(
-    `Updated live activity session: dock=${dockId}, token=${pushToken.substring(0, 8)}..., primaryDisplay=${resolvedPrimaryDisplay}, minimumThreshold=${resolvedMinimumThreshold}`
+    `Updated live activity session: dock=${dockId}, token=${normalizedPushToken.substring(0, 8)}..., primaryDisplay=${resolvedPrimaryDisplay}, minimumThreshold=${resolvedMinimumThreshold}`
   );
 
   res.json({
@@ -2138,49 +2398,78 @@ app.post("/live-activity/session/update", (req, res) => {
 
 app.post("/live-activity/end", async (req, res) => {
   const { dockId, pushToken } = req.body;
+  const normalizedPushToken = normalizeApnsDeviceToken(pushToken);
 
-  if (!dockId || !pushToken) {
+  if (!dockId || !normalizedPushToken) {
     return res
       .status(400)
       .json({ error: "Missing required fields: dockId, pushToken" });
   }
 
   logger.info(
-    `Ending live activity: dock=${dockId}, token=${pushToken.substring(0, 8)}...`
+    `Ending live activity: dock=${dockId}, token=${normalizedPushToken.substring(0, 8)}...`
   );
 
-  const poller = dockPollers.get(dockId);
-  if (poller) {
-    const session = poller.tokens.get(pushToken);
-    if (session) {
-      // Send end event
-      try {
-        const lastData = poller.lastData || {
-          standardBikes: 0,
-          eBikes: 0,
-          emptySpaces: 0,
-        };
-        const contentState = contentStateWithAlternatives(lastData, session);
-        await sendApnsPush(pushToken, contentState, "end", session.buildType);
-      } catch (err) {
-        logger.error(`Failed to send end push:`, err.message);
-      }
-      poller.tokens.delete(pushToken);
-
-      // Update metrics
-      liveActivitiesEnded.inc({ reason: "user" });
-    }
-
-    // Stop polling if no tokens left
-    if (poller.tokens.size === 0) {
-      stopPollingForDock(dockId);
-    }
-  }
-
-  // Update active count
-  updateLiveActivitiesActiveGauge();
+  await endTrackedSessionsForDock(
+    dockId,
+    (trackedPushToken) => trackedPushToken === normalizedPushToken,
+    "user"
+  );
 
   res.json({ success: true, dockId, message: "Live activity ended" });
+});
+
+app.post("/live-activity/arrive", async (req, res) => {
+  const dockId =
+    typeof req.body?.dockId === "string" ? req.body.dockId.trim() : "";
+  const bodyDeviceToken = normalizeApnsDeviceToken(req.body?.deviceToken);
+  const headerDeviceToken = normalizeApnsDeviceToken(req.headers["x-device-token"]);
+  const deviceToken = bodyDeviceToken || headerDeviceToken;
+  const requestedBuildType =
+    req.body?.buildType === undefined ? null : req.body.buildType;
+
+  if (!dockId) {
+    return res.status(400).json({ error: "Missing required field: dockId" });
+  }
+
+  if (!deviceToken) {
+    return res.status(400).json({
+      error: "Missing or invalid deviceToken (body.deviceToken or X-Device-Token)",
+    });
+  }
+
+  if (
+    requestedBuildType !== null &&
+    requestedBuildType !== "development" &&
+    requestedBuildType !== "production"
+  ) {
+    return res
+      .status(400)
+      .json({ error: 'buildType must be "development" or "production"' });
+  }
+
+  logger.info(
+    `Ending live activity on arrival: dock=${dockId}, device=${deviceToken.substring(0, 8)}...`
+  );
+
+  const { endedCount, remainingCount } = await endTrackedSessionsForDock(
+    dockId,
+    (_pushToken, session) =>
+      session.deviceToken === deviceToken &&
+      (!requestedBuildType || session.buildType === requestedBuildType),
+    "arrival"
+  );
+
+  res.json({
+    success: true,
+    dockId,
+    endedCount,
+    remainingCount,
+    message:
+      endedCount > 0
+        ? "Live activity ended after dock arrival"
+        : "No active live activity session matched this arrival update",
+  });
 });
 
 // ── Test Harness ──────────────────────────────────────────────────────
@@ -2479,21 +2768,22 @@ app.post("/live-activity/device/status", (req, res) => {
 // The iOS app calls this on launch whenever it receives a fresh APNs device token.
 app.post("/complication/register", (req, res) => {
   const { deviceToken, buildType } = req.body;
+  const normalizedDeviceToken = normalizeApnsDeviceToken(deviceToken);
 
-  if (!deviceToken || !buildType) {
+  if (!normalizedDeviceToken || !buildType) {
     return res.status(400).json({ error: "Missing required fields: deviceToken, buildType" });
   }
   if (buildType !== "development" && buildType !== "production") {
     return res.status(400).json({ error: 'buildType must be "development" or "production"' });
   }
 
-  const isNew = !complicationTokens.has(deviceToken);
-  complicationTokens.set(deviceToken, { buildType, registeredAt: Date.now() });
+  const isNew = !complicationTokens.has(normalizedDeviceToken);
+  complicationTokens.set(normalizedDeviceToken, { buildType, registeredAt: Date.now() });
   saveComplicationTokens();
 
   logger.info(
     `Complication token ${isNew ? "registered" : "refreshed"}: ` +
-    `${deviceToken.substring(0, 8)}... (${buildType}, total: ${complicationTokens.size})`
+    `${normalizedDeviceToken.substring(0, 8)}... (${buildType}, total: ${complicationTokens.size})`
   );
 
   res.json({
@@ -2506,15 +2796,16 @@ app.post("/complication/register", (req, res) => {
 // Unregister a device token (e.g. on app uninstall / user opt-out).
 app.post("/complication/unregister", (req, res) => {
   const { deviceToken } = req.body;
+  const normalizedDeviceToken = normalizeApnsDeviceToken(deviceToken);
 
-  if (!deviceToken) {
+  if (!normalizedDeviceToken) {
     return res.status(400).json({ error: "Missing required field: deviceToken" });
   }
 
-  const existed = complicationTokens.delete(deviceToken);
+  const existed = complicationTokens.delete(normalizedDeviceToken);
   saveComplicationTokens();
   logger.info(
-    `Complication token unregistered: ${deviceToken.substring(0, 8)}... ` +
+    `Complication token unregistered: ${normalizedDeviceToken.substring(0, 8)}... ` +
     `(existed: ${existed}, remaining: ${complicationTokens.size})`
   );
 

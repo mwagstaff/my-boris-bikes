@@ -89,11 +89,7 @@ final class AnalyticsService {
     }
 
     private var buildType: String {
-        #if DEBUG
-        return "development"
-        #else
-        return "production"
-        #endif
+        PushEnvironment.buildType
     }
 
     func trackAppLaunch(screen: AnalyticsScreen) {

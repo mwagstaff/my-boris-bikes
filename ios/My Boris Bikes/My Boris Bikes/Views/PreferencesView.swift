@@ -34,6 +34,9 @@ struct PreferencesView: View {
     @AppStorage(LiveActivityPrimaryDisplay.userDefaultsKey, store: LiveActivityPrimaryDisplay.userDefaultsStore)
     private var liveActivityPrimaryDisplayRawValue: String = LiveActivityPrimaryDisplay.bikes.rawValue
 
+    @AppStorage(LiveActivityArrivalSettings.enabledKey, store: LiveActivityArrivalSettings.userDefaultsStore)
+    private var liveActivityAutoEndOnArrival: Bool = LiveActivityArrivalSettings.defaultEnabled
+
     private var liveActivityPrimaryDisplay: LiveActivityPrimaryDisplay {
         LiveActivityPrimaryDisplay(rawValue: liveActivityPrimaryDisplayRawValue) ?? .bikes
     }
@@ -105,6 +108,18 @@ struct PreferencesView: View {
                     }
 
                     Text("The default number shown on the Dynamic Island and lock screen Live Activity.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+
+                    Toggle("Auto-end on dock arrival", isOn: $liveActivityAutoEndOnArrival)
+                        .onChange(of: liveActivityAutoEndOnArrival) { _, newValue in
+                            trackPreferenceChange(key: LiveActivityArrivalSettings.enabledKey, value: newValue)
+                            DockArrivalMonitoringService.shared.handlePreferenceChange(
+                                activeDockIds: Set(LiveActivityService.shared.activeActivities.keys)
+                            )
+                        }
+
+                    Text("When enabled, starting a Live Activity also uses background location updates. If you come within 10 metres of that dock, the app asks the server to stop dock availability notifications and dismiss the Live Activity.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
 

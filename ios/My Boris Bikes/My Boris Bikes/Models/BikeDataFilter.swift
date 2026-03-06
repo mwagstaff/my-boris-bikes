@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 struct BikeAvailabilityCounts {
@@ -158,6 +159,19 @@ struct AlternativeDockSettings {
     static var distanceOptions: [Double] {
         Array(stride(from: 0.5, through: 5.0, by: 0.5))
     }
+}
+
+struct LiveActivityArrivalSettings {
+    static let enabledKey = AppConstants.UserDefaults.liveActivityAutoEndOnArrivalKey
+
+    static var userDefaultsStore: UserDefaults {
+        AppConstants.UserDefaults.sharedDefaults
+    }
+
+    static let defaultEnabled = false
+    static let arrivalDistanceMeters: CLLocationDistance = 10
+    static let minimumRetryIntervalSeconds: TimeInterval = 15
+    static let maximumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 35
 }
 
 // MARK: - Live Activity Per-Dock Primary Display

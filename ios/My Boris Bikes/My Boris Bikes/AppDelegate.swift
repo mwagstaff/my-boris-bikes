@@ -92,11 +92,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
             return
         }
 
-        #if DEBUG
-        let buildType = "development"
-        #else
-        let buildType = "production"
-        #endif
+        let buildType = PushEnvironment.buildType
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

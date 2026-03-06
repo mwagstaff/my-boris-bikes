@@ -53,11 +53,7 @@ class LiveActivityService: ObservableObject {
 
     /// Build type determines APNS environment (sandbox vs production)
     var buildType: String {
-        #if DEBUG
-        return "development"
-        #else
-        return "production"
-        #endif
+        PushEnvironment.buildType
     }
 
     private init() {}
@@ -139,6 +135,7 @@ class LiveActivityService: ObservableObject {
         activeActivities.removeValue(forKey: dockId)
         staleDates.removeValue(forKey: dockId)
         cancelObservationTasks(for: dockId)
+        DockArrivalMonitoringService.shared.stopMonitoring(for: dockId, reason: "live_activity_cleared")
     }
 
     private func reconcileTrackedServerSessions(activeDockIds: Set<String>) {
@@ -242,6 +239,7 @@ class LiveActivityService: ObservableObject {
             activeActivities[dockId] = activity
             staleDates[dockId] = staleDate
             logger.info("Started live activity for dock \(dockId) with stale date: \(staleDate)")
+            DockArrivalMonitoringService.shared.beginMonitoring(for: bikePoint)
 
             // Register immediately if the token is already available.
             // In some launches the first push token can be present synchronously and
@@ -323,7 +321,7 @@ class LiveActivityService: ObservableObject {
         }
     }
 
-    func endLiveActivity(for dockId: String) {
+    func endLiveActivity(for dockId: String, skipServerUnregister: Bool = false) {
         guard let activity = activeActivities[dockId] else { return }
 
         // Remove from active tracking synchronously to prevent double-end races
@@ -336,6 +334,7 @@ class LiveActivityService: ObservableObject {
         // Clear the per-dock override
         LiveActivityDockSettings.clearPrimaryDisplay(for: dockId)
         notifyPrimaryDisplayChanged()
+        DockArrivalMonitoringService.shared.stopMonitoring(for: dockId, reason: "live_activity_ended")
 
         let finalState = DockActivityAttributes.ContentState(
             standardBikes: 0,
@@ -347,9 +346,10 @@ class LiveActivityService: ObservableObject {
         let pushTokenString = activity.pushToken.map { $0.map { String(format: "%02x", $0) }.joined() }
         Task {
             await activity.end(finalContent, dismissalPolicy: .immediate)
-            if let tokenString = pushTokenString {
+            if !skipServerUnregister, let tokenString = pushTokenString {
                 await unregisterFromServer(dockId: dockId, pushToken: tokenString)
             }
+            await refreshNotificationStatusFromServer()
             logger.info("Ended live activity for dock \(dockId)")
         }
     }
@@ -563,6 +563,10 @@ class LiveActivityService: ObservableObject {
         if !runningActivities.isEmpty {
             logger.info("Restored \(self.activeActivities.count) live activities")
         }
+
+        DockArrivalMonitoringService.shared.restoreMonitoringIfNeeded(
+            activeDockIds: Set(self.activeActivities.keys)
+        )
 
         Task { [weak self] in
             await self?.refreshNotificationStatusFromServer()

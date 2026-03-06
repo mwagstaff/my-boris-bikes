@@ -916,8 +916,12 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "My-Boris-Bikes-Info.plist";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "My Boris Bikes uses your location in the background to automatically stop dock notifications and dismiss a live activity when you arrive at a selected dock.";
+				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "My Boris Bikes uses your location in the background to automatically stop dock notifications and dismiss a live activity when you arrive at a selected dock.";
 				INFOPLIST_KEY_NSLocationUsageDescription = "My Boris Bikes needs access to your location to sort bike stations by distance and center the map on your location.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "My Boris Bikes needs access to your location to sort bike stations by distance and center the map on your location.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -951,8 +955,12 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "My-Boris-Bikes-Info.plist";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "My Boris Bikes uses your location in the background to automatically stop dock notifications and dismiss a live activity when you arrive at a selected dock.";
+				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "My Boris Bikes uses your location in the background to automatically stop dock notifications and dismiss a live activity when you arrive at a selected dock.";
 				INFOPLIST_KEY_NSLocationUsageDescription = "My Boris Bikes needs access to your location to sort bike stations by distance and center the map on your location.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "My Boris Bikes needs access to your location to sort bike stations by distance and center the map on your location.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -1061,11 +1069,9 @@
 				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLSchemes_0 = myborisbikes;
 				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLName = myborisbikeswatch;
 				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLSchemes_0 = myborisbikeswatch;
-				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = (
-					DockActivityAttributes,
-				);
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "dev.skynolimit.myborisbikes.My-Boris-Bikes";
+				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = DockActivityAttributes;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1098,11 +1104,9 @@
 				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLSchemes_0 = myborisbikes;
 				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLName = myborisbikeswatch;
 				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLSchemes_0 = myborisbikeswatch;
-				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = (
-					DockActivityAttributes,
-				);
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "dev.skynolimit.myborisbikes.My-Boris-Bikes";
+				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = DockActivityAttributes;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

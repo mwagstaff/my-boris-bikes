@@ -31,6 +31,7 @@ struct AppConstants {
         static let complicationRegisterEndpoint = "/complication/register"
         static let complicationUnregisterEndpoint = "/complication/unregister"
         static let liveActivityDeviceStatusEndpoint = "/live-activity/device/status"
+        static let liveActivityArrivalEndpoint = "/live-activity/arrive"
 
         static var baseURL: String {
             #if DEBUG
@@ -64,6 +65,7 @@ struct AppConstants {
         static let liveActivityPrimaryDisplayKey = "liveActivityPrimaryDisplay"
         static let liveActivityUseDevAPIKey = "liveActivityUseDevAPI"
         static let liveActivityAutoRemoveDurationKey = "liveActivityAutoRemoveDuration"
+        static let liveActivityAutoEndOnArrivalKey = "liveActivityAutoEndOnArrival"
 
         static var sharedDefaults: Foundation.UserDefaults {
             Foundation.UserDefaults(suiteName: AppConstants.App.appGroup) ?? .standard
