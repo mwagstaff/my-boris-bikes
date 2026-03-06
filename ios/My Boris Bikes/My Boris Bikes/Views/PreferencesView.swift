@@ -37,6 +37,9 @@ struct PreferencesView: View {
     @AppStorage(LiveActivityArrivalSettings.enabledKey, store: LiveActivityArrivalSettings.userDefaultsStore)
     private var liveActivityAutoEndOnArrival: Bool = LiveActivityArrivalSettings.defaultEnabled
 
+    @AppStorage(LiveActivityArrivalSettings.distanceThresholdMetersKey, store: LiveActivityArrivalSettings.userDefaultsStore)
+    private var liveActivityArrivalDistanceMeters: Int = LiveActivityArrivalSettings.defaultArrivalDistanceMeters
+
     private var liveActivityPrimaryDisplay: LiveActivityPrimaryDisplay {
         LiveActivityPrimaryDisplay(rawValue: liveActivityPrimaryDisplayRawValue) ?? .bikes
     }
@@ -45,6 +48,17 @@ struct PreferencesView: View {
         Binding(
             get: { liveActivityPrimaryDisplay },
             set: { liveActivityPrimaryDisplayRawValue = $0.rawValue }
+        )
+    }
+
+    private var sanitizedLiveActivityArrivalDistanceMeters: Int {
+        LiveActivityArrivalSettings.sanitizedArrivalDistanceMeters(liveActivityArrivalDistanceMeters)
+    }
+
+    private var liveActivityArrivalDistanceBinding: Binding<Int> {
+        Binding(
+            get: { sanitizedLiveActivityArrivalDistanceMeters },
+            set: { liveActivityArrivalDistanceMeters = LiveActivityArrivalSettings.sanitizedArrivalDistanceMeters($0) }
         )
     }
 
@@ -119,7 +133,25 @@ struct PreferencesView: View {
                             )
                         }
 
-                    Text("When enabled, starting a Live Activity also uses background location updates. If you come within 10 metres of that dock, the app asks the server to stop dock availability notifications and dismiss the Live Activity.")
+                    Picker("Arrival distance", selection: liveActivityArrivalDistanceBinding) {
+                        ForEach(LiveActivityArrivalSettings.distanceOptions, id: \.self) { distance in
+                            Text("\(distance)m")
+                                .tag(distance)
+                        }
+                    }
+                    .onChange(of: liveActivityArrivalDistanceMeters) { _, newValue in
+                        let sanitizedValue = LiveActivityArrivalSettings.sanitizedArrivalDistanceMeters(newValue)
+                        if sanitizedValue != newValue {
+                            liveActivityArrivalDistanceMeters = sanitizedValue
+                            return
+                        }
+                        trackPreferenceChange(key: LiveActivityArrivalSettings.distanceThresholdMetersKey, value: sanitizedValue)
+                    }
+                    .onAppear {
+                        liveActivityArrivalDistanceMeters = sanitizedLiveActivityArrivalDistanceMeters
+                    }
+
+                    Text("When enabled, starting a Live Activity also uses background location updates. If you come within \(sanitizedLiveActivityArrivalDistanceMeters) metres of that dock, the app asks the server to stop dock availability notifications and dismiss the Live Activity.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
 

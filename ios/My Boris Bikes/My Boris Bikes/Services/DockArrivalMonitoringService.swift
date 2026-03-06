@@ -177,10 +177,11 @@ final class DockArrivalMonitoringService: NSObject {
 
         let dockLocation = CLLocation(latitude: dock.latitude, longitude: dock.longitude)
         let distance = location.distance(from: dockLocation)
+        let arrivalDistanceThreshold = LiveActivityArrivalSettings.configuredArrivalDistanceMeters()
 
         logger.info("Dock arrival check for \(dock.dockId, privacy: .public): \(distance, privacy: .public)m away")
 
-        guard distance <= LiveActivityArrivalSettings.arrivalDistanceMeters else {
+        guard distance <= arrivalDistanceThreshold else {
             return
         }
 

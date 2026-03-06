@@ -163,15 +163,41 @@ struct AlternativeDockSettings {
 
 struct LiveActivityArrivalSettings {
     static let enabledKey = AppConstants.UserDefaults.liveActivityAutoEndOnArrivalKey
+    static let distanceThresholdMetersKey = AppConstants.UserDefaults.liveActivityArrivalDistanceThresholdMetersKey
 
     static var userDefaultsStore: UserDefaults {
         AppConstants.UserDefaults.sharedDefaults
     }
 
     static let defaultEnabled = false
-    static let arrivalDistanceMeters: CLLocationDistance = 10
+    static let defaultArrivalDistanceMeters = 25
+    static let minimumArrivalDistanceMeters = 10
+    static let maximumArrivalDistanceMeters = 50
+    static let arrivalDistanceStepMeters = 5
     static let minimumRetryIntervalSeconds: TimeInterval = 15
     static let maximumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 35
+
+    static var distanceOptions: [Int] {
+        Array(stride(
+            from: minimumArrivalDistanceMeters,
+            through: maximumArrivalDistanceMeters,
+            by: arrivalDistanceStepMeters
+        ))
+    }
+
+    static func sanitizedArrivalDistanceMeters(_ rawValue: Int) -> Int {
+        let clamped = min(max(rawValue, minimumArrivalDistanceMeters), maximumArrivalDistanceMeters)
+        let offset = clamped - minimumArrivalDistanceMeters
+        let roundedOffset = Int((Double(offset) / Double(arrivalDistanceStepMeters)).rounded()) * arrivalDistanceStepMeters
+        return minimumArrivalDistanceMeters + roundedOffset
+    }
+
+    static func configuredArrivalDistanceMeters() -> CLLocationDistance {
+        let defaults = userDefaultsStore
+        let storedValue = defaults.object(forKey: distanceThresholdMetersKey) as? Int
+            ?? defaultArrivalDistanceMeters
+        return CLLocationDistance(sanitizedArrivalDistanceMeters(storedValue))
+    }
 }
 
 // MARK: - Live Activity Per-Dock Primary Display

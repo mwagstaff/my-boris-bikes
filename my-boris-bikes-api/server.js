@@ -1040,18 +1040,17 @@ async function sendApnsPush(pushToken, contentState, event, buildType) {
   }
 }
 
-async function sendAvailabilityAlertPush(deviceToken, buildType, alertBody) {
+async function sendAlertPush(deviceToken, buildType, title, body, event, logLabel) {
   const payload = JSON.stringify({
     aps: {
       alert: {
-        title: "Dock availability update",
-        body: alertBody,
+        title,
+        body,
       },
       sound: "default",
     },
   });
 
-  const event = "availability_alert";
   try {
     const result = await sendApnsRequestWithFallback(
       deviceToken,
@@ -1066,7 +1065,7 @@ async function sendAvailabilityAlertPush(deviceToken, buildType, alertBody) {
         "apns-priority": "10",
         "content-type": "application/json",
       }),
-      "availability alert"
+      logLabel
     );
     apnsPushesTotal.inc({ event, build_type: result.buildType, status: "success" });
     return { status: result.statusCode, buildType: result.buildType };
@@ -1076,10 +1075,34 @@ async function sendAvailabilityAlertPush(deviceToken, buildType, alertBody) {
     const responseData = err?.apns?.responseData || err.message;
     apnsPushesTotal.inc({ event, build_type: metricBuildType, status: "failure" });
     logger.error(
-      `Availability alert push failed (${statusCode}): ${responseData} [token: ${deviceToken.substring(0, 8)}...]`
+      `${logLabel} push failed (${statusCode}): ${responseData} [token: ${deviceToken.substring(0, 8)}...]`
     );
     throw err;
   }
+}
+
+async function sendAvailabilityAlertPush(deviceToken, buildType, alertBody) {
+  return sendAlertPush(
+    deviceToken,
+    buildType,
+    "Dock availability update",
+    alertBody,
+    "availability_alert",
+    "availability alert"
+  );
+}
+
+async function sendArrivalConfirmationPush(deviceToken, buildType, dockName) {
+  const resolvedDockName =
+    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "your dock";
+  return sendAlertPush(
+    deviceToken,
+    buildType,
+    "Dock arrival",
+    `Welcome to ${resolvedDockName}!`,
+    "arrival_confirmation",
+    "arrival confirmation"
+  );
 }
 
 // ── Silent Background Push (complication refresh) ─────────────────────
@@ -2452,6 +2475,37 @@ app.post("/live-activity/arrive", async (req, res) => {
     `Ending live activity on arrival: dock=${dockId}, device=${deviceToken.substring(0, 8)}...`
   );
 
+  const poller = dockPollers.get(dockId);
+  const matchingSessions = [];
+  if (poller) {
+    for (const [pushToken, session] of poller.tokens) {
+      if (session.deviceToken !== deviceToken) continue;
+      if (requestedBuildType && session.buildType !== requestedBuildType) continue;
+      matchingSessions.push([pushToken, session]);
+    }
+  }
+
+  let confirmationSent = false;
+  if (matchingSessions.length > 0) {
+    const [, session] = matchingSessions[0];
+    const dockName =
+      session.dockName ||
+      (typeof poller?.lastData?.dockName === "string" && poller.lastData.dockName.trim()
+        ? poller.lastData.dockName.trim()
+        : dockId);
+    const confirmationBuildType = requestedBuildType || session.buildType;
+
+    try {
+      await sendArrivalConfirmationPush(deviceToken, confirmationBuildType, dockName);
+      confirmationSent = true;
+    } catch (err) {
+      logger.error(
+        `Failed to send arrival confirmation to ${deviceToken.substring(0, 8)}...:`,
+        err.message
+      );
+    }
+  }
+
   const { endedCount, remainingCount } = await endTrackedSessionsForDock(
     dockId,
     (_pushToken, session) =>
@@ -2464,6 +2518,7 @@ app.post("/live-activity/arrive", async (req, res) => {
     success: true,
     dockId,
     endedCount,
+    confirmationSent,
     remainingCount,
     message:
       endedCount > 0
