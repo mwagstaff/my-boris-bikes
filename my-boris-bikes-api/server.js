@@ -57,6 +57,8 @@ const DOCK_OVERRIDES_PATH =
   path.join(__dirname, "dock-overrides.json");
 const MAX_LIVE_ACTIVITY_ALTERNATIVES = 5;
 const VALID_PRIMARY_DISPLAYS = new Set(["bikes", "eBikes", "spaces"]);
+const MAX_PUSH_EVENT_LOG_ENTRIES = 500;
+const MAX_BACKGROUND_LOCATION_EVENT_LOG_ENTRIES = 500;
 
 // Ensure logs directory exists
 if (!fs.existsSync(LOG_DIR)) {
@@ -1026,12 +1028,31 @@ async function sendApnsPush(pushToken, contentState, event, buildType) {
       }),
       `liveactivity ${event}`
     );
+    recordPushEvent({
+      target: pushToken,
+      channel: "live_activity",
+      type: `live_activity_${event}`,
+      result: "ok",
+      status: result.statusCode,
+      apnsEnv: result.buildType,
+      raw: { event, contentState },
+    });
     apnsPushesTotal.inc({ event, build_type: result.buildType, status: "success" });
     return { status: result.statusCode, buildType: result.buildType };
   } catch (err) {
     const metricBuildType = err?.apns?.buildType || buildType;
     const statusCode = err?.apns?.statusCode ?? "unknown";
     const responseData = err?.apns?.responseData || err.message;
+    recordPushEvent({
+      target: pushToken,
+      channel: "live_activity",
+      type: `live_activity_${event}`,
+      result: "error",
+      status: statusCode,
+      error: responseData,
+      apnsEnv: metricBuildType,
+      raw: { event, contentState },
+    });
     apnsPushesTotal.inc({ event, build_type: metricBuildType, status: "failure" });
     logger.error(
       `APNS push failed (${statusCode}): ${responseData} [token: ${pushToken.substring(0, 8)}...]`
@@ -1067,12 +1088,33 @@ async function sendAlertPush(deviceToken, buildType, title, body, event, logLabe
       }),
       logLabel
     );
+    recordPushEvent({
+      target: deviceToken,
+      channel: "notification",
+      type: event,
+      title,
+      body,
+      result: "ok",
+      status: result.statusCode,
+      apnsEnv: result.buildType,
+    });
     apnsPushesTotal.inc({ event, build_type: result.buildType, status: "success" });
     return { status: result.statusCode, buildType: result.buildType };
   } catch (err) {
     const metricBuildType = err?.apns?.buildType || buildType;
     const statusCode = err?.apns?.statusCode ?? "unknown";
     const responseData = err?.apns?.responseData || err.message;
+    recordPushEvent({
+      target: deviceToken,
+      channel: "notification",
+      type: event,
+      title,
+      body,
+      result: "error",
+      status: statusCode,
+      error: responseData,
+      apnsEnv: metricBuildType,
+    });
     apnsPushesTotal.inc({ event, build_type: metricBuildType, status: "failure" });
     logger.error(
       `${logLabel} push failed (${statusCode}): ${responseData} [token: ${deviceToken.substring(0, 8)}...]`
@@ -1129,12 +1171,29 @@ async function sendBackgroundPush(deviceToken, buildType) {
       }),
       "background"
     );
+    recordPushEvent({
+      target: deviceToken,
+      channel: "background",
+      type: "complication_refresh",
+      result: "ok",
+      status: result.statusCode,
+      apnsEnv: result.buildType,
+    });
     complicationPushesTotal.inc({ build_type: result.buildType, status: "success" });
     return { status: result.statusCode, buildType: result.buildType };
   } catch (err) {
     const metricBuildType = err?.apns?.buildType || buildType;
     const statusCode = err?.apns?.statusCode ?? "unknown";
     const responseData = err?.apns?.responseData || err.message;
+    recordPushEvent({
+      target: deviceToken,
+      channel: "background",
+      type: "complication_refresh",
+      result: "error",
+      status: statusCode,
+      error: responseData,
+      apnsEnv: metricBuildType,
+    });
     complicationPushesTotal.inc({ build_type: metricBuildType, status: "failure" });
     logger.error(
       `Background push failed (${statusCode}): ${responseData} [token: ${deviceToken.substring(0, 8)}...]`
@@ -1533,6 +1592,88 @@ function formatUptime(ms) {
   }
 }
 
+const pushEventLog = [];
+const backgroundLocationEventLog = [];
+
+function appendBoundedLogEntry(log, entry, maxEntries) {
+  log.unshift(entry);
+  if (log.length > maxEntries) {
+    log.length = maxEntries;
+  }
+}
+
+function shortenIdentifier(value) {
+  if (typeof value !== "string") return "unknown";
+  const trimmed = value.trim();
+  if (!trimmed) return "unknown";
+  if (trimmed.length <= 12) return trimmed;
+  return `${trimmed.substring(0, 8)}...${trimmed.substring(trimmed.length - 4)}`;
+}
+
+function resolveLogLimit(rawValue, fallback, max) {
+  const parsedValue = Number(rawValue);
+  if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+    return fallback;
+  }
+  return Math.min(Math.trunc(parsedValue), max);
+}
+
+function recordPushEvent(entry) {
+  appendBoundedLogEntry(
+    pushEventLog,
+    {
+      sentAt: new Date().toISOString(),
+      target: shortenIdentifier(entry.target),
+      channel: entry.channel || "unknown",
+      type: entry.type || "unknown",
+      title: entry.title || null,
+      body: entry.body || null,
+      result: entry.result || "unknown",
+      status: entry.status ?? null,
+      error: entry.error || null,
+      apnsEnv: entry.apnsEnv || "unknown",
+      raw: entry.raw || null,
+    },
+    MAX_PUSH_EVENT_LOG_ENTRIES
+  );
+}
+
+function recordBackgroundLocationEvent(entry) {
+  appendBoundedLogEntry(
+    backgroundLocationEventLog,
+    {
+      receivedAt: new Date().toISOString(),
+      clientTimestamp:
+        typeof entry.clientTimestamp === "string" && entry.clientTimestamp.trim()
+          ? entry.clientTimestamp.trim()
+          : null,
+      deviceId: shortenIdentifier(entry.deviceId),
+      event: entry.event || "unknown",
+      appState: entry.appState || "unknown",
+      dockId: entry.dockId || null,
+      dockName: entry.dockName || null,
+      distanceMeters:
+        typeof entry.distanceMeters === "number" && Number.isFinite(entry.distanceMeters)
+          ? entry.distanceMeters
+          : null,
+      horizontalAccuracyMeters:
+        typeof entry.horizontalAccuracyMeters === "number" &&
+        Number.isFinite(entry.horizontalAccuracyMeters)
+          ? entry.horizontalAccuracyMeters
+          : null,
+      arrivalThresholdMeters:
+        typeof entry.arrivalThresholdMeters === "number" &&
+        Number.isFinite(entry.arrivalThresholdMeters)
+          ? entry.arrivalThresholdMeters
+          : null,
+      authorizationStatus: entry.authorizationStatus || null,
+      message: entry.message || null,
+      raw: entry.raw || null,
+    },
+    MAX_BACKGROUND_LOCATION_EVENT_LOG_ENTRIES
+  );
+}
+
 function normalizeNonNegativeInteger(value) {
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue) || numericValue < 0) {
@@ -1559,7 +1700,7 @@ function renderAdminOverridesPage() {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Dock Override Admin</title>
+  <title>Dock Admin & Diagnostics</title>
   <style>
     :root {
       --bg: #f3f5f9;
@@ -1713,8 +1854,8 @@ function renderAdminOverridesPage() {
 </head>
 <body>
   <main>
-    <h1>Dock Override Admin</h1>
-    <p class="muted">Set manual bikes/e-bikes/spaces values for a dock. Overrides affect <code>/Place/:dockId</code>, <code>/BikePoint</code>, and live activity polling.</p>
+    <h1>Dock Admin & Diagnostics</h1>
+    <p class="muted">Set manual bikes/e-bikes/spaces values for a dock and inspect recent push plus background-location diagnostics. Overrides affect <code>/Place/:dockId</code>, <code>/BikePoint</code>, and live activity polling.</p>
 
     <section class="panel">
       <div class="grid">
@@ -1765,6 +1906,48 @@ function renderAdminOverridesPage() {
         <tbody id="overridesBody"></tbody>
       </table>
     </section>
+
+    <section class="panel" style="margin-top: 14px;">
+      <h2 style="margin: 0 0 4px; font-size: 18px;">Notification & Push Events</h2>
+      <p class="muted" style="margin: 0 0 8px;">Last 20 APNs sends recorded in-memory, including live activity pushes, welcome alerts, and silent refresh pushes.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Sent At</th>
+            <th>Target</th>
+            <th>Channel</th>
+            <th>Type</th>
+            <th>Message</th>
+            <th>Result</th>
+            <th>Status</th>
+            <th>APNS Env</th>
+          </tr>
+        </thead>
+        <tbody id="pushEventsBody"></tbody>
+      </table>
+    </section>
+
+    <section class="panel" style="margin-top: 14px;">
+      <h2 style="margin: 0 0 4px; font-size: 18px;">Background Location Events</h2>
+      <p class="muted" style="margin: 0 0 8px;">Last 100 client-reported location and arrival events. Compare client timestamp to received time to spot delayed uploads.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Received At</th>
+            <th>Client Time</th>
+            <th>Device</th>
+            <th>Event</th>
+            <th>App State</th>
+            <th>Dock</th>
+            <th>Distance</th>
+            <th>Accuracy</th>
+            <th>Threshold</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody id="backgroundLocationEventsBody"></tbody>
+      </table>
+    </section>
   </main>
 
   <script>
@@ -1776,6 +1959,8 @@ function renderAdminOverridesPage() {
     const statusElement = document.getElementById("status");
     const selectionHint = document.getElementById("selectionHint");
     const overridesBody = document.getElementById("overridesBody");
+    const pushEventsBody = document.getElementById("pushEventsBody");
+    const backgroundLocationEventsBody = document.getElementById("backgroundLocationEventsBody");
     const normalizedPath = (window.location.pathname || "").replace(/\\/+$/, "");
     const adminBasePath = normalizedPath.endsWith("/admin") ? normalizedPath : "/admin";
     const apiBasePath = adminBasePath + "/api";
@@ -1783,6 +1968,38 @@ function renderAdminOverridesPage() {
     let allDocks = [];
     let overridesByDockId = new Map();
     let filteredDocks = [];
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function formatNumber(value) {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        return "—";
+      }
+      return value.toFixed(1);
+    }
+
+    function formatTimestamp(value) {
+      if (!value) return "—";
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) {
+        return escapeHtml(value);
+      }
+      return escapeHtml(parsed.toLocaleString());
+    }
+
+    function dockLabel(dockId, dockName) {
+      if (dockName && dockId) {
+        return escapeHtml(dockName + " (" + dockId + ")");
+      }
+      return escapeHtml(dockName || dockId || "—");
+    }
 
     function apiUrl(path) {
       const suffix = path.startsWith("/") ? path : "/" + path;
@@ -1929,6 +2146,76 @@ function renderAdminOverridesPage() {
       syncFormToSelectedDock();
     }
 
+    function renderPushEventsTable(events) {
+      if (!Array.isArray(events) || events.length === 0) {
+        pushEventsBody.innerHTML = '<tr><td colspan="8">No push events recorded since server start.</td></tr>';
+        return;
+      }
+
+      pushEventsBody.innerHTML = "";
+      for (const event of events) {
+        const messageParts = [];
+        if (event.title) messageParts.push(event.title);
+        if (event.body) messageParts.push(event.body);
+        if (messageParts.length === 0 && event.error) messageParts.push(event.error);
+        const message = messageParts.length > 0 ? messageParts.join(": ") : "—";
+
+        const row = document.createElement("tr");
+        row.innerHTML =
+          "<td>" + formatTimestamp(event.sentAt) + "</td>" +
+          "<td>" + escapeHtml(event.target || "—") + "</td>" +
+          "<td>" + escapeHtml(event.channel || "—") + "</td>" +
+          "<td>" + escapeHtml(event.type || "—") + "</td>" +
+          "<td>" + escapeHtml(message) + "</td>" +
+          "<td>" + escapeHtml(event.result || "—") + "</td>" +
+          "<td>" + escapeHtml(event.status ?? "—") + "</td>" +
+          "<td>" + escapeHtml(event.apnsEnv || "—") + "</td>";
+        pushEventsBody.appendChild(row);
+      }
+    }
+
+    async function loadPushEvents() {
+      const response = await fetch(apiUrl("/push-events?limit=20"));
+      if (!response.ok) {
+        throw new Error("Could not load push events");
+      }
+      const payload = await response.json();
+      renderPushEventsTable(payload.events || []);
+    }
+
+    function renderBackgroundLocationEventsTable(events) {
+      if (!Array.isArray(events) || events.length === 0) {
+        backgroundLocationEventsBody.innerHTML = '<tr><td colspan="10">No background location events recorded since server start.</td></tr>';
+        return;
+      }
+
+      backgroundLocationEventsBody.innerHTML = "";
+      for (const event of events) {
+        const row = document.createElement("tr");
+        row.innerHTML =
+          "<td>" + formatTimestamp(event.receivedAt) + "</td>" +
+          "<td>" + formatTimestamp(event.clientTimestamp) + "</td>" +
+          "<td>" + escapeHtml(event.deviceId || "—") + "</td>" +
+          "<td>" + escapeHtml(event.event || "—") + "</td>" +
+          "<td>" + escapeHtml(event.appState || "—") + "</td>" +
+          "<td>" + dockLabel(event.dockId, event.dockName) + "</td>" +
+          "<td>" + escapeHtml(formatNumber(event.distanceMeters)) + "</td>" +
+          "<td>" + escapeHtml(formatNumber(event.horizontalAccuracyMeters)) + "</td>" +
+          "<td>" + escapeHtml(formatNumber(event.arrivalThresholdMeters)) + "</td>" +
+          "<td>" + escapeHtml(event.message || "—") + "</td>";
+        backgroundLocationEventsBody.appendChild(row);
+      }
+    }
+
+    async function loadBackgroundLocationEvents() {
+      const response = await fetch(apiUrl("/background-location-events?limit=100"));
+      if (!response.ok) {
+        throw new Error("Could not load background location events");
+      }
+      const payload = await response.json();
+      renderBackgroundLocationEventsTable(payload.events || []);
+    }
+
     async function saveOverride() {
       const dockId = selectedDockId();
       if (!dockId) {
@@ -1997,8 +2284,8 @@ function renderAdminOverridesPage() {
       clearOverride().catch((err) => setStatus(err.message, "error"));
     });
     document.getElementById("refreshButton").addEventListener("click", () => {
-      Promise.all([loadDocks(), loadOverrides()])
-        .then(() => setStatus("Reloaded dock list and overrides.", "ok"))
+      Promise.all([loadDocks(), loadOverrides(), loadPushEvents(), loadBackgroundLocationEvents()])
+        .then(() => setStatus("Reloaded dock data and diagnostics.", "ok"))
         .catch((err) => setStatus(err.message, "error"));
     });
     dockSearch.addEventListener("input", applyDockFilter);
@@ -2030,9 +2317,13 @@ function renderAdminOverridesPage() {
       }
     });
 
-    Promise.all([loadDocks(), loadOverrides()])
+    Promise.all([loadDocks(), loadOverrides(), loadPushEvents(), loadBackgroundLocationEvents()])
       .then(() => setStatus("", ""))
       .catch((err) => setStatus(err.message, "error"));
+
+    setInterval(() => {
+      Promise.all([loadPushEvents(), loadBackgroundLocationEvents()]).catch(() => {});
+    }, 15000);
   </script>
 </body>
 </html>`;
@@ -2149,6 +2440,22 @@ app.get(adminRoutePaths("/api/overrides"), (_req, res) => {
   res.json({
     count: dockOverrides.size,
     overrides: serializeDockOverrides(),
+  });
+});
+
+app.get(adminRoutePaths("/api/push-events"), (req, res) => {
+  const limit = resolveLogLimit(req.query?.limit, 20, 100);
+  res.json({
+    count: pushEventLog.length,
+    events: pushEventLog.slice(0, limit),
+  });
+});
+
+app.get(adminRoutePaths("/api/background-location-events"), (req, res) => {
+  const limit = resolveLogLimit(req.query?.limit, 100, 300);
+  res.json({
+    count: backgroundLocationEventLog.length,
+    events: backgroundLocationEventLog.slice(0, limit),
   });
 });
 
@@ -2673,6 +2980,32 @@ app.post("/app/metrics", (req, res) => {
   if (metadata && typeof metadata === "object") {
     logger.info(`App action metadata: ${JSON.stringify(metadata)}`);
   }
+
+  res.json({ success: true });
+});
+
+app.post("/app/background-location-event", (req, res) => {
+  const body = req.body || {};
+  const headerDeviceId =
+    typeof req.headers["x-device-token"] === "string" ? req.headers["x-device-token"] : null;
+  const bodyDeviceId =
+    typeof body.deviceId === "string" ? body.deviceId.trim() : null;
+
+  recordBackgroundLocationEvent({
+    clientTimestamp: body.clientTimestamp,
+    deviceId: bodyDeviceId || headerDeviceId || "unknown",
+    event: body.event,
+    appState: body.appState,
+    dockId: typeof body.dockId === "string" ? body.dockId.trim() : null,
+    dockName: typeof body.dockName === "string" ? body.dockName.trim() : null,
+    distanceMeters: Number(body.distanceMeters),
+    horizontalAccuracyMeters: Number(body.horizontalAccuracyMeters),
+    arrivalThresholdMeters: Number(body.arrivalThresholdMeters),
+    authorizationStatus:
+      typeof body.authorizationStatus === "string" ? body.authorizationStatus.trim() : null,
+    message: typeof body.message === "string" ? body.message.trim() : null,
+    raw: body.raw && typeof body.raw === "object" ? body.raw : null,
+  });
 
   res.json({ success: true });
 });

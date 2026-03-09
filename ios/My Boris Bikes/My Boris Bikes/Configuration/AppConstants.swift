@@ -32,6 +32,7 @@ struct AppConstants {
         static let complicationUnregisterEndpoint = "/complication/unregister"
         static let liveActivityDeviceStatusEndpoint = "/live-activity/device/status"
         static let liveActivityArrivalEndpoint = "/live-activity/arrive"
+        static let backgroundLocationEventEndpoint = "/app/background-location-event"
 
         static var baseURL: String {
             #if DEBUG
