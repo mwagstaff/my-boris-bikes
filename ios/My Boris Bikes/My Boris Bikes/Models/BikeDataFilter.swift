@@ -176,6 +176,11 @@ struct LiveActivityArrivalSettings {
     static let arrivalDistanceStepMeters = 5
     static let minimumRetryIntervalSeconds: TimeInterval = 15
     static let maximumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 35
+    static let confirmationDwellTimeSeconds: TimeInterval = 20
+    static let confirmationTimeoutSeconds: TimeInterval = 45
+    static let confirmationResetHysteresisMeters: CLLocationDistance = 10
+    static let minimumRegionRadiusMeters: CLLocationDistance = 60
+    static let regionRadiusBufferMeters: CLLocationDistance = 35
 
     static var distanceOptions: [Int] {
         Array(stride(
