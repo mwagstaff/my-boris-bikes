@@ -183,6 +183,7 @@ class HomeViewModel: BaseViewModel {
                         // Update cache with new data
                         for bikePoint in newBikePoints {
                             self?.bikePointCache[bikePoint.id] = bikePoint
+                            DockArrivalMonitoringService.shared.updateMonitoredDockIfNeeded(using: bikePoint)
                         }
                         
                         // Combine cached and new data

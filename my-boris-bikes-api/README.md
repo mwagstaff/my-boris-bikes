@@ -120,7 +120,7 @@ Environment variables:
 - `GET /admin` - Admin UI for dock value overrides
 - `GET /admin/api/docks` - Dock list for admin UI
 - `GET /admin/api/overrides` - Current overrides
-- `POST /admin/api/overrides` - Set override `{ dockId, standardBikes, eBikes, emptySpaces }`
+- `POST /admin/api/overrides` - Set override `{ dockId, standardBikes, eBikes, emptySpaces, latitude?, longitude? }`
 - `DELETE /admin/api/overrides/:dockId` - Clear override
 - `POST /live-activity/start` - Start tracking a dock
 - `POST /live-activity/session/update` - Update tracked session settings (focused metric/thresholds)

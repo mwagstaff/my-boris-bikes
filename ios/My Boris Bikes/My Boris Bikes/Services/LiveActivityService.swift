@@ -410,6 +410,26 @@ class LiveActivityService: ObservableObject {
         }
     }
 
+#if DEBUG
+    func simulateArrivalTrigger() async -> (success: Bool, message: String) {
+        if let activity = activeActivities.values.first {
+            return await DockArrivalMonitoringService.shared.debugSimulateArrival(
+                dockId: activity.attributes.dockId,
+                dockName: activity.attributes.dockName
+            )
+        }
+
+        if let session = activeNotificationSession {
+            return await DockArrivalMonitoringService.shared.debugSimulateArrival(
+                dockId: session.dockId,
+                dockName: session.dockName
+            )
+        }
+
+        return (false, "No active live activity to simulate arrival for.")
+    }
+#endif
+
     /// Set the primary display override for a specific dock's live activity
     func setPrimaryDisplay(_ display: LiveActivityPrimaryDisplay, for dockId: String) {
         LiveActivityDockSettings.setPrimaryDisplay(display, for: dockId)

@@ -1,6 +1,9 @@
 import SwiftUI
+import UIKit
 
 struct PreferencesView: View {
+    @StateObject private var locationService = LocationService.shared
+
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
 
@@ -71,6 +74,8 @@ struct PreferencesView: View {
 
     @State private var debugRefreshStatus: String = "Not run yet"
     @State private var isDebugRefreshing = false
+    @State private var debugArrivalStatus: String = "Not run yet"
+    @State private var isDebugSimulatingArrival = false
 #endif
 
     private var bikeDataFilter: BikeDataFilter {
@@ -82,6 +87,10 @@ struct PreferencesView: View {
             get: { bikeDataFilter },
             set: { bikeDataFilterRawValue = $0.rawValue }
         )
+    }
+
+    private var requiresAlwaysLocationUpgrade: Bool {
+        liveActivityAutoEndOnArrival && locationService.authorizationStatus == .authorizedWhenInUse
     }
 
     var body: some View {
@@ -154,6 +163,16 @@ struct PreferencesView: View {
                     Text("When enabled, starting a Live Activity also uses background location updates. If you come within \(sanitizedLiveActivityArrivalDistanceMeters) metres of that dock, the app asks the server to stop dock availability notifications and dismiss the Live Activity.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
+
+                    if requiresAlwaysLocationUpgrade {
+                        Text("Dock arrival auto-end needs Location access set to Always. iOS may not show the upgrade prompt again after the first request, so if arrivals are not being detected in the background, open Settings and change Location from While Using to Always.")
+                            .font(.footnote)
+                            .foregroundColor(.orange)
+
+                        Button("Open Location Settings") {
+                            openAppSettings()
+                        }
+                    }
 
 #if DEBUG
                     Picker("API Environment", selection: $liveActivityUseDevAPI) {
@@ -297,6 +316,33 @@ struct PreferencesView: View {
                     Text(debugRefreshStatus)
                         .font(.footnote)
                         .foregroundColor(.secondary)
+
+                    Button(isDebugSimulatingArrival ? "Simulating Arrival…" : "Simulate Dock Arrival") {
+                        isDebugSimulatingArrival = true
+                        debugArrivalStatus = "Running..."
+
+                        Task {
+                            let result = await LiveActivityService.shared.simulateArrivalTrigger()
+                            let timestamp = DateFormatter.localizedString(
+                                from: Date(),
+                                dateStyle: .none,
+                                timeStyle: .short
+                            )
+
+                            await MainActor.run {
+                                debugArrivalStatus = "\(timestamp) — \(result.message)"
+                                if !result.success {
+                                    debugArrivalStatus += " (failed)"
+                                }
+                                isDebugSimulatingArrival = false
+                            }
+                        }
+                    }
+                    .disabled(isDebugSimulatingArrival)
+
+                    Text(debugArrivalStatus)
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
 #endif
             }
@@ -320,6 +366,14 @@ struct PreferencesView: View {
                 "value": value
             ]
         )
+    }
+
+    private func openAppSettings() {
+        guard let settingsUrl = URL(string: UIApplication.openSettingsURLString),
+              UIApplication.shared.canOpenURL(settingsUrl) else {
+            return
+        }
+        UIApplication.shared.open(settingsUrl)
     }
 }
 

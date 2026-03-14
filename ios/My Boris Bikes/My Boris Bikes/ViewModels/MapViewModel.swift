@@ -226,6 +226,9 @@ class MapViewModel: BaseViewModel {
                         return
                     }
 
+                    for bikePoint in installedBikePoints {
+                        DockArrivalMonitoringService.shared.updateMonitoredDockIfNeeded(using: bikePoint)
+                    }
                     self?.applyFreshBikePoints(installedBikePoints)
                 }
             )

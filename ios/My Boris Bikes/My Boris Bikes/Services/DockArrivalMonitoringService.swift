@@ -34,14 +34,12 @@ final class DockArrivalMonitoringService: NSObject {
     private var lastArrivalAttemptAt: Date?
     private var confirmationStartedAt: Date?
     private var firstPreciseInsideThresholdAt: Date?
+    private var hasRequestedAlwaysAuthorizationThisSession = false
 
     private override init() {
         super.init()
         locationManager.delegate = self
-        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-        locationManager.distanceFilter = kCLDistanceFilterNone
-        locationManager.activityType = .other
-        locationManager.pausesLocationUpdatesAutomatically = true
+        configureLowPowerTrackingProfile()
         locationManager.allowsBackgroundLocationUpdates = true
         monitoredDock = loadPersistedDock()
     }
@@ -49,6 +47,17 @@ final class DockArrivalMonitoringService: NSObject {
     func requestAuthorizationIfNeeded() {
         switch locationManager.authorizationStatus {
         case .notDetermined, .authorizedWhenInUse:
+            guard !hasRequestedAlwaysAuthorizationThisSession else {
+                logger.info("Skipping repeated Always authorization request because iOS ignores subsequent calls in the same session")
+                logLocationEvent(
+                    "authorization_request_skipped",
+                    message: "Always authorization already requested this session",
+                    raw: ["authorizationStatus": authorizationStatusLabel(locationManager.authorizationStatus)]
+                )
+                return
+            }
+
+            hasRequestedAlwaysAuthorizationThisSession = true
             logger.info("Requesting Always location authorization for dock arrival monitoring")
             logLocationEvent(
                 "authorization_requested",
@@ -150,6 +159,36 @@ final class DockArrivalMonitoringService: NSObject {
         }
     }
 
+    func updateMonitoredDockIfNeeded(using bikePoint: BikePoint) {
+        guard var dock = monitoredDock, dock.dockId == bikePoint.id else { return }
+
+        guard dock.latitude != bikePoint.lat || dock.longitude != bikePoint.lon || dock.dockName != bikePoint.commonName else {
+            return
+        }
+
+        dock = MonitoredDock(
+            dockId: bikePoint.id,
+            dockName: bikePoint.commonName,
+            latitude: bikePoint.lat,
+            longitude: bikePoint.lon
+        )
+        monitoredDock = dock
+        persistDock(dock)
+        logLocationEvent(
+            "monitor_dock_updated",
+            dock: dock,
+            message: "Updated monitored dock coordinates from latest bike point data",
+            raw: [
+                "latitude": dock.latitude,
+                "longitude": dock.longitude
+            ]
+        )
+
+        if isEnabled {
+            startMonitoringIfPossible()
+        }
+    }
+
     private var isEnabled: Bool {
         let defaults = LiveActivityArrivalSettings.userDefaultsStore
         return defaults.object(forKey: LiveActivityArrivalSettings.enabledKey) as? Bool
@@ -203,6 +242,7 @@ final class DockArrivalMonitoringService: NSObject {
         stopPreciseLocationUpdates()
         stopMonitoringDockRegion()
         startMonitoringDockRegion(for: dock)
+        locationManager.requestLocation()
 
         logger.info("Starting low-power region monitoring for dock arrival monitoring")
         logLocationEvent(
@@ -239,14 +279,20 @@ final class DockArrivalMonitoringService: NSObject {
 
     private func checkArrival(with location: CLLocation) {
         guard let dock = monitoredDock else { return }
-        guard shouldAttemptArrival(for: location) else { return }
 
         let dockLocation = CLLocation(latitude: dock.latitude, longitude: dock.longitude)
         let distance = location.distance(from: dockLocation)
         let arrivalDistanceThreshold = LiveActivityArrivalSettings.configuredArrivalDistanceMeters()
+        let activationDistanceThreshold = configuredRegionRadiusMeters()
         let resetDistanceThreshold = arrivalDistanceThreshold + LiveActivityArrivalSettings.confirmationResetHysteresisMeters
 
         logger.info("Dock arrival check for \(dock.dockId, privacy: .public): \(distance, privacy: .public)m away")
+
+        if confirmationStartedAt == nil, distance <= activationDistanceThreshold {
+            startPreciseLocationUpdates(reason: "location_within_activation_distance")
+        }
+
+        guard shouldAttemptArrival(for: location) else { return }
 
         guard let confirmationStartedAt else {
             logger.info("Ignoring precise location update because confirmation mode is inactive")
@@ -317,12 +363,13 @@ final class DockArrivalMonitoringService: NSObject {
         }
     }
 
-    private func notifyServerOfArrival(for dock: MonitoredDock) async {
+    @discardableResult
+    private func notifyServerOfArrival(for dock: MonitoredDock) async -> Bool {
         guard let deviceToken = DeviceTokenHelper.apnsDeviceToken else {
             logger.warning("Cannot end live activity on arrival because APNs device token is unavailable")
             isSendingArrivalRequest = false
             logLocationEvent("arrival_request_failed", dock: dock, message: "APNs device token unavailable")
-            return
+            return false
         }
 
         let body: [String: Any] = [
@@ -349,7 +396,7 @@ final class DockArrivalMonitoringService: NSObject {
                     dock: dock,
                     message: "Server returned HTTP \(httpResponse.statusCode)"
                 )
-                return
+                return false
             }
 
             logger.info("Server confirmed dock arrival for dock \(dock.dockId, privacy: .public); ending local live activity")
@@ -366,6 +413,7 @@ final class DockArrivalMonitoringService: NSObject {
             }
             stopMonitoring(reason: "arrival_confirmed")
             await LiveActivityService.shared.refreshNotificationStatusFromServer()
+            return true
         } catch {
             logger.error("Failed to notify server of dock arrival: \(error.localizedDescription)")
             isSendingArrivalRequest = false
@@ -374,8 +422,29 @@ final class DockArrivalMonitoringService: NSObject {
                 dock: dock,
                 message: "Network error: \(error.localizedDescription)"
             )
+            return false
         }
     }
+
+#if DEBUG
+    func debugSimulateArrival(dockId: String, dockName: String) async -> (success: Bool, message: String) {
+        let dock = MonitoredDock(
+            dockId: dockId,
+            dockName: dockName,
+            latitude: 0,
+            longitude: 0
+        )
+
+        isSendingArrivalRequest = true
+        lastArrivalAttemptAt = Date()
+
+        let success = await notifyServerOfArrival(for: dock)
+        let message = success
+            ? "Simulated arrival for \(dockName)."
+            : "Simulated arrival failed for \(dockName). Check server logs and push events."
+        return (success, message)
+    }
+#endif
 
     private func postJSON(
         path: String,
@@ -497,9 +566,23 @@ final class DockArrivalMonitoringService: NSObject {
         let threshold = LiveActivityArrivalSettings.configuredArrivalDistanceMeters()
         let radius = max(
             threshold + LiveActivityArrivalSettings.regionRadiusBufferMeters,
-            LiveActivityArrivalSettings.minimumRegionRadiusMeters
+            LiveActivityArrivalSettings.highFrequencyActivationDistanceMeters
         )
         return min(radius, locationManager.maximumRegionMonitoringDistance)
+    }
+
+    private func configureLowPowerTrackingProfile() {
+        locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        locationManager.distanceFilter = 100
+        locationManager.activityType = .other
+        locationManager.pausesLocationUpdatesAutomatically = true
+    }
+
+    private func configureHighPowerTrackingProfile() {
+        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        locationManager.distanceFilter = 5
+        locationManager.activityType = .fitness
+        locationManager.pausesLocationUpdatesAutomatically = false
     }
 
     private func stopMonitoringDockRegion() {
@@ -523,7 +606,7 @@ final class DockArrivalMonitoringService: NSObject {
         logLocationEvent(
             "region_monitoring_started",
             dock: dock,
-            message: "Monitoring dock entry region",
+            message: "Monitoring near-dock activation region",
             raw: ["radiusMeters": configuredRegionRadiusMeters()]
         )
     }
@@ -531,6 +614,8 @@ final class DockArrivalMonitoringService: NSObject {
     private func startPreciseLocationUpdates(reason: String) {
         guard monitoredDock != nil else { return }
         guard !isSendingArrivalRequest else { return }
+
+        configureHighPowerTrackingProfile()
 
         if confirmationStartedAt == nil {
             confirmationStartedAt = Date()
@@ -549,6 +634,7 @@ final class DockArrivalMonitoringService: NSObject {
 
     private func stopPreciseLocationUpdates() {
         locationManager.stopUpdatingLocation()
+        configureLowPowerTrackingProfile()
         confirmationStartedAt = nil
         firstPreciseInsideThresholdAt = nil
     }
@@ -559,7 +645,7 @@ final class DockArrivalMonitoringService: NSObject {
         logLocationEvent(
             "region_entered",
             dock: dock,
-            message: "Dock entry region triggered",
+            message: "Near-dock activation region triggered",
             raw: [
                 "reason": reason,
                 "regionIdentifier": region?.identifier ?? "unknown"
@@ -575,7 +661,7 @@ final class DockArrivalMonitoringService: NSObject {
             logLocationEvent(
                 "region_exited",
                 dock: dock,
-                message: "Left dock entry region; stopping precise confirmation",
+                message: "Left near-dock activation region; stopping precise confirmation",
                 raw: [
                     "reason": reason,
                     "regionIdentifier": region?.identifier ?? "unknown"
@@ -682,6 +768,7 @@ extension DockArrivalMonitoringService: CLLocationManagerDelegate {
                 message: "Location permission unavailable after authorization change"
             )
         case .notDetermined:
+            hasRequestedAlwaysAuthorizationThisSession = false
             break
         @unknown default:
             break

@@ -330,8 +330,18 @@ const uniqueUsersGauge = new promClient.Gauge({
 const dockPollers = new Map();
 
 // ── Dock Value Overrides ─────────────────────────────────────────────
-// Map<dockId, { standardBikes: number, eBikes: number, emptySpaces: number, updatedAt: number }>
+// Map<dockId, { standardBikes: number, eBikes: number, emptySpaces: number, latitude: number|null, longitude: number|null, updatedAt: number }>
 const dockOverrides = new Map();
+
+function parseOptionalCoordinate(value, min, max) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string" && !value.trim()) return undefined;
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue < min || numericValue > max) {
+    return null;
+  }
+  return numericValue;
+}
 
 function loadDockOverrides() {
   try {
@@ -340,10 +350,24 @@ function loadDockOverrides() {
     const entries = JSON.parse(raw);
     for (const [dockId, override] of entries) {
       if (!dockId || typeof override !== "object" || !override) continue;
+      const latitude = parseOptionalCoordinate(
+        override.latitude ?? override.lat,
+        -90,
+        90
+      );
+      const longitude = parseOptionalCoordinate(
+        override.longitude ?? override.lon,
+        -180,
+        180
+      );
+      const hasLocationOverride =
+        typeof latitude === "number" && typeof longitude === "number";
       dockOverrides.set(dockId, {
         standardBikes: Math.max(0, Math.trunc(Number(override.standardBikes) || 0)),
         eBikes: Math.max(0, Math.trunc(Number(override.eBikes) || 0)),
         emptySpaces: Math.max(0, Math.trunc(Number(override.emptySpaces) || 0)),
+        latitude: hasLocationOverride ? latitude : null,
+        longitude: hasLocationOverride ? longitude : null,
         updatedAt:
           Number.isFinite(override.updatedAt) && override.updatedAt > 0
             ? Math.trunc(override.updatedAt)
@@ -570,6 +594,10 @@ function applyOverrideToBikePoint(bikePoint) {
 
   return {
     ...bikePoint,
+    lat:
+      typeof override.latitude === "number" ? override.latitude : bikePoint.lat,
+    lon:
+      typeof override.longitude === "number" ? override.longitude : bikePoint.lon,
     additionalProperties,
   };
 }
@@ -1689,6 +1717,10 @@ function serializeDockOverrides() {
       standardBikes: override.standardBikes,
       eBikes: override.eBikes,
       emptySpaces: override.emptySpaces,
+      latitude:
+        typeof override.latitude === "number" ? override.latitude : null,
+      longitude:
+        typeof override.longitude === "number" ? override.longitude : null,
       updatedAt: new Date(override.updatedAt).toISOString(),
     }))
     .sort((a, b) => a.dockId.localeCompare(b.dockId));
@@ -1855,7 +1887,7 @@ function renderAdminOverridesPage() {
 <body>
   <main>
     <h1>Dock Admin & Diagnostics</h1>
-    <p class="muted">Set manual bikes/e-bikes/spaces values for a dock and inspect recent push plus background-location diagnostics. Overrides affect <code>/Place/:dockId</code>, <code>/BikePoint</code>, and live activity polling.</p>
+    <p class="muted">Set manual bikes/e-bikes/spaces values or override dock coordinates for a dock, then inspect recent push plus background-location diagnostics. Overrides affect <code>/Place/:dockId</code>, <code>/BikePoint</code>, and live activity polling.</p>
 
     <section class="panel">
       <div class="grid">
@@ -1879,6 +1911,14 @@ function renderAdminOverridesPage() {
           Spaces
           <input id="emptySpaces" type="number" min="0" step="1" value="0" />
         </label>
+        <label>
+          Latitude Override
+          <input id="latitude" type="number" min="-90" max="90" step="0.000001" placeholder="Leave blank to use TfL latitude" />
+        </label>
+        <label>
+          Longitude Override
+          <input id="longitude" type="number" min="-180" max="180" step="0.000001" placeholder="Leave blank to use TfL longitude" />
+        </label>
       </div>
       <div class="actions">
         <button id="saveButton" class="primary">Save Override</button>
@@ -1899,6 +1939,7 @@ function renderAdminOverridesPage() {
             <th>Bikes</th>
             <th>E-bikes</th>
             <th>Spaces</th>
+            <th>Location Override</th>
             <th>Updated</th>
             <th>Actions</th>
           </tr>
@@ -1956,6 +1997,8 @@ function renderAdminOverridesPage() {
     const standardBikesInput = document.getElementById("standardBikes");
     const eBikesInput = document.getElementById("eBikes");
     const emptySpacesInput = document.getElementById("emptySpaces");
+    const latitudeInput = document.getElementById("latitude");
+    const longitudeInput = document.getElementById("longitude");
     const statusElement = document.getElementById("status");
     const selectionHint = document.getElementById("selectionHint");
     const overridesBody = document.getElementById("overridesBody");
@@ -2080,12 +2123,32 @@ function renderAdminOverridesPage() {
         standardBikesInput.value = String(override.standardBikes);
         eBikesInput.value = String(override.eBikes);
         emptySpacesInput.value = String(override.emptySpaces);
-        selectionHint.textContent = "Editing override for " + selectedDock.commonName + ".";
+        latitudeInput.value =
+          typeof override.latitude === "number" ? String(override.latitude) : "";
+        longitudeInput.value =
+          typeof override.longitude === "number" ? String(override.longitude) : "";
+        selectionHint.textContent =
+          "Editing override for " +
+          selectedDock.commonName +
+          ". TfL location: " +
+          formatNumber(selectedDock.lat) +
+          ", " +
+          formatNumber(selectedDock.lon) +
+          ".";
       } else {
         standardBikesInput.value = "0";
         eBikesInput.value = "0";
         emptySpacesInput.value = "0";
-        selectionHint.textContent = "No override set for " + selectedDock.commonName + ".";
+        latitudeInput.value = "";
+        longitudeInput.value = "";
+        selectionHint.textContent =
+          "No override set for " +
+          selectedDock.commonName +
+          ". TfL location: " +
+          formatNumber(selectedDock.lat) +
+          ", " +
+          formatNumber(selectedDock.lon) +
+          ".";
       }
     }
 
@@ -2095,7 +2158,7 @@ function renderAdminOverridesPage() {
       );
 
       if (overrides.length === 0) {
-        overridesBody.innerHTML = '<tr><td colspan="6">No active overrides.</td></tr>';
+        overridesBody.innerHTML = '<tr><td colspan="7">No active overrides.</td></tr>';
         return;
       }
 
@@ -2105,6 +2168,10 @@ function renderAdminOverridesPage() {
         const dockLabel = dock
           ? dock.commonName + " (" + override.dockId + ")"
           : override.dockId;
+        const locationOverride =
+          typeof override.latitude === "number" && typeof override.longitude === "number"
+            ? formatNumber(override.latitude) + ", " + formatNumber(override.longitude)
+            : "—";
 
         const row = document.createElement("tr");
         row.innerHTML =
@@ -2112,6 +2179,7 @@ function renderAdminOverridesPage() {
           "<td>" + override.standardBikes + "</td>" +
           "<td>" + override.eBikes + "</td>" +
           "<td>" + override.emptySpaces + "</td>" +
+          "<td>" + escapeHtml(locationOverride) + "</td>" +
           "<td>" + new Date(override.updatedAt).toLocaleString() + "</td>" +
           '<td class="actions-cell">' +
           '<button class="secondary" data-action="use" data-dock-id="' + override.dockId + '">Use</button> ' +
@@ -2229,6 +2297,8 @@ function renderAdminOverridesPage() {
         eBikes: asInt(eBikesInput.value),
         emptySpaces: asInt(emptySpacesInput.value),
       };
+      const latitudeRaw = (latitudeInput.value || "").trim();
+      const longitudeRaw = (longitudeInput.value || "").trim();
 
       if (
         body.standardBikes === null ||
@@ -2237,6 +2307,14 @@ function renderAdminOverridesPage() {
       ) {
         setStatus("All values must be whole numbers greater than or equal to 0.", "error");
         return;
+      }
+      if ((latitudeRaw && !longitudeRaw) || (!latitudeRaw && longitudeRaw)) {
+        setStatus("Provide both latitude and longitude, or leave both blank.", "error");
+        return;
+      }
+      if (latitudeRaw && longitudeRaw) {
+        body.latitude = latitudeRaw;
+        body.longitude = longitudeRaw;
       }
 
       const response = await fetch(apiUrl("/overrides"), {
@@ -2354,6 +2432,8 @@ async function fetchDockList() {
             typeof point.commonName === "string" && point.commonName.trim()
               ? point.commonName.trim()
               : point.id,
+          lat: Number(point.lat),
+          lon: Number(point.lon),
         }))
         .sort((a, b) => a.commonName.localeCompare(b.commonName))
     : [];
@@ -2465,6 +2545,8 @@ app.post(adminRoutePaths("/api/overrides"), (req, res) => {
   const standardBikes = normalizeNonNegativeInteger(req.body?.standardBikes);
   const eBikes = normalizeNonNegativeInteger(req.body?.eBikes);
   const emptySpaces = normalizeNonNegativeInteger(req.body?.emptySpaces);
+  const latitude = parseOptionalCoordinate(req.body?.latitude, -90, 90);
+  const longitude = parseOptionalCoordinate(req.body?.longitude, -180, 180);
 
   if (!dockId) {
     return res.status(400).json({ error: "dockId is required" });
@@ -2474,18 +2556,30 @@ app.post(adminRoutePaths("/api/overrides"), (req, res) => {
       error: "standardBikes, eBikes, and emptySpaces must be integers >= 0",
     });
   }
+  if (latitude === null || longitude === null) {
+    return res.status(400).json({
+      error: "latitude must be between -90 and 90, and longitude between -180 and 180",
+    });
+  }
+  if ((latitude === undefined) !== (longitude === undefined)) {
+    return res.status(400).json({
+      error: "latitude and longitude must be provided together",
+    });
+  }
 
   const override = {
     standardBikes,
     eBikes,
     emptySpaces,
+    latitude: latitude ?? null,
+    longitude: longitude ?? null,
     updatedAt: Date.now(),
   };
   dockOverrides.set(dockId, override);
   saveDockOverrides();
 
   logger.info(
-    `Set dock override for ${dockId}: bikes=${standardBikes}, eBikes=${eBikes}, spaces=${emptySpaces}`
+    `Set dock override for ${dockId}: bikes=${standardBikes}, eBikes=${eBikes}, spaces=${emptySpaces}, lat=${override.latitude ?? "default"}, lon=${override.longitude ?? "default"}`
   );
 
   res.json({
@@ -2495,6 +2589,8 @@ app.post(adminRoutePaths("/api/overrides"), (req, res) => {
       standardBikes,
       eBikes,
       emptySpaces,
+      latitude: override.latitude,
+      longitude: override.longitude,
       updatedAt: new Date(override.updatedAt).toISOString(),
     },
   });
