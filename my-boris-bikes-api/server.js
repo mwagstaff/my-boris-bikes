@@ -1678,6 +1678,7 @@ function recordBackgroundLocationEvent(entry) {
       deviceId: shortenIdentifier(entry.deviceId),
       event: entry.event || "unknown",
       appState: entry.appState || "unknown",
+      backgroundRefreshStatus: entry.backgroundRefreshStatus || "unknown",
       dockId: entry.dockId || null,
       dockName: entry.dockName || null,
       distanceMeters:
@@ -1979,6 +1980,7 @@ function renderAdminOverridesPage() {
             <th>Device</th>
             <th>Event</th>
             <th>App State</th>
+            <th>BG Refresh</th>
             <th>Dock</th>
             <th>Distance</th>
             <th>Accuracy</th>
@@ -2253,7 +2255,7 @@ function renderAdminOverridesPage() {
 
     function renderBackgroundLocationEventsTable(events) {
       if (!Array.isArray(events) || events.length === 0) {
-        backgroundLocationEventsBody.innerHTML = '<tr><td colspan="10">No background location events recorded since server start.</td></tr>';
+        backgroundLocationEventsBody.innerHTML = '<tr><td colspan="11">No background location events recorded since server start.</td></tr>';
         return;
       }
 
@@ -2266,6 +2268,7 @@ function renderAdminOverridesPage() {
           "<td>" + escapeHtml(event.deviceId || "—") + "</td>" +
           "<td>" + escapeHtml(event.event || "—") + "</td>" +
           "<td>" + escapeHtml(event.appState || "—") + "</td>" +
+          "<td>" + escapeHtml(event.backgroundRefreshStatus || "—") + "</td>" +
           "<td>" + dockLabel(event.dockId, event.dockName) + "</td>" +
           "<td>" + escapeHtml(formatNumber(event.distanceMeters)) + "</td>" +
           "<td>" + escapeHtml(formatNumber(event.horizontalAccuracyMeters)) + "</td>" +
@@ -3092,6 +3095,10 @@ app.post("/app/background-location-event", (req, res) => {
     deviceId: bodyDeviceId || headerDeviceId || "unknown",
     event: body.event,
     appState: body.appState,
+    backgroundRefreshStatus:
+      typeof body.backgroundRefreshStatus === "string"
+        ? body.backgroundRefreshStatus.trim()
+        : null,
     dockId: typeof body.dockId === "string" ? body.dockId.trim() : null,
     dockName: typeof body.dockName === "string" ? body.dockName.trim() : null,
     distanceMeters: Number(body.distanceMeters),

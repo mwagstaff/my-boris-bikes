@@ -30,8 +30,10 @@ final class DockArrivalMonitoringService: NSObject {
     }()
 
     private var monitoredDock: MonitoredDock?
+    private var backgroundActivitySession: CLBackgroundActivitySession?
     private var isSendingArrivalRequest = false
     private var lastArrivalAttemptAt: Date?
+    private var lastRoutineLocationLogAt: Date?
     private var confirmationStartedAt: Date?
     private var firstPreciseInsideThresholdAt: Date?
     private var hasRequestedAlwaysAuthorizationThisSession = false
@@ -91,6 +93,7 @@ final class DockArrivalMonitoringService: NSObject {
         persistDock(dock)
         lastArrivalAttemptAt = nil
         isSendingArrivalRequest = false
+        lastRoutineLocationLogAt = nil
         confirmationStartedAt = nil
         firstPreciseInsideThresholdAt = nil
         logLocationEvent("monitor_begin", dock: dock, message: "Preparing dock arrival monitoring")
@@ -103,6 +106,7 @@ final class DockArrivalMonitoringService: NSObject {
             return
         }
 
+        startBackgroundActivitySessionIfNeeded()
         requestAuthorizationIfNeeded()
         startMonitoringIfPossible()
     }
@@ -123,6 +127,7 @@ final class DockArrivalMonitoringService: NSObject {
         }
 
         monitoredDock = dock
+        startBackgroundActivitySessionIfNeeded()
         logLocationEvent("monitor_restore", dock: dock, message: "Restored dock arrival monitoring state")
         requestAuthorizationIfNeeded()
         startMonitoringIfPossible()
@@ -138,10 +143,13 @@ final class DockArrivalMonitoringService: NSObject {
         }
         logLocationEvent("monitor_stop", dock: monitoredDock, message: reason)
 
-        stopPreciseLocationUpdates()
+        stopAllLocationUpdates()
         stopMonitoringDockRegion()
+        backgroundActivitySession?.invalidate()
+        backgroundActivitySession = nil
         isSendingArrivalRequest = false
         lastArrivalAttemptAt = nil
+        lastRoutineLocationLogAt = nil
         confirmationStartedAt = nil
         firstPreciseInsideThresholdAt = nil
 
@@ -228,29 +236,48 @@ final class DockArrivalMonitoringService: NSObject {
             return
         }
 
+        startBackgroundActivitySessionIfNeeded()
+
         guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
-            logger.warning("Dock arrival region monitoring is unavailable; falling back to precise location updates")
+            logger.warning("Dock arrival region monitoring is unavailable; falling back to continuous location updates")
             logLocationEvent(
                 "region_monitoring_unavailable",
                 dock: dock,
-                message: "Region monitoring unavailable; using precise updates fallback"
+                message: "Region monitoring unavailable; using continuous location updates fallback"
             )
-            startPreciseLocationUpdates(reason: "region_monitoring_unavailable")
+            startLowPowerLocationUpdates(reason: "region_monitoring_unavailable")
             return
         }
 
-        stopPreciseLocationUpdates()
+        startLowPowerLocationUpdates(reason: "monitoring_started")
         stopMonitoringDockRegion()
         startMonitoringDockRegion(for: dock)
         locationManager.requestLocation()
 
-        logger.info("Starting low-power region monitoring for dock arrival monitoring")
+        logger.info("Starting continuous low-power updates and dock region monitoring for dock arrival monitoring")
         logLocationEvent(
             "location_updates_started",
             dock: dock,
-            message: "Started dock region monitoring",
-            raw: ["authorizationStatus": authorizationStatusLabel(authorizationStatus)]
+            message: "Started continuous low-power updates and dock region monitoring",
+            raw: [
+                "authorizationStatus": authorizationStatusLabel(authorizationStatus),
+                "regionRadiusMeters": configuredRegionRadiusMeters()
+            ]
         )
+    }
+
+    private func startBackgroundActivitySessionIfNeeded() {
+        guard backgroundActivitySession == nil else { return }
+        guard monitoredDock != nil else { return }
+
+        if #available(iOS 17.0, *) {
+            backgroundActivitySession = CLBackgroundActivitySession()
+            logLocationEvent(
+                "background_activity_session_started",
+                dock: monitoredDock,
+                message: "Started CLBackgroundActivitySession to keep background location active"
+            )
+        }
     }
 
     private func shouldAttemptArrival(for location: CLLocation) -> Bool {
@@ -287,6 +314,12 @@ final class DockArrivalMonitoringService: NSObject {
         let resetDistanceThreshold = arrivalDistanceThreshold + LiveActivityArrivalSettings.confirmationResetHysteresisMeters
 
         logger.info("Dock arrival check for \(dock.dockId, privacy: .public): \(distance, privacy: .public)m away")
+        logRoutineLocationEventIfNeeded(
+            dock: dock,
+            location: location,
+            distanceMeters: distance,
+            activationDistanceThreshold: activationDistanceThreshold
+        )
 
         if confirmationStartedAt == nil, distance <= activationDistanceThreshold {
             startPreciseLocationUpdates(reason: "location_within_activation_distance")
@@ -505,6 +538,7 @@ final class DockArrivalMonitoringService: NSObject {
                 "event": event,
                 "clientTimestamp": clientTimestamp,
                 "appState": await MainActor.run { self.applicationStateLabel() },
+                "backgroundRefreshStatus": await MainActor.run { self.backgroundRefreshStatusLabel() },
                 "arrivalThresholdMeters": arrivalThresholdMeters,
                 "authorizationStatus": authorizationStatusLabel(locationManager.authorizationStatus),
             ]
@@ -558,6 +592,19 @@ final class DockArrivalMonitoringService: NSObject {
         }
     }
 
+    private func backgroundRefreshStatusLabel() -> String {
+        switch UIApplication.shared.backgroundRefreshStatus {
+        case .available:
+            return "available"
+        case .denied:
+            return "denied"
+        case .restricted:
+            return "restricted"
+        @unknown default:
+            return "unknown"
+        }
+    }
+
     private func dockRegionIdentifier(for dockId: String) -> String {
         "\(Self.regionIdentifierPrefix)\(dockId)"
     }
@@ -583,6 +630,23 @@ final class DockArrivalMonitoringService: NSObject {
         locationManager.distanceFilter = 5
         locationManager.activityType = .fitness
         locationManager.pausesLocationUpdatesAutomatically = false
+    }
+
+    private func startLowPowerLocationUpdates(reason: String) {
+        configureLowPowerTrackingProfile()
+        locationManager.startUpdatingLocation()
+        locationManager.requestLocation()
+        logLocationEvent(
+            "low_power_updates_started",
+            dock: monitoredDock,
+            message: "Started continuous low-power location updates",
+            raw: ["reason": reason]
+        )
+    }
+
+    private func stopAllLocationUpdates() {
+        locationManager.stopUpdatingLocation()
+        configureLowPowerTrackingProfile()
     }
 
     private func stopMonitoringDockRegion() {
@@ -633,10 +697,37 @@ final class DockArrivalMonitoringService: NSObject {
     }
 
     private func stopPreciseLocationUpdates() {
-        locationManager.stopUpdatingLocation()
-        configureLowPowerTrackingProfile()
+        if monitoredDock != nil, isEnabled {
+            startLowPowerLocationUpdates(reason: "precise_confirmation_finished")
+        } else {
+            stopAllLocationUpdates()
+        }
         confirmationStartedAt = nil
         firstPreciseInsideThresholdAt = nil
+    }
+
+    private func logRoutineLocationEventIfNeeded(
+        dock: MonitoredDock,
+        location: CLLocation,
+        distanceMeters: CLLocationDistance,
+        activationDistanceThreshold: CLLocationDistance
+    ) {
+        let now = Date()
+        let shouldLog =
+            lastRoutineLocationLogAt == nil ||
+            now.timeIntervalSince(lastRoutineLocationLogAt ?? .distantPast) >= 15 ||
+            distanceMeters <= activationDistanceThreshold
+
+        guard shouldLog else { return }
+
+        lastRoutineLocationLogAt = now
+        logLocationEvent(
+            "location_update",
+            dock: dock,
+            location: location,
+            distanceMeters: distanceMeters,
+            message: "Received location update while monitoring dock arrival"
+        )
     }
 
     private func handleDockRegionEntry(reason: String, region: CLRegion?) {
@@ -672,12 +763,7 @@ final class DockArrivalMonitoringService: NSObject {
     }
 
     private func shouldUploadDebugEvent(_ event: String) -> Bool {
-        switch event {
-        case "location_update", "location_ignored_imprecise":
-            return false
-        default:
-            return true
-        }
+        true
     }
 
     private func authorizationStatusLabel(_ status: CLAuthorizationStatus) -> String {
