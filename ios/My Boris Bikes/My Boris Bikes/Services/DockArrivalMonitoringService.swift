@@ -399,8 +399,21 @@ final class DockArrivalMonitoringService: NSObject {
             message: "Arrival distance threshold met"
         )
 
+        // Register a background task token *before* dispatching async work.
+        // The token inside postJSON only activates once the Task body runs —
+        // without this outer token, iOS could suspend the app in the window
+        // between Task dispatch and postJSON acquiring its own token.
+        var outerTaskId = UIBackgroundTaskIdentifier.invalid
+        outerTaskId = UIApplication.shared.beginBackgroundTask(withName: "dock-arrival-detection") {
+            UIApplication.shared.endBackgroundTask(outerTaskId)
+        }
+
         Task {
             await notifyServerOfArrival(for: dock)
+            await MainActor.run {
+                guard outerTaskId != .invalid else { return }
+                UIApplication.shared.endBackgroundTask(outerTaskId)
+            }
         }
     }
 
