@@ -180,6 +180,7 @@ struct LiveActivityArrivalSettings {
     static let confirmationTimeoutSeconds: TimeInterval = 45
     static let confirmationResetHysteresisMeters: CLLocationDistance = 10
     static let highFrequencyActivationDistanceMeters: CLLocationDistance = 500
+    static let preciseActivationDistanceMeters: CLLocationDistance = 150
     static let regionRadiusBufferMeters: CLLocationDistance = 35
 
     static var distanceOptions: [Int] {

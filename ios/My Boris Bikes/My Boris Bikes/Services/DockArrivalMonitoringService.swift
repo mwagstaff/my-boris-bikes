@@ -310,7 +310,7 @@ final class DockArrivalMonitoringService: NSObject {
         let dockLocation = CLLocation(latitude: dock.latitude, longitude: dock.longitude)
         let distance = location.distance(from: dockLocation)
         let arrivalDistanceThreshold = LiveActivityArrivalSettings.configuredArrivalDistanceMeters()
-        let activationDistanceThreshold = configuredRegionRadiusMeters()
+        let activationDistanceThreshold = LiveActivityArrivalSettings.preciseActivationDistanceMeters
         let resetDistanceThreshold = arrivalDistanceThreshold + LiveActivityArrivalSettings.confirmationResetHysteresisMeters
 
         logger.info("Dock arrival check for \(dock.dockId, privacy: .public): \(distance, privacy: .public)m away")
@@ -499,15 +499,17 @@ final class DockArrivalMonitoringService: NSObject {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let backgroundTaskId = await MainActor.run {
-            UIApplication.shared.beginBackgroundTask(withName: backgroundTaskName) { [logger] in
-                logger.warning("Background task expired while sending \(backgroundTaskName, privacy: .public)")
+        nonisolated(unsafe) var backgroundTaskId = UIBackgroundTaskIdentifier.invalid
+        backgroundTaskId = await MainActor.run {
+            UIApplication.shared.beginBackgroundTask(withName: backgroundTaskName) {
+                UIApplication.shared.endBackgroundTask(backgroundTaskId)
             }
         }
         defer {
+            let taskId = backgroundTaskId
             Task { @MainActor in
-                guard backgroundTaskId != .invalid else { return }
-                UIApplication.shared.endBackgroundTask(backgroundTaskId)
+                guard taskId != .invalid else { return }
+                UIApplication.shared.endBackgroundTask(taskId)
             }
         }
 
@@ -622,7 +624,7 @@ final class DockArrivalMonitoringService: NSObject {
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         locationManager.distanceFilter = 100
         locationManager.activityType = .other
-        locationManager.pausesLocationUpdatesAutomatically = true
+        locationManager.pausesLocationUpdatesAutomatically = false
     }
 
     private func configureHighPowerTrackingProfile() {
