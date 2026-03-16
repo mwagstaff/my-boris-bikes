@@ -342,6 +342,14 @@ final class DockArrivalMonitoringService: NSObject {
                 message: "Precise confirmation window expired"
             )
             stopPreciseLocationUpdates()
+            // Re-check region state so didDetermineState fires immediately if the user
+            // is still inside the monitored region. This resumes high-power tracking
+            // (without restarting the confirmation clock) so the next location update
+            // within 150m will start a fresh confirmation window.
+            for region in locationManager.monitoredRegions {
+                guard region.identifier.hasPrefix(Self.regionIdentifierPrefix) else { continue }
+                locationManager.requestState(for: region)
+            }
             return
         }
 
@@ -629,7 +637,7 @@ final class DockArrivalMonitoringService: NSObject {
 
     private func configureHighPowerTrackingProfile() {
         locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-        locationManager.distanceFilter = 5
+        locationManager.distanceFilter = kCLDistanceFilterNone
         locationManager.activityType = .fitness
         locationManager.pausesLocationUpdatesAutomatically = false
     }
@@ -677,13 +685,17 @@ final class DockArrivalMonitoringService: NSObject {
         )
     }
 
-    private func startPreciseLocationUpdates(reason: String) {
+    private func startPreciseLocationUpdates(reason: String, startConfirmationTimer: Bool = true) {
         guard monitoredDock != nil else { return }
         guard !isSendingArrivalRequest else { return }
 
         configureHighPowerTrackingProfile()
 
-        if confirmationStartedAt == nil {
+        // Only start the 45s confirmation clock once a location update has confirmed
+        // the user is within the activation distance. Region entry (which can fire at
+        // up to 500m) switches to high-power mode but defers the clock to avoid
+        // expiring the window long before the user reaches the dock.
+        if startConfirmationTimer, confirmationStartedAt == nil {
             confirmationStartedAt = Date()
             firstPreciseInsideThresholdAt = nil
             logLocationEvent(
@@ -699,13 +711,14 @@ final class DockArrivalMonitoringService: NSObject {
     }
 
     private func stopPreciseLocationUpdates() {
+        confirmationStartedAt = nil
+        firstPreciseInsideThresholdAt = nil
+
         if monitoredDock != nil, isEnabled {
             startLowPowerLocationUpdates(reason: "precise_confirmation_finished")
         } else {
             stopAllLocationUpdates()
         }
-        confirmationStartedAt = nil
-        firstPreciseInsideThresholdAt = nil
     }
 
     private func logRoutineLocationEventIfNeeded(
@@ -744,7 +757,7 @@ final class DockArrivalMonitoringService: NSObject {
                 "regionIdentifier": region?.identifier ?? "unknown"
             ]
         )
-        startPreciseLocationUpdates(reason: reason)
+        startPreciseLocationUpdates(reason: reason, startConfirmationTimer: false)
     }
 
     private func handleDockRegionExit(reason: String, region: CLRegion?) {
