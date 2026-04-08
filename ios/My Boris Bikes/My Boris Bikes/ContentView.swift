@@ -105,6 +105,19 @@ struct ContentView: View {
             }
 
             VStack(spacing: 8) {
+                if shouldShowLocationBanner {
+                    LocationPermissionBanner(
+                        locationService: locationService,
+                        onRequestPermission: handleLocationPermissionRequest
+                    )
+                }
+
+                Spacer()
+            }
+
+            VStack {
+                Spacer()
+
                 if let notificationSession {
                     ActiveNotificationsBanner(
                         dockName: notificationSession.dockName,
@@ -116,16 +129,8 @@ struct ContentView: View {
                         }
                     )
                     .padding(.horizontal)
+                    .padding(.bottom, 56)
                 }
-
-                if shouldShowLocationBanner {
-                    LocationPermissionBanner(
-                        locationService: locationService,
-                        onRequestPermission: handleLocationPermissionRequest
-                    )
-                }
-
-                Spacer()
             }
         }
         .onAppear {
