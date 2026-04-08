@@ -34,7 +34,7 @@ struct ContentView: View {
     }
 
     private var notificationSession: LiveActivityService.ActiveNotificationSession? {
-        liveActivityService.activeNotificationSession
+        liveActivityService.currentNotificationSession
     }
     
     var body: some View {

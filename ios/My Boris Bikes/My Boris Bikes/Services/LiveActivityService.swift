@@ -46,6 +46,18 @@ class LiveActivityService: ObservableObject {
     @Published private(set) var primaryDisplayChangeToken = UUID()
     @Published private(set) var activeNotificationSession: ActiveNotificationSession?
 
+    var currentNotificationSession: ActiveNotificationSession? {
+        if let activity = activeActivities.values.first {
+            return ActiveNotificationSession(
+                dockId: activity.attributes.dockId,
+                dockName: activity.attributes.dockName,
+                expiresAt: activity.content.staleDate
+            )
+        }
+
+        return activeNotificationSession
+    }
+
     /// Track stale dates for active activities (keyed by dock ID)
     private var staleDates: [String: Date] = [:]
 
