@@ -2,7 +2,7 @@ import UIKit
 import UserNotifications
 import os.log
 
-class AppDelegate: NSObject, UIApplicationDelegate {
+class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     private let logger = Logger(subsystem: "dev.skynolimit.myborisbikes", category: "AppDelegate")
 
     func application(
@@ -13,10 +13,14 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         BackgroundRefreshService.shared.scheduleAppRefresh()
         BackgroundRefreshService.shared.prewarmAllBikePointsIfStale(force: true)
 
+        let notificationCenter = UNUserNotificationCenter.current()
+        notificationCenter.delegate = self
+        configureNotificationCategories(center: notificationCenter)
+
         // Request notification authorization and register for remote notifications.
         // We need the device token even if the user declines visible notifications,
         // because we use silent (content-available) pushes for complication refresh.
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+        notificationCenter.requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
             if let error = error {
                 self.logger.error("Notification authorization error: \(error.localizedDescription)")
             }
@@ -86,6 +90,21 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
     // MARK: - Helpers
 
+    private func configureNotificationCategories(center: UNUserNotificationCenter) {
+        let endActivityAction = UNNotificationAction(
+            identifier: AppConstants.Notifications.endLiveActivityActionIdentifier,
+            title: "End activity",
+            options: [.destructive]
+        )
+        let liveActivityCategory = UNNotificationCategory(
+            identifier: AppConstants.Notifications.liveActivityAlertCategoryIdentifier,
+            actions: [endActivityAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        center.setNotificationCategories([liveActivityCategory])
+    }
+
     private func registerComplicationToken(_ token: String) async {
         guard let url = URL(string: AppConstants.Server.baseURL + AppConstants.Server.complicationRegisterEndpoint) else {
             logger.error("Invalid complication register URL")
@@ -110,6 +129,37 @@ class AppDelegate: NSObject, UIApplicationDelegate {
             }
         } catch {
             logger.error("Failed to register complication token: \(error.localizedDescription)")
+        }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        guard response.actionIdentifier == AppConstants.Notifications.endLiveActivityActionIdentifier else {
+            completionHandler()
+            return
+        }
+
+        let userInfo = response.notification.request.content.userInfo
+        let dockId = (userInfo[AppConstants.Notifications.liveActivityDockIdUserInfoKey] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let dockName = (userInfo[AppConstants.Notifications.liveActivityDockNameUserInfoKey] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !dockId.isEmpty else {
+            logger.error("Cannot end live activity from notification action without a dock ID")
+            completionHandler()
+            return
+        }
+
+        Task {
+            await LiveActivityService.shared.endLiveActivityFromNotificationAction(
+                dockId: dockId,
+                dockName: dockName
+            )
+            completionHandler()
         }
     }
 }

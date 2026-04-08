@@ -31,6 +31,7 @@ struct AppConstants {
         static let complicationRegisterEndpoint = "/complication/register"
         static let complicationUnregisterEndpoint = "/complication/unregister"
         static let liveActivityDeviceStatusEndpoint = "/live-activity/device/status"
+        static let liveActivityDeviceEndEndpoint = "/live-activity/device/end"
         static let liveActivityArrivalEndpoint = "/live-activity/arrive"
         static let backgroundLocationEventEndpoint = "/app/background-location-event"
 
@@ -83,6 +84,13 @@ struct AppConstants {
 
         /// Debug auto-removal duration (1 minute)
         static let debugAutoRemoveDurationSeconds: TimeInterval = 60
+    }
+
+    struct Notifications {
+        static let liveActivityAlertCategoryIdentifier = "LIVE_ACTIVITY_ALERT"
+        static let endLiveActivityActionIdentifier = "END_LIVE_ACTIVITY"
+        static let liveActivityDockIdUserInfoKey = "dockId"
+        static let liveActivityDockNameUserInfoKey = "dockName"
     }
 }
 

@@ -59,6 +59,7 @@ const MAX_LIVE_ACTIVITY_ALTERNATIVES = 5;
 const VALID_PRIMARY_DISPLAYS = new Set(["bikes", "eBikes", "spaces"]);
 const MAX_PUSH_EVENT_LOG_ENTRIES = 500;
 const MAX_BACKGROUND_LOCATION_EVENT_LOG_ENTRIES = 500;
+const LIVE_ACTIVITY_ALERT_CATEGORY = "LIVE_ACTIVITY_ALERT";
 
 // Ensure logs directory exists
 if (!fs.existsSync(LOG_DIR)) {
@@ -1089,8 +1090,16 @@ async function sendApnsPush(pushToken, contentState, event, buildType) {
   }
 }
 
-async function sendAlertPush(deviceToken, buildType, title, body, event, logLabel) {
-  const payload = JSON.stringify({
+async function sendAlertPush(
+  deviceToken,
+  buildType,
+  title,
+  body,
+  event,
+  logLabel,
+  options = {}
+) {
+  const payloadBody = {
     aps: {
       alert: {
         title,
@@ -1098,7 +1107,20 @@ async function sendAlertPush(deviceToken, buildType, title, body, event, logLabe
       },
       sound: "default",
     },
-  });
+  };
+
+  if (
+    typeof options.category === "string" &&
+    options.category.trim()
+  ) {
+    payloadBody.aps.category = options.category.trim();
+  }
+
+  if (options.customPayload && typeof options.customPayload === "object") {
+    Object.assign(payloadBody, options.customPayload);
+  }
+
+  const payload = JSON.stringify(payloadBody);
 
   try {
     const result = await sendApnsRequestWithFallback(
@@ -1151,14 +1173,28 @@ async function sendAlertPush(deviceToken, buildType, title, body, event, logLabe
   }
 }
 
-async function sendAvailabilityAlertPush(deviceToken, buildType, alertBody) {
+async function sendAvailabilityAlertPush(
+  deviceToken,
+  buildType,
+  alertBody,
+  dockId,
+  dockName
+) {
+  const sanitizedDockName = sanitizeDockName(dockName);
   return sendAlertPush(
     deviceToken,
     buildType,
     "Dock availability update",
     alertBody,
     "availability_alert",
-    "availability alert"
+    "availability alert",
+    {
+      category: LIVE_ACTIVITY_ALERT_CATEGORY,
+      customPayload: {
+        dockId,
+        dockName: sanitizedDockName || dockId,
+      },
+    }
   );
 }
 
@@ -1397,7 +1433,13 @@ async function pollDock(dockId) {
           sentAlerts.add(dedupeKey);
 
           availabilityAlertPromises.push(
-            sendAvailabilityAlertPush(sessionDeviceToken, session.buildType, alertMessage)
+            sendAvailabilityAlertPush(
+              sessionDeviceToken,
+              session.buildType,
+              alertMessage,
+              dockId,
+              data.dockName
+            )
               .then((result) => {
                 if (result.buildType !== session.buildType) {
                   session.buildType = result.buildType;
@@ -3250,6 +3292,51 @@ app.post("/live-activity/device/status", (req, res) => {
           buildType: latestSession.buildType,
         }
       : null,
+  });
+});
+
+app.post("/live-activity/device/end", async (req, res) => {
+  const dockId =
+    typeof req.body?.dockId === "string" ? req.body.dockId.trim() : "";
+  const bodyDeviceToken = normalizeApnsDeviceToken(req.body?.deviceToken);
+  const headerDeviceToken = normalizeApnsDeviceToken(req.headers["x-device-token"]);
+  const deviceToken = bodyDeviceToken || headerDeviceToken;
+  const requestedBuildType =
+    req.body?.buildType === "development" || req.body?.buildType === "production"
+      ? req.body.buildType
+      : null;
+
+  if (!dockId) {
+    return res.status(400).json({ error: "Missing required field: dockId" });
+  }
+
+  if (!deviceToken) {
+    return res
+      .status(400)
+      .json({ error: "Missing or invalid deviceToken (body.deviceToken or X-Device-Token)" });
+  }
+
+  logger.info(
+    `Ending live activity from device action: dock=${dockId}, device=${deviceToken.substring(0, 8)}...`
+  );
+
+  const { endedCount, remainingCount } = await endTrackedSessionsForDock(
+    dockId,
+    (_pushToken, session) =>
+      session.deviceToken === deviceToken &&
+      (!requestedBuildType || session.buildType === requestedBuildType),
+    "notification_action"
+  );
+
+  res.json({
+    success: true,
+    dockId,
+    endedCount,
+    remainingCount,
+    message:
+      endedCount > 0
+        ? "Live activity ended for this device"
+        : "No active live activity session matched this device action",
   });
 });
 

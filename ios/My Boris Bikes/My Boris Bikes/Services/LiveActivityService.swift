@@ -17,6 +17,12 @@ class LiveActivityService: ObservableObject {
         let expiresAt: Date?
     }
 
+    private struct DeviceEndResponse: Decodable {
+        let success: Bool
+        let endedCount: Int
+        let remainingCount: Int
+    }
+
     private struct DeviceNotificationStatusResponse: Decodable {
         struct Session: Decodable {
             let dockId: String
@@ -162,13 +168,17 @@ class LiveActivityService: ObservableObject {
     }
 
     /// End a specific activity instance without relying on stored state
-    private func endActivityInstance(_ activity: Activity<DockActivityAttributes>, dockId: String) async {
-        if let pushToken = activity.pushToken {
+    private func endActivityInstance(
+        _ activity: Activity<DockActivityAttributes>,
+        dockId: String,
+        skipServerUnregister: Bool = false
+    ) async {
+        if !skipServerUnregister, let pushToken = activity.pushToken {
             let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
             await unregisterFromServer(dockId: dockId, pushToken: tokenString)
         }
 
-        LiveActivityDockSettings.clearPrimaryDisplay(for: dockId)
+        clearLocallyTrackedActivity(for: dockId)
         notifyPrimaryDisplayChanged()
 
         let finalState = DockActivityAttributes.ContentState(
@@ -356,6 +366,42 @@ class LiveActivityService: ObservableObject {
 
     func isActivityActive(for dockId: String) -> Bool {
         activeActivities[dockId] != nil
+    }
+
+    func endLiveActivityFromNotificationAction(dockId: String, dockName: String?) async {
+        let trimmedDockId = dockId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedDockId.isEmpty else { return }
+
+        let trimmedDockName = dockName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        logger.info("Ending live activity from notification action for dock \(trimmedDockId)")
+
+        let endedLocally: Bool
+        if activeActivities[trimmedDockId] != nil {
+            endLiveActivity(for: trimmedDockId, skipServerUnregister: true)
+            endedLocally = true
+        } else if let activity = Activity<DockActivityAttributes>.activities.first(where: {
+            $0.attributes.dockId == trimmedDockId && $0.activityState != .dismissed && $0.activityState != .ended
+        }) {
+            await endActivityInstance(activity, dockId: trimmedDockId, skipServerUnregister: true)
+            await refreshNotificationStatusFromServer()
+            endedLocally = true
+        } else {
+            clearLocallyTrackedActivity(for: trimmedDockId)
+            notifyPrimaryDisplayChanged()
+            endedLocally = false
+        }
+
+        let mutedOnServer = await endLiveActivityNotificationsOnServer(for: trimmedDockId)
+        AnalyticsService.shared.track(
+            action: .liveActivityEnd,
+            screen: .app,
+            dock: AnalyticsDockInfo(id: trimmedDockId, name: trimmedDockName),
+            metadata: [
+                "reason": "notification_action",
+                "endedLocally": endedLocally,
+                "mutedOnServer": mutedOnServer,
+            ]
+        )
     }
 
     func refreshNotificationStatusFromServer() async {
@@ -758,6 +804,56 @@ class LiveActivityService: ObservableObject {
             }
         } catch {
             logger.error("Failed to unregister from server: \(error.localizedDescription)")
+        }
+    }
+
+    private func endLiveActivityNotificationsOnServer(for dockId: String) async -> Bool {
+        guard let deviceToken = DeviceTokenHelper.apnsDeviceToken else {
+            logger.warning("APNs device token unavailable while muting live activity notifications for dock \(dockId)")
+            return false
+        }
+
+        let urlString = "\(serverBaseURL)\(AppConstants.Server.liveActivityDeviceEndEndpoint)"
+        guard let url = URL(string: urlString) else {
+            logger.error("Invalid live activity device end URL: \(urlString)")
+            return false
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
+        request.timeoutInterval = 10
+
+        let body: [String: String] = [
+            "dockId": dockId,
+            "deviceToken": deviceToken,
+            "buildType": buildType,
+        ]
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                logger.warning("Non-HTTP response while muting live activity notifications for dock \(dockId)")
+                return false
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                logger.warning("Unexpected status (\(httpResponse.statusCode)) while muting live activity notifications for dock \(dockId)")
+                return false
+            }
+
+            let decoded = try JSONDecoder().decode(DeviceEndResponse.self, from: data)
+            untrackServerSession(dockId: dockId, pushToken: nil)
+            await refreshNotificationStatusFromServer()
+            logger.info(
+                "Muted live activity notifications for dock \(dockId) via device action (ended: \(decoded.endedCount), remaining: \(decoded.remainingCount))"
+            )
+            return decoded.success
+        } catch {
+            logger.error("Failed to mute live activity notifications for dock \(dockId): \(error.localizedDescription)")
+            return false
         }
     }
 }
