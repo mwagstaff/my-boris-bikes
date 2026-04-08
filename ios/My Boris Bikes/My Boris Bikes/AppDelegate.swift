@@ -155,9 +155,10 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }
 
         Task {
-            await LiveActivityService.shared.endLiveActivityFromNotificationAction(
+            await LiveActivityService.shared.endLiveActivityFromUserAction(
                 dockId: dockId,
-                dockName: dockName
+                dockName: dockName,
+                reason: "notification_action"
             )
             completionHandler()
         }

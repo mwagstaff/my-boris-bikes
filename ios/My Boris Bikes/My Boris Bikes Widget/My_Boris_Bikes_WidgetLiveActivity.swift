@@ -566,26 +566,8 @@ private struct CompactDonutView: View {
 // MARK: - Live Activity Widget
 
 struct My_Boris_Bikes_WidgetLiveActivity: Widget {
-    private func managementURL(for dockId: String) -> URL? {
-        var components = URLComponents()
-        components.scheme = "myborisbikes"
-        components.host = "dock"
-        components.path = "/\(dockId)"
-
-        let defaults = BikeDataFilter.userDefaultsStore
-        let bikeFilter = defaults.string(forKey: BikeDataFilter.userDefaultsKey) ?? BikeDataFilter.both.rawValue
-        let minBikes = defaults.object(forKey: AlternativeDockSettings.minBikesKey) as? Int ?? AlternativeDockSettings.defaultMinBikes
-        let minEBikes = defaults.object(forKey: AlternativeDockSettings.minEBikesKey) as? Int ?? AlternativeDockSettings.defaultMinEBikes
-        let minSpaces = defaults.object(forKey: AlternativeDockSettings.minSpacesKey) as? Int ?? AlternativeDockSettings.defaultMinSpaces
-
-        components.queryItems = [
-            URLQueryItem(name: "bikeFilter", value: bikeFilter),
-            URLQueryItem(name: "minBikes", value: String(minBikes)),
-            URLQueryItem(name: "minEBikes", value: String(minEBikes)),
-            URLQueryItem(name: "minSpaces", value: String(minSpaces))
-        ]
-
-        return components.url
+    private var appLaunchURL: URL? {
+        URL(string: "myborisbikes://app")
     }
 
     var body: some WidgetConfiguration {
@@ -595,7 +577,7 @@ struct My_Boris_Bikes_WidgetLiveActivity: Widget {
                 state: context.state
             )
             .activitySystemActionForegroundColor(Color.primary)
-            .widgetURL(managementURL(for: context.attributes.dockId))
+            .widgetURL(appLaunchURL)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
@@ -617,7 +599,7 @@ struct My_Boris_Bikes_WidgetLiveActivity: Widget {
             } minimal: {
                 PrimaryDisplayText(attributes: context.attributes, state: context.state, fontSize: 12, fontWeight: .bold)
             }
-            .widgetURL(managementURL(for: context.attributes.dockId))
+            .widgetURL(appLaunchURL)
         }
         .supplementalActivityFamilies([.small, .medium])
     }

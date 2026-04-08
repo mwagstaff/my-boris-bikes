@@ -368,12 +368,12 @@ class LiveActivityService: ObservableObject {
         activeActivities[dockId] != nil
     }
 
-    func endLiveActivityFromNotificationAction(dockId: String, dockName: String?) async {
+    func endLiveActivityFromUserAction(dockId: String, dockName: String?, reason: String) async {
         let trimmedDockId = dockId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedDockId.isEmpty else { return }
 
         let trimmedDockName = dockName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        logger.info("Ending live activity from notification action for dock \(trimmedDockId)")
+        logger.info("Ending live activity from user action (\(reason)) for dock \(trimmedDockId)")
 
         let endedLocally: Bool
         if activeActivities[trimmedDockId] != nil {
@@ -397,7 +397,7 @@ class LiveActivityService: ObservableObject {
             screen: .app,
             dock: AnalyticsDockInfo(id: trimmedDockId, name: trimmedDockName),
             metadata: [
-                "reason": "notification_action",
+                "reason": reason,
                 "endedLocally": endedLocally,
                 "mutedOnServer": mutedOnServer,
             ]

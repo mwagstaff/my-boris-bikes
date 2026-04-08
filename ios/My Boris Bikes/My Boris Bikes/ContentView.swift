@@ -108,7 +108,12 @@ struct ContentView: View {
                 if let notificationSession {
                     ActiveNotificationsBanner(
                         dockName: notificationSession.dockName,
-                        onTap: { handleNotificationBannerTap(for: notificationSession.dockId) }
+                        onTap: {
+                            handleNotificationBannerTap(
+                                for: notificationSession.dockId,
+                                dockName: notificationSession.dockName
+                            )
+                        }
                     )
                     .padding(.horizontal)
                 }
@@ -170,11 +175,14 @@ struct ContentView: View {
         }
     }
 
-    private func handleNotificationBannerTap(for dockId: String) {
-        selectedBikePointForMap = nil
-        selectedDockId = dockId
-        selectedTab = 1
-        selectedTabIndex = 1
+    private func handleNotificationBannerTap(for dockId: String, dockName: String) {
+        Task {
+            await liveActivityService.endLiveActivityFromUserAction(
+                dockId: dockId,
+                dockName: dockName,
+                reason: "app_banner"
+            )
+        }
     }
     
     private func handleLocationPermissionRequest() {
@@ -220,7 +228,7 @@ private struct ActiveNotificationsBanner: View {
             HStack(spacing: 8) {
                 Image(systemName: "bell.badge.fill")
                     .foregroundColor(.white)
-                Text("Notifications active for \(dockName) | Tap to manage")
+                Text("Notifications active for \(dockName) | Tap to end")
                     .font(.caption.weight(.semibold))
                     .foregroundColor(.white)
                     .lineLimit(1)
@@ -229,12 +237,12 @@ private struct ActiveNotificationsBanner: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(Color.accentColor.opacity(0.95))
+            .background(AppConstants.Colors.standardBike.opacity(0.95))
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .shadow(color: .black.opacity(0.12), radius: 4, x: 0, y: 1)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Notifications active for \(dockName). Tap to manage")
+        .accessibilityLabel("Notifications active for \(dockName). Tap to end")
     }
 }
 

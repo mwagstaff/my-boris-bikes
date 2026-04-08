@@ -53,6 +53,8 @@ struct My_Boris_BikesApp: App {
         guard url.scheme == "myborisbikes" else { return }
 
         switch url.host {
+        case "app":
+            break
         case "favorites":
             selectedTab = 0 // Navigate to favorites tab
         case "map":
