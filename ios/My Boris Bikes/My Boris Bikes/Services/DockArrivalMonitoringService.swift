@@ -3,6 +3,45 @@ import Foundation
 import UIKit
 import os.log
 
+enum DockArrivalHeuristics {
+    static let temporaryFullAccuracyPurposeKey = "DockArrivalPreciseLocation"
+
+    static func acceptableHorizontalAccuracy(
+        for arrivalThreshold: CLLocationDistance
+    ) -> CLLocationAccuracy {
+        let scaledAccuracy = arrivalThreshold + 25
+        return min(
+            max(scaledAccuracy, LiveActivityArrivalSettings.minimumAcceptedHorizontalAccuracyMeters),
+            LiveActivityArrivalSettings.maximumAcceptedHorizontalAccuracyMeters
+        )
+    }
+
+    static func effectiveArrivalThreshold(
+        for arrivalThreshold: CLLocationDistance,
+        horizontalAccuracy: CLLocationAccuracy
+    ) -> CLLocationDistance {
+        guard horizontalAccuracy > 0 else { return arrivalThreshold }
+
+        let cappedAccuracy = min(horizontalAccuracy, acceptableHorizontalAccuracy(for: arrivalThreshold))
+        let extraAllowance = max(0, cappedAccuracy - arrivalThreshold) * 0.5
+        return arrivalThreshold + min(
+            extraAllowance,
+            LiveActivityArrivalSettings.maximumArrivalThresholdExpansionMeters
+        )
+    }
+
+    static func effectiveActivationDistance(
+        for activationDistance: CLLocationDistance,
+        horizontalAccuracy: CLLocationAccuracy
+    ) -> CLLocationDistance {
+        guard horizontalAccuracy > 0 else { return activationDistance }
+        return activationDistance + min(
+            horizontalAccuracy,
+            LiveActivityArrivalSettings.maximumActivationAccuracyExpansionMeters
+        )
+    }
+}
+
 final class DockArrivalMonitoringService: NSObject {
     struct MonitoredDock: Codable, Equatable {
         let dockId: String
@@ -37,12 +76,14 @@ final class DockArrivalMonitoringService: NSObject {
     private var confirmationStartedAt: Date?
     private var firstPreciseInsideThresholdAt: Date?
     private var hasRequestedAlwaysAuthorizationThisSession = false
+    private var hasRequestedTemporaryFullAccuracyThisSession = false
 
     private override init() {
         super.init()
         locationManager.delegate = self
         configureLowPowerTrackingProfile()
         locationManager.allowsBackgroundLocationUpdates = true
+        locationManager.showsBackgroundLocationIndicator = true
         monitoredDock = loadPersistedDock()
     }
 
@@ -96,6 +137,7 @@ final class DockArrivalMonitoringService: NSObject {
         lastRoutineLocationLogAt = nil
         confirmationStartedAt = nil
         firstPreciseInsideThresholdAt = nil
+        hasRequestedTemporaryFullAccuracyThisSession = false
         logLocationEvent("monitor_begin", dock: dock, message: "Preparing dock arrival monitoring")
 
         guard isEnabled else {
@@ -149,6 +191,7 @@ final class DockArrivalMonitoringService: NSObject {
         lastRoutineLocationLogAt = nil
         confirmationStartedAt = nil
         firstPreciseInsideThresholdAt = nil
+        hasRequestedTemporaryFullAccuracyThisSession = false
         if !preserveDock {
             monitoredDock = nil
             AppConstants.UserDefaults.sharedDefaults.removeObject(forKey: monitoredDockStorageKey)
@@ -220,6 +263,16 @@ final class DockArrivalMonitoringService: NSObject {
     private func startMonitoringIfPossible() {
         guard let dock = monitoredDock else { return }
 
+        guard CLLocationManager.locationServicesEnabled() else {
+            logger.warning("Dock arrival monitoring unavailable because location services are disabled")
+            logLocationEvent(
+                "location_services_disabled",
+                dock: dock,
+                message: "System location services are disabled"
+            )
+            return
+        }
+
         let authorizationStatus = locationManager.authorizationStatus
         guard authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else {
             logger.info("Dock arrival monitoring waiting for location authorization")
@@ -232,6 +285,29 @@ final class DockArrivalMonitoringService: NSObject {
             return
         }
 
+        if authorizationStatus == .authorizedWhenInUse {
+            logLocationEvent(
+                "monitor_degraded_when_in_use_authorization",
+                dock: dock,
+                message: "Background dock arrival monitoring is less reliable without Always authorization"
+            )
+        }
+
+        if #available(iOS 14.0, *), locationManager.accuracyAuthorization == .reducedAccuracy {
+            requestTemporaryFullAccuracyIfNeeded()
+            logger.warning("Dock arrival monitoring is running with reduced accuracy; region monitoring will not be reliable")
+            logLocationEvent(
+                "monitor_reduced_accuracy",
+                dock: dock,
+                message: "Reduced location accuracy prevents reliable region monitoring"
+            )
+            stopAllLocationUpdates()
+            stopBackgroundActivitySession()
+            stopMonitoringDockRegion()
+            startLowPowerLocationUpdates(reason: "reduced_accuracy_authorization")
+            return
+        }
+
         guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
             logger.warning("Dock arrival region monitoring is unavailable; falling back to continuous location updates")
             logLocationEvent(
@@ -239,6 +315,9 @@ final class DockArrivalMonitoringService: NSObject {
                 dock: dock,
                 message: "Region monitoring unavailable; using continuous location updates fallback"
             )
+            stopAllLocationUpdates()
+            stopBackgroundActivitySession()
+            stopMonitoringDockRegion()
             startLowPowerLocationUpdates(reason: "region_monitoring_unavailable")
             return
         }
@@ -284,13 +363,18 @@ final class DockArrivalMonitoringService: NSObject {
             return false
         }
 
-        if location.horizontalAccuracy > LiveActivityArrivalSettings.maximumAcceptedHorizontalAccuracyMeters {
+        let arrivalDistanceThreshold = LiveActivityArrivalSettings.configuredArrivalDistanceMeters()
+        let acceptableAccuracy = DockArrivalHeuristics.acceptableHorizontalAccuracy(
+            for: arrivalDistanceThreshold
+        )
+        if location.horizontalAccuracy > acceptableAccuracy {
             logger.info("Ignoring imprecise location update for dock arrival monitoring (accuracy: \(location.horizontalAccuracy, privacy: .public)m)")
             logLocationEvent(
                 "location_ignored_imprecise",
                 dock: monitoredDock,
                 location: location,
-                message: "Horizontal accuracy too low for arrival detection"
+                message: "Horizontal accuracy too low for arrival detection",
+                raw: ["acceptableHorizontalAccuracyMeters": acceptableAccuracy]
             )
             return false
         }
@@ -309,18 +393,27 @@ final class DockArrivalMonitoringService: NSObject {
         let dockLocation = CLLocation(latitude: dock.latitude, longitude: dock.longitude)
         let distance = location.distance(from: dockLocation)
         let arrivalDistanceThreshold = LiveActivityArrivalSettings.configuredArrivalDistanceMeters()
+        let effectiveArrivalDistanceThreshold = DockArrivalHeuristics.effectiveArrivalThreshold(
+            for: arrivalDistanceThreshold,
+            horizontalAccuracy: location.horizontalAccuracy
+        )
         let activationDistanceThreshold = LiveActivityArrivalSettings.preciseActivationDistanceMeters
-        let resetDistanceThreshold = arrivalDistanceThreshold + LiveActivityArrivalSettings.confirmationResetHysteresisMeters
+        let effectiveActivationDistanceThreshold = DockArrivalHeuristics.effectiveActivationDistance(
+            for: activationDistanceThreshold,
+            horizontalAccuracy: location.horizontalAccuracy
+        )
+        let resetDistanceThreshold = effectiveArrivalDistanceThreshold +
+            LiveActivityArrivalSettings.confirmationResetHysteresisMeters
 
         logger.info("Dock arrival check for \(dock.dockId, privacy: .public): \(distance, privacy: .public)m away")
         logRoutineLocationEventIfNeeded(
             dock: dock,
             location: location,
             distanceMeters: distance,
-            activationDistanceThreshold: activationDistanceThreshold
+            activationDistanceThreshold: effectiveActivationDistanceThreshold
         )
 
-        if confirmationStartedAt == nil, distance <= activationDistanceThreshold {
+        if confirmationStartedAt == nil, distance <= effectiveActivationDistanceThreshold {
             startPreciseLocationUpdates(reason: "location_within_activation_distance")
         }
 
@@ -367,7 +460,7 @@ final class DockArrivalMonitoringService: NSObject {
             return
         }
 
-        guard distance <= arrivalDistanceThreshold else {
+        guard distance <= effectiveArrivalDistanceThreshold else {
             firstPreciseInsideThresholdAt = nil
             return
         }
@@ -637,20 +730,26 @@ final class DockArrivalMonitoringService: NSObject {
             threshold + LiveActivityArrivalSettings.regionRadiusBufferMeters,
             LiveActivityArrivalSettings.highFrequencyActivationDistanceMeters
         )
-        return min(radius, locationManager.maximumRegionMonitoringDistance)
+        return min(
+            radius,
+            min(
+                locationManager.maximumRegionMonitoringDistance,
+                LiveActivityArrivalSettings.preferredMaximumRegionRadiusMeters
+            )
+        )
     }
 
     private func configureLowPowerTrackingProfile() {
-        locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        locationManager.distanceFilter = 100
-        locationManager.activityType = .other
+        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        locationManager.distanceFilter = 25
+        locationManager.activityType = .otherNavigation
         locationManager.pausesLocationUpdatesAutomatically = false
     }
 
     private func configureHighPowerTrackingProfile() {
-        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         locationManager.distanceFilter = kCLDistanceFilterNone
-        locationManager.activityType = .fitness
+        locationManager.activityType = .otherNavigation
         locationManager.pausesLocationUpdatesAutomatically = false
     }
 
@@ -705,9 +804,9 @@ final class DockArrivalMonitoringService: NSObject {
         configureHighPowerTrackingProfile()
         startBackgroundActivitySessionIfNeeded()
 
-        // Only start the 45s confirmation clock once a location update has confirmed
-        // the user is within the activation distance. Region entry (which can fire at
-        // up to 500m) switches to high-power mode but defers the clock to avoid
+        // Only start the confirmation clock once a location update has confirmed
+        // the user is within the activation distance. Region entry switches to
+        // high-power mode but defers the clock to avoid
         // expiring the window long before the user reaches the dock.
         if startConfirmationTimer, confirmationStartedAt == nil {
             confirmationStartedAt = Date()
@@ -800,6 +899,40 @@ final class DockArrivalMonitoringService: NSObject {
         #endif
     }
 
+    private func requestTemporaryFullAccuracyIfNeeded() {
+        guard monitoredDock != nil else { return }
+
+        guard #available(iOS 14.0, *) else { return }
+        guard locationManager.accuracyAuthorization == .reducedAccuracy else { return }
+        guard UIApplication.shared.applicationState == .active else { return }
+        guard !hasRequestedTemporaryFullAccuracyThisSession else { return }
+
+        hasRequestedTemporaryFullAccuracyThisSession = true
+        locationManager.requestTemporaryFullAccuracyAuthorization(
+            withPurposeKey: DockArrivalHeuristics.temporaryFullAccuracyPurposeKey
+        )
+        logLocationEvent(
+            "temporary_full_accuracy_requested",
+            dock: monitoredDock,
+            message: "Requested temporary full accuracy for dock arrival monitoring"
+        )
+    }
+
+    private func accuracyAuthorizationLabel(_ manager: CLLocationManager) -> String {
+        guard #available(iOS 14.0, *) else {
+            return "unsupported"
+        }
+
+        switch manager.accuracyAuthorization {
+        case .fullAccuracy:
+            return "fullAccuracy"
+        case .reducedAccuracy:
+            return "reducedAccuracy"
+        @unknown default:
+            return "unknown"
+        }
+    }
+
     private func authorizationStatusLabel(_ status: CLAuthorizationStatus) -> String {
         switch status {
         case .notDetermined:
@@ -863,6 +996,9 @@ extension DockArrivalMonitoringService: CLLocationManagerDelegate {
             message: error.localizedDescription,
             raw: ["regionIdentifier": region?.identifier ?? "unknown"]
         )
+        stopAllLocationUpdates()
+        stopBackgroundActivitySession()
+        stopMonitoringDockRegion()
         startLowPowerLocationUpdates(reason: "region_monitoring_failed")
     }
 
@@ -872,7 +1008,8 @@ extension DockArrivalMonitoringService: CLLocationManagerDelegate {
         logLocationEvent(
             "authorization_changed",
             dock: monitoredDock,
-            message: authorizationStatusLabel(status)
+            message: authorizationStatusLabel(status),
+            raw: ["accuracyAuthorization": accuracyAuthorizationLabel(manager)]
         )
 
         switch status {
@@ -889,6 +1026,7 @@ extension DockArrivalMonitoringService: CLLocationManagerDelegate {
             )
         case .notDetermined:
             hasRequestedAlwaysAuthorizationThisSession = false
+            hasRequestedTemporaryFullAccuracyThisSession = false
             break
         @unknown default:
             break

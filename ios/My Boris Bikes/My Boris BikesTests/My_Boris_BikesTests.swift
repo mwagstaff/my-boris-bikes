@@ -112,4 +112,34 @@ struct My_Boris_BikesTests {
         #expect(offlineError.errorDescription == "No internet connection available")
     }
 
+    @Test func testDockArrivalHeuristicsExpandThresholdForRealisticGpsNoise() async throws {
+        let arrivalThreshold = CLLocationDistance(25)
+
+        let preciseThreshold = DockArrivalHeuristics.effectiveArrivalThreshold(
+            for: arrivalThreshold,
+            horizontalAccuracy: 10
+        )
+        let noisyThreshold = DockArrivalHeuristics.effectiveArrivalThreshold(
+            for: arrivalThreshold,
+            horizontalAccuracy: 45
+        )
+
+        #expect(preciseThreshold == 25)
+        #expect(noisyThreshold == 35)
+    }
+
+    @Test func testDockArrivalHeuristicsCapActivationAndAccuracyAllowance() async throws {
+        let acceptableAccuracy = DockArrivalHeuristics.acceptableHorizontalAccuracy(
+            for: CLLocationDistance(25)
+        )
+        let effectiveActivationDistance = DockArrivalHeuristics.effectiveActivationDistance(
+            for: LiveActivityArrivalSettings.preciseActivationDistanceMeters,
+            horizontalAccuracy: 120
+        )
+
+        #expect(acceptableAccuracy == 50)
+        #expect(effectiveActivationDistance == 240)
+        #expect(LiveActivityArrivalSettings.preferredMaximumRegionRadiusMeters == 400)
+    }
+
 }

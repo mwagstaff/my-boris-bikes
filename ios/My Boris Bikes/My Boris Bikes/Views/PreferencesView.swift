@@ -160,7 +160,7 @@ struct PreferencesView: View {
                         liveActivityArrivalDistanceMeters = sanitizedLiveActivityArrivalDistanceMeters
                     }
 
-                    Text("When enabled, starting a Live Activity also uses background location updates. If you come within \(sanitizedLiveActivityArrivalDistanceMeters) metres of that dock, the app asks the server to stop dock availability notifications and dismiss the Live Activity.")
+                    Text("When enabled, starting a Live Activity also uses background location updates. If you come within \(sanitizedLiveActivityArrivalDistanceMeters) metres of that dock, the app asks the server to stop dock availability notifications and dismiss the Live Activity. Reliable arrival detection needs both Always and Precise Location access.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
 

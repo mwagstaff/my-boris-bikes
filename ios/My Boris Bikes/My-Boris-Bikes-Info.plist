@@ -20,6 +20,11 @@
 		</dict>
 		<dict/>
 	</array>
+	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
+	<dict>
+		<key>DockArrivalPreciseLocation</key>
+		<string>My Boris Bikes temporarily needs your precise location so it can reliably detect when you have arrived at the dock tied to your live activity.</string>
+	</dict>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
