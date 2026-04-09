@@ -9,7 +9,7 @@ enum DockArrivalHeuristics {
     static func acceptableHorizontalAccuracy(
         for arrivalThreshold: CLLocationDistance
     ) -> CLLocationAccuracy {
-        let scaledAccuracy = arrivalThreshold + 25
+        let scaledAccuracy = arrivalThreshold + 40
         return min(
             max(scaledAccuracy, LiveActivityArrivalSettings.minimumAcceptedHorizontalAccuracyMeters),
             LiveActivityArrivalSettings.maximumAcceptedHorizontalAccuracyMeters
@@ -23,7 +23,7 @@ enum DockArrivalHeuristics {
         guard horizontalAccuracy > 0 else { return arrivalThreshold }
 
         let cappedAccuracy = min(horizontalAccuracy, acceptableHorizontalAccuracy(for: arrivalThreshold))
-        let extraAllowance = max(0, cappedAccuracy - arrivalThreshold) * 0.5
+        let extraAllowance = max(0, cappedAccuracy - arrivalThreshold) * 0.8
         return arrivalThreshold + min(
             extraAllowance,
             LiveActivityArrivalSettings.maximumArrivalThresholdExpansionMeters
@@ -39,6 +39,14 @@ enum DockArrivalHeuristics {
             horizontalAccuracy,
             LiveActivityArrivalSettings.maximumActivationAccuracyExpansionMeters
         )
+    }
+
+    static func compensatedDistance(
+        from rawDistance: CLLocationDistance,
+        horizontalAccuracy: CLLocationAccuracy
+    ) -> CLLocationDistance {
+        guard horizontalAccuracy > 0 else { return rawDistance }
+        return max(0, rawDistance - horizontalAccuracy)
     }
 }
 
@@ -301,40 +309,37 @@ final class DockArrivalMonitoringService: NSObject {
                 dock: dock,
                 message: "Reduced location accuracy prevents reliable region monitoring"
             )
-            stopAllLocationUpdates()
-            stopBackgroundActivitySession()
             stopMonitoringDockRegion()
-            startLowPowerLocationUpdates(reason: "reduced_accuracy_authorization")
-            return
-        }
-
-        guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
-            logger.warning("Dock arrival region monitoring is unavailable; falling back to continuous location updates")
-            logLocationEvent(
-                "region_monitoring_unavailable",
-                dock: dock,
-                message: "Region monitoring unavailable; using continuous location updates fallback"
-            )
-            stopAllLocationUpdates()
-            stopBackgroundActivitySession()
-            stopMonitoringDockRegion()
-            startLowPowerLocationUpdates(reason: "region_monitoring_unavailable")
+            startContinuousHighSensitivityTracking(reason: "reduced_accuracy_authorization")
             return
         }
 
         stopAllLocationUpdates()
         stopBackgroundActivitySession()
         stopMonitoringDockRegion()
-        startMonitoringDockRegion(for: dock)
 
-        logger.info("Starting region monitoring for dock arrival monitoring")
+        if CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) {
+            startMonitoringDockRegion(for: dock)
+        } else {
+            logger.warning("Dock arrival region monitoring is unavailable; relying on continuous location updates")
+            logLocationEvent(
+                "region_monitoring_unavailable",
+                dock: dock,
+                message: "Region monitoring unavailable; using continuous location updates"
+            )
+        }
+
+        startContinuousHighSensitivityTracking(reason: "active_live_activity")
+
+        logger.info("Starting continuous dock arrival monitoring")
         logLocationEvent(
             "location_updates_started",
             dock: dock,
-            message: "Started region monitoring; precise location remains idle until region entry",
+            message: "Started continuous high-sensitivity location monitoring",
             raw: [
                 "authorizationStatus": authorizationStatusLabel(authorizationStatus),
-                "regionRadiusMeters": configuredRegionRadiusMeters()
+                "regionRadiusMeters": configuredRegionRadiusMeters(),
+                "regionMonitoringEnabled": CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self)
             ]
         )
     }
@@ -392,6 +397,10 @@ final class DockArrivalMonitoringService: NSObject {
 
         let dockLocation = CLLocation(latitude: dock.latitude, longitude: dock.longitude)
         let distance = location.distance(from: dockLocation)
+        let compensatedDistance = DockArrivalHeuristics.compensatedDistance(
+            from: distance,
+            horizontalAccuracy: location.horizontalAccuracy
+        )
         let arrivalDistanceThreshold = LiveActivityArrivalSettings.configuredArrivalDistanceMeters()
         let effectiveArrivalDistanceThreshold = DockArrivalHeuristics.effectiveArrivalThreshold(
             for: arrivalDistanceThreshold,
@@ -413,7 +422,8 @@ final class DockArrivalMonitoringService: NSObject {
             activationDistanceThreshold: effectiveActivationDistanceThreshold
         )
 
-        if confirmationStartedAt == nil, distance <= effectiveActivationDistanceThreshold {
+        if confirmationStartedAt == nil,
+           min(distance, compensatedDistance) <= effectiveActivationDistanceThreshold {
             startPreciseLocationUpdates(reason: "location_within_activation_distance")
         }
 
@@ -430,14 +440,10 @@ final class DockArrivalMonitoringService: NSObject {
                 "arrival_confirmation_timeout",
                 dock: dock,
                 location: location,
-                distanceMeters: distance,
+                distanceMeters: compensatedDistance,
                 message: "Precise confirmation window expired"
             )
-            stopPreciseLocationUpdates()
-            // Re-check region state so didDetermineState fires immediately if the user
-            // is still inside the monitored region. This resumes high-power tracking
-            // (without restarting the confirmation clock) so the next location update
-            // within 150m will start a fresh confirmation window.
+            resetConfirmationState()
             for region in locationManager.monitoredRegions {
                 guard region.identifier.hasPrefix(Self.regionIdentifierPrefix) else { continue }
                 locationManager.requestState(for: region)
@@ -445,14 +451,14 @@ final class DockArrivalMonitoringService: NSObject {
             return
         }
 
-        guard distance <= resetDistanceThreshold else {
+        guard min(distance, compensatedDistance) <= resetDistanceThreshold else {
             if firstPreciseInsideThresholdAt != nil {
                 logger.info("Dock arrival confirmation reset because user moved outside threshold window")
                 logLocationEvent(
                     "arrival_confirmation_reset",
                     dock: dock,
                     location: location,
-                    distanceMeters: distance,
+                    distanceMeters: compensatedDistance,
                     message: "Moved outside confirmation threshold"
                 )
             }
@@ -460,7 +466,7 @@ final class DockArrivalMonitoringService: NSObject {
             return
         }
 
-        guard distance <= effectiveArrivalDistanceThreshold else {
+        guard min(distance, compensatedDistance) <= effectiveArrivalDistanceThreshold else {
             firstPreciseInsideThresholdAt = nil
             return
         }
@@ -471,7 +477,7 @@ final class DockArrivalMonitoringService: NSObject {
                 "arrival_confirmation_started",
                 dock: dock,
                 location: location,
-                distanceMeters: distance,
+                distanceMeters: compensatedDistance,
                 message: "First precise in-threshold location received"
             )
             return
@@ -487,7 +493,7 @@ final class DockArrivalMonitoringService: NSObject {
             "arrival_threshold_met",
             dock: dock,
             location: location,
-            distanceMeters: distance,
+            distanceMeters: compensatedDistance,
             message: "Arrival distance threshold met"
         )
 
@@ -740,8 +746,8 @@ final class DockArrivalMonitoringService: NSObject {
     }
 
     private func configureLowPowerTrackingProfile() {
-        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-        locationManager.distanceFilter = 25
+        locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        locationManager.distanceFilter = kCLDistanceFilterNone
         locationManager.activityType = .otherNavigation
         locationManager.pausesLocationUpdatesAutomatically = false
     }
@@ -753,15 +759,15 @@ final class DockArrivalMonitoringService: NSObject {
         locationManager.pausesLocationUpdatesAutomatically = false
     }
 
-    private func startLowPowerLocationUpdates(reason: String) {
-        configureLowPowerTrackingProfile()
+    private func startContinuousHighSensitivityTracking(reason: String) {
+        configureHighPowerTrackingProfile()
         startBackgroundActivitySessionIfNeeded()
         locationManager.startUpdatingLocation()
         locationManager.requestLocation()
         logLocationEvent(
-            "low_power_updates_started",
+            "continuous_high_sensitivity_started",
             dock: monitoredDock,
-            message: "Started continuous low-power location updates",
+            message: "Started continuous high-sensitivity location updates",
             raw: ["reason": reason]
         )
     }
@@ -824,10 +830,14 @@ final class DockArrivalMonitoringService: NSObject {
     }
 
     private func stopPreciseLocationUpdates() {
-        confirmationStartedAt = nil
-        firstPreciseInsideThresholdAt = nil
+        resetConfirmationState()
         stopAllLocationUpdates()
         stopBackgroundActivitySession()
+    }
+
+    private func resetConfirmationState() {
+        confirmationStartedAt = nil
+        firstPreciseInsideThresholdAt = nil
     }
 
     private func logRoutineLocationEventIfNeeded(
@@ -883,7 +893,7 @@ final class DockArrivalMonitoringService: NSObject {
                 ]
             )
         }
-        stopPreciseLocationUpdates()
+        resetConfirmationState()
     }
 
     private func shouldUploadDebugEvent(_ event: String) -> Bool {
@@ -999,7 +1009,7 @@ extension DockArrivalMonitoringService: CLLocationManagerDelegate {
         stopAllLocationUpdates()
         stopBackgroundActivitySession()
         stopMonitoringDockRegion()
-        startLowPowerLocationUpdates(reason: "region_monitoring_failed")
+        startContinuousHighSensitivityTracking(reason: "region_monitoring_failed")
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {

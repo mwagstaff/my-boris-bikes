@@ -174,16 +174,16 @@ struct LiveActivityArrivalSettings {
     static let minimumArrivalDistanceMeters = 10
     static let maximumArrivalDistanceMeters = 50
     static let arrivalDistanceStepMeters = 5
-    static let minimumRetryIntervalSeconds: TimeInterval = 10
-    static let minimumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 35
-    static let maximumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 60
-    static let maximumArrivalThresholdExpansionMeters: CLLocationDistance = 15
-    static let maximumActivationAccuracyExpansionMeters: CLLocationDistance = 40
-    static let confirmationDwellTimeSeconds: TimeInterval = 10
-    static let confirmationTimeoutSeconds: TimeInterval = 75
+    static let minimumRetryIntervalSeconds: TimeInterval = 5
+    static let minimumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 45
+    static let maximumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 100
+    static let maximumArrivalThresholdExpansionMeters: CLLocationDistance = 35
+    static let maximumActivationAccuracyExpansionMeters: CLLocationDistance = 120
+    static let confirmationDwellTimeSeconds: TimeInterval = 3
+    static let confirmationTimeoutSeconds: TimeInterval = 120
     static let confirmationResetHysteresisMeters: CLLocationDistance = 10
     static let highFrequencyActivationDistanceMeters: CLLocationDistance = 400
-    static let preciseActivationDistanceMeters: CLLocationDistance = 200
+    static let preciseActivationDistanceMeters: CLLocationDistance = 350
     static let regionRadiusBufferMeters: CLLocationDistance = 50
     static let preferredMaximumRegionRadiusMeters: CLLocationDistance = 400
 

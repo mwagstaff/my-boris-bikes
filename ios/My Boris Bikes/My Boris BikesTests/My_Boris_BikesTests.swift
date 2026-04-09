@@ -125,7 +125,13 @@ struct My_Boris_BikesTests {
         )
 
         #expect(preciseThreshold == 25)
-        #expect(noisyThreshold == 35)
+        #expect(noisyThreshold == 41)
+        #expect(
+            DockArrivalHeuristics.compensatedDistance(
+                from: 52,
+                horizontalAccuracy: 28
+            ) == 24
+        )
     }
 
     @Test func testDockArrivalHeuristicsCapActivationAndAccuracyAllowance() async throws {
@@ -137,8 +143,8 @@ struct My_Boris_BikesTests {
             horizontalAccuracy: 120
         )
 
-        #expect(acceptableAccuracy == 50)
-        #expect(effectiveActivationDistance == 240)
+        #expect(acceptableAccuracy == 65)
+        #expect(effectiveActivationDistance == 470)
         #expect(LiveActivityArrivalSettings.preferredMaximumRegionRadiusMeters == 400)
     }
 
