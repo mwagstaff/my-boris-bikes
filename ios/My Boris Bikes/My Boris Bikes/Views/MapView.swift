@@ -106,6 +106,8 @@ struct MapView: View {
                 }
                 .onDisappear {
                     locationService.stopHeadingUpdates()
+                    selectedBikePointForDetail = nil
+                    pendingDockDetailId = nil
                 }
                 .onChange(of: selectedBikePointForMap) { _, newBikePoint in
                     if let bikePoint = newBikePoint {

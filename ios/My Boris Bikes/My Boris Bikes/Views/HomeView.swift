@@ -284,121 +284,119 @@ struct FavoritesListView: View {
 
     var body: some View {
         let autoExpandedDockIds = autoExpandedAlternativeDockIds
-        VStack(spacing: 0) {
-            List {
-                ForEach(bikePoints, id: \.id) { bikePoint in
-                    let alternatives = displayedAlternativeDockMap[bikePoint.id] ?? []
-                    let liveActivityAlternatives = displayedLiveActivityStartAlternativeDockMap[bikePoint.id] ?? []
-                    let hasFavoriteLiveActivity = liveActivityService.isActivityActive(for: bikePoint.id)
-                    let isNearbyAlternativesExpanded = isNearbyAlternativesExpanded(
-                        for: bikePoint.id,
-                        autoExpandedDockIds: autoExpandedDockIds
+        List {
+            ForEach(bikePoints, id: \.id) { bikePoint in
+                let alternatives = displayedAlternativeDockMap[bikePoint.id] ?? []
+                let liveActivityAlternatives = displayedLiveActivityStartAlternativeDockMap[bikePoint.id] ?? []
+                let hasFavoriteLiveActivity = liveActivityService.isActivityActive(for: bikePoint.id)
+                let isNearbyAlternativesExpanded = isNearbyAlternativesExpanded(
+                    for: bikePoint.id,
+                    autoExpandedDockIds: autoExpandedDockIds
+                )
+                Section {
+                    FavoriteRowView(
+                        bikePoint: bikePoint,
+                        distance: locationService.distanceString(to: bikePoint.coordinate),
+                        onTap: {
+                            onBikePointSelected?(bikePoint)
+                        },
+                        liveActivityAlternatives: liveActivityAlternatives
                     )
-                    Section {
-                        FavoriteRowView(
-                            bikePoint: bikePoint,
-                            distance: locationService.distanceString(to: bikePoint.coordinate),
-                            onTap: {
-                                onBikePointSelected?(bikePoint)
-                            },
-                            liveActivityAlternatives: liveActivityAlternatives
-                        )
-                        .alignmentGuide(.listRowSeparatorLeading) { _ in 16 }
-                        .alignmentGuide(.listRowSeparatorTrailing) { dimensions in
-                            dimensions.width - 16
-                        }
-                        .listRowSeparator(.hidden, edges: .bottom)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                AnalyticsService.shared.track(
-                                    action: .favoriteRemove,
-                                    screen: .favourites,
-                                    dock: AnalyticsDockInfo.from(bikePoint),
-                                    metadata: ["source": "swipe"]
-                                )
-                                favoritesService.removeFavorite(bikePoint.id)
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-
-                            Button {
-                                editingBikePoint = bikePoint
-                            } label: {
-                                Label("Edit Name", systemImage: "pencil")
-                            }
-                            .tint(.blue)
-                        }
-
-                        if hasFavoriteLiveActivity {
-                            LiveActivityControlRow(bikePoint: bikePoint)
-                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
-                        } else {
-                            NearbyDockFilterRow(
-                                bikePoint: bikePoint,
-                                isExpanded: isNearbyAlternativesExpanded,
-                                onToggleExpanded: {
-                                    toggleNearbyAlternatives(
-                                        for: bikePoint.id,
-                                        autoExpandedDockIds: autoExpandedDockIds
-                                    )
-                                }
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 16 }
+                    .alignmentGuide(.listRowSeparatorTrailing) { dimensions in
+                        dimensions.width - 16
+                    }
+                    .listRowSeparator(.hidden, edges: .bottom)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            AnalyticsService.shared.track(
+                                action: .favoriteRemove,
+                                screen: .favourites,
+                                dock: AnalyticsDockInfo.from(bikePoint),
+                                metadata: ["source": "swipe"]
                             )
-                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
-                                .listRowSeparator(.hidden)
+                            favoritesService.removeFavorite(bikePoint.id)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
                         }
 
-                        if isNearbyAlternativesExpanded {
-                            if alternativeDocksEnabled && allBikePoints.isEmpty {
-                                HStack(spacing: 8) {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
-                                    Text("Loading alternatives…")
-                                        .font(.footnote)
-                                        .foregroundColor(.secondary)
-                                }
-                                .listRowInsets(EdgeInsets(top: 6, leading: 32, bottom: 6, trailing: 16))
-                            } else if !alternatives.isEmpty {
-                                ForEach(Array(alternatives.enumerated()), id: \.element.id) { index, alternative in
-                                    let isLastAlternative = index == alternatives.count - 1
-                                    let hasLiveActivity = liveActivityService.isActivityActive(for: alternative.id)
-                                    AlternativeDockRowView(
-                                        bikePoint: alternative,
-                                        distance: locationService.distanceString(to: alternative.coordinate),
-                                        onTap: {
-                                            onBikePointSelected?(alternative)
-                                        }
-                                    )
-                                    .alignmentGuide(.listRowSeparatorLeading) { _ in 16 }
-                                    .alignmentGuide(.listRowSeparatorTrailing) { dimensions in
-                                        dimensions.width - 16
-                                    }
-                                    .listRowInsets(EdgeInsets(top: 4, leading: 32, bottom: isLastAlternative ? 16 : 4, trailing: 16))
-                                    .listRowSeparator(isLastAlternative && !hasLiveActivity ? .visible : .hidden)
+                        Button {
+                            editingBikePoint = bikePoint
+                        } label: {
+                            Label("Edit Name", systemImage: "pencil")
+                        }
+                        .tint(.blue)
+                    }
 
-                                    if hasLiveActivity {
-                                        LiveActivityControlRow(bikePoint: alternative)
-                                            .alignmentGuide(.listRowSeparatorLeading) { _ in 16 }
-                                            .alignmentGuide(.listRowSeparatorTrailing) { dimensions in
-                                                dimensions.width - 16
-                                            }
-                                            .listRowInsets(EdgeInsets(top: 0, leading: 32, bottom: isLastAlternative ? 16 : 8, trailing: 16))
-                                            .listRowSeparator(isLastAlternative ? .visible : .hidden)
-                                    }
-                                }
-                            } else {
-                                Text("No nearby alternatives currently available")
+                    if hasFavoriteLiveActivity {
+                        LiveActivityControlRow(bikePoint: bikePoint)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
+                    } else {
+                        NearbyDockFilterRow(
+                            bikePoint: bikePoint,
+                            isExpanded: isNearbyAlternativesExpanded,
+                            onToggleExpanded: {
+                                toggleNearbyAlternatives(
+                                    for: bikePoint.id,
+                                    autoExpandedDockIds: autoExpandedDockIds
+                                )
+                            }
+                        )
+                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
+                            .listRowSeparator(.hidden)
+                    }
+
+                    if isNearbyAlternativesExpanded {
+                        if alternativeDocksEnabled && allBikePoints.isEmpty {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("Loading alternatives…")
                                     .font(.footnote)
                                     .foregroundColor(.secondary)
-                                    .listRowInsets(EdgeInsets(top: 2, leading: 32, bottom: 12, trailing: 16))
                             }
+                            .listRowInsets(EdgeInsets(top: 6, leading: 32, bottom: 6, trailing: 16))
+                        } else if !alternatives.isEmpty {
+                            ForEach(Array(alternatives.enumerated()), id: \.element.id) { index, alternative in
+                                let isLastAlternative = index == alternatives.count - 1
+                                let hasLiveActivity = liveActivityService.isActivityActive(for: alternative.id)
+                                AlternativeDockRowView(
+                                    bikePoint: alternative,
+                                    distance: locationService.distanceString(to: alternative.coordinate),
+                                    onTap: {
+                                        onBikePointSelected?(alternative)
+                                    }
+                                )
+                                .alignmentGuide(.listRowSeparatorLeading) { _ in 16 }
+                                .alignmentGuide(.listRowSeparatorTrailing) { dimensions in
+                                    dimensions.width - 16
+                                }
+                                .listRowInsets(EdgeInsets(top: 4, leading: 32, bottom: isLastAlternative ? 16 : 4, trailing: 16))
+                                .listRowSeparator(isLastAlternative && !hasLiveActivity ? .visible : .hidden)
+
+                                if hasLiveActivity {
+                                    LiveActivityControlRow(bikePoint: alternative)
+                                        .alignmentGuide(.listRowSeparatorLeading) { _ in 16 }
+                                        .alignmentGuide(.listRowSeparatorTrailing) { dimensions in
+                                            dimensions.width - 16
+                                        }
+                                        .listRowInsets(EdgeInsets(top: 0, leading: 32, bottom: isLastAlternative ? 16 : 8, trailing: 16))
+                                        .listRowSeparator(isLastAlternative ? .visible : .hidden)
+                                }
+                            }
+                        } else {
+                            Text("No nearby alternatives currently available")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                                .listRowInsets(EdgeInsets(top: 2, leading: 32, bottom: 12, trailing: 16))
                         }
                     }
                 }
-                .onDelete(perform: removeFavorites)
             }
-            .listStyle(PlainListStyle())
-            
-            // Last update time label at the bottom
+            .onDelete(perform: removeFavorites)
+        }
+        .listStyle(PlainListStyle())
+        .safeAreaInset(edge: .bottom) {
             if let lastUpdate = lastUpdateTime {
                 HStack {
                     Spacer()
@@ -415,8 +413,8 @@ struct FavoritesListView: View {
                     .background(Color(.systemBackground))
                     Spacer()
                 }
-                // .background(Color(.systemGroupedBackground))
-                .padding(.bottom, 8) // Add padding to keep it above the tab bar
+                .padding(.bottom, 8)
+                .background(.clear)
             }
         }
         .sheet(item: $editingBikePoint) { bikePoint in
