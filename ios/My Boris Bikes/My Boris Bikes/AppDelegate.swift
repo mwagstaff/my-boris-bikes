@@ -53,7 +53,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // pushes that wake this app to refresh complication data for the watch face.
         Task {
             await registerComplicationToken(tokenString)
-            await LiveActivityService.shared.refreshNotificationStatusFromServer()
+            await LiveActivityService.shared.handleDeviceTokenRegistration()
         }
     }
 

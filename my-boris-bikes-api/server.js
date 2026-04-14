@@ -2925,23 +2925,38 @@ app.post("/live-activity/arrive", async (req, res) => {
 
   const poller = dockPollers.get(dockId);
   const matchingSessions = [];
+  const fallbackSessions = [];
   if (poller) {
     for (const [pushToken, session] of poller.tokens) {
       if (session.deviceToken !== deviceToken) continue;
+      fallbackSessions.push([pushToken, session]);
       if (requestedBuildType && session.buildType !== requestedBuildType) continue;
       matchingSessions.push([pushToken, session]);
     }
   }
 
+  const effectiveSessions =
+    matchingSessions.length > 0 || !requestedBuildType ? matchingSessions : fallbackSessions;
+
+  if (
+    requestedBuildType &&
+    matchingSessions.length === 0 &&
+    fallbackSessions.length > 0
+  ) {
+    logger.warn(
+      `Arrival request build type ${requestedBuildType} did not match tracked sessions for dock ${dockId}; falling back to ${fallbackSessions.length} device-matched session(s)`
+    );
+  }
+
   let confirmationSent = false;
-  if (matchingSessions.length > 0) {
-    const [, session] = matchingSessions[0];
+  if (effectiveSessions.length > 0) {
+    const [, session] = effectiveSessions[0];
     const dockName =
       session.dockName ||
       (typeof poller?.lastData?.dockName === "string" && poller.lastData.dockName.trim()
         ? poller.lastData.dockName.trim()
         : dockId);
-    const confirmationBuildType = requestedBuildType || session.buildType;
+    const confirmationBuildType = session.buildType;
 
     try {
       await sendArrivalConfirmationPush(deviceToken, confirmationBuildType, dockName);
@@ -2954,13 +2969,15 @@ app.post("/live-activity/arrive", async (req, res) => {
     }
   }
 
-  const { endedCount, remainingCount } = await endTrackedSessionsForDock(
-    dockId,
-    (_pushToken, session) =>
-      session.deviceToken === deviceToken &&
-      (!requestedBuildType || session.buildType === requestedBuildType),
-    "arrival"
-  );
+  const matchedPushTokens = new Set(effectiveSessions.map(([pushToken]) => pushToken));
+  const { endedCount, remainingCount } =
+    matchedPushTokens.size > 0
+      ? await endTrackedSessionsForDock(
+          dockId,
+          (pushToken) => matchedPushTokens.has(pushToken),
+          "arrival"
+        )
+      : { endedCount: 0, remainingCount: poller?.tokens.size ?? 0 };
 
   res.json({
     success: true,

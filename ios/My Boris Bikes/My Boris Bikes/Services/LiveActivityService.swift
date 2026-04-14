@@ -468,6 +468,26 @@ class LiveActivityService: ObservableObject {
         }
     }
 
+    func handleDeviceTokenRegistration() async {
+        let runningActivities = Activity<DockActivityAttributes>.activities
+
+        for activity in runningActivities where activity.activityState == .active {
+            guard let pushToken = activity.pushToken else { continue }
+            let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
+            logger.info(
+                "Re-registering active live activity for dock \(activity.attributes.dockId) after APNs device token update"
+            )
+            await registerWithServer(
+                dockId: activity.attributes.dockId,
+                pushToken: tokenString,
+                dockName: activity.attributes.dockName,
+                alternatives: activity.content.state.alternatives
+            )
+        }
+
+        await refreshNotificationStatusFromServer()
+    }
+
 #if DEBUG
     func simulateArrivalTrigger() async -> (success: Bool, message: String) {
         if let activity = activeActivities.values.first {

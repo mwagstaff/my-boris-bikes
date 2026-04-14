@@ -76,6 +76,15 @@ final class DockArrivalMonitoringService: NSObject {
         return URLSession(configuration: configuration)
     }()
 
+    private struct ArrivalResponse: Decodable {
+        let success: Bool
+        let dockId: String
+        let endedCount: Int
+        let confirmationSent: Bool
+        let remainingCount: Int
+        let message: String
+    }
+
     private var monitoredDock: MonitoredDock?
     private var backgroundActivitySession: CLBackgroundActivitySession?
     private var isSendingArrivalRequest = false
@@ -533,7 +542,7 @@ final class DockArrivalMonitoringService: NSObject {
         logLocationEvent("arrival_request_started", dock: dock, message: "Sending arrival request to server")
 
         do {
-            let httpResponse = try await postJSON(
+            let (data, httpResponse) = try await postJSON(
                 path: AppConstants.Server.liveActivityArrivalEndpoint,
                 body: body,
                 requestHeaderToken: deviceToken,
@@ -551,13 +560,61 @@ final class DockArrivalMonitoringService: NSObject {
                 return false
             }
 
+            let arrivalResponse: ArrivalResponse
+            do {
+                arrivalResponse = try JSONDecoder().decode(ArrivalResponse.self, from: data)
+            } catch {
+                logger.error("Failed to decode arrival response: \(error.localizedDescription)")
+                isSendingArrivalRequest = false
+                logLocationEvent(
+                    "arrival_request_failed",
+                    dock: dock,
+                    message: "Could not decode arrival response: \(error.localizedDescription)"
+                )
+                return false
+            }
+
+            guard arrivalResponse.success, arrivalResponse.endedCount > 0 else {
+                logger.warning(
+                    "Arrival request returned no matched sessions for dock \(dock.dockId, privacy: .public); keeping local live activity active"
+                )
+                isSendingArrivalRequest = false
+                logLocationEvent(
+                    "arrival_request_unmatched",
+                    dock: dock,
+                    message: arrivalResponse.message,
+                    raw: [
+                        "endedCount": arrivalResponse.endedCount,
+                        "confirmationSent": arrivalResponse.confirmationSent,
+                        "remainingCount": arrivalResponse.remainingCount,
+                    ]
+                )
+                await LiveActivityService.shared.refreshNotificationStatusFromServer()
+                return false
+            }
+
             logger.info("Server confirmed dock arrival for dock \(dock.dockId, privacy: .public); ending local live activity")
-            logLocationEvent("arrival_request_succeeded", dock: dock, message: "Server accepted arrival request")
+            logLocationEvent(
+                "arrival_request_succeeded",
+                dock: dock,
+                message: arrivalResponse.confirmationSent
+                    ? "Server accepted arrival request and sent confirmation"
+                    : "Server accepted arrival request but confirmation push was not sent",
+                raw: [
+                    "endedCount": arrivalResponse.endedCount,
+                    "confirmationSent": arrivalResponse.confirmationSent,
+                    "remainingCount": arrivalResponse.remainingCount,
+                ]
+            )
             AnalyticsService.shared.track(
                 action: .liveActivityEnd,
                 screen: .app,
                 dock: AnalyticsDockInfo(id: dock.dockId, name: dock.dockName),
-                metadata: ["reason": "arrival"]
+                metadata: [
+                    "reason": "arrival",
+                    "confirmationSent": arrivalResponse.confirmationSent,
+                    "endedCount": arrivalResponse.endedCount,
+                ]
             )
 
             await MainActor.run {
@@ -603,7 +660,7 @@ final class DockArrivalMonitoringService: NSObject {
         body: [String: Any],
         requestHeaderToken: String?,
         backgroundTaskName: String
-    ) async throws -> HTTPURLResponse {
+    ) async throws -> (Data, HTTPURLResponse) {
         let urlString = "\(AppConstants.Server.baseURL)\(path)"
         guard let url = URL(string: urlString) else {
             throw URLError(.badURL)
@@ -632,11 +689,11 @@ final class DockArrivalMonitoringService: NSObject {
             }
         }
 
-        let (_, response) = try await serverEventSession.data(for: request)
+        let (data, response) = try await serverEventSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        return httpResponse
+        return (data, httpResponse)
     }
 
     private func logLocationEvent(
@@ -685,7 +742,7 @@ final class DockArrivalMonitoringService: NSObject {
             }
 
             do {
-                let httpResponse = try await postJSON(
+                let (_, httpResponse) = try await postJSON(
                     path: AppConstants.Server.backgroundLocationEventEndpoint,
                     body: body,
                     requestHeaderToken: payloadDeviceId,
