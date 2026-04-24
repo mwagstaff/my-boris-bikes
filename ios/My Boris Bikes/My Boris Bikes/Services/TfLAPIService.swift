@@ -10,6 +10,8 @@ class TfLAPIService {
     private let monitorQueue = DispatchQueue(label: "NetworkMonitor")
     
     @Published var isOnline = true
+    @Published private(set) var isExpensiveConnection = false
+    @Published private(set) var isConstrainedConnection = false
     
     private init() {
         let config = URLSessionConfiguration.default
@@ -24,6 +26,8 @@ class TfLAPIService {
         monitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
                 self?.isOnline = path.status == .satisfied
+                self?.isExpensiveConnection = path.isExpensive
+                self?.isConstrainedConnection = path.isConstrained
             }
         }
         monitor.start(queue: monitorQueue)

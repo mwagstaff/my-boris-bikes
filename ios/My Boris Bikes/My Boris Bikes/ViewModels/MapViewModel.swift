@@ -6,6 +6,13 @@ import OSLog
 
 @MainActor
 class MapViewModel: BaseViewModel {
+    enum FetchTrigger {
+        case initial
+        case manual
+        case background
+        case retry
+    }
+
     @Published var position = MapCameraPosition.region(
         MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278), // London center
@@ -23,14 +30,20 @@ class MapViewModel: BaseViewModel {
     private var currentMapCenter: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278)
     private var currentMapSpan: MKCoordinateSpan = MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
     private var updateTimer: Timer?
+    private var interactionIdleTimer: Timer?
     private var backgroundUpdateTimer: Timer?
     private var transientRetryTimer: Timer?
+    private var activeFetchCancellable: AnyCancellable?
+    private var currentFetchRequestID = 0
     private var transientRetryAttemptCount = 0
     private let logger = Logger(subsystem: "com.myborisbikes.app", category: "MapViewModel")
     private var hasInitiallyeCentered = false // Track if we've already centered on user location
     private var isSetup = false // Track if setup has already been called
     private var hasPendingBikePointCenter = false // Track if we need to center on a specific bike point
     private var pendingDockId: String?
+    private var isUserInteractingWithMap = false
+    private var pendingAppliedBikePoints: [BikePoint]?
+    private var pendingFetchTrigger: FetchTrigger?
     
     func setup(locationService: LocationService) {
         // Prevent multiple setups
@@ -68,46 +81,46 @@ class MapViewModel: BaseViewModel {
         }
         
         loadCachedBikePointsIfAvailable()
-        loadBikePoints()
+        observeNetworkChanges()
+        loadBikePoints(trigger: .initial)
         startBackgroundUpdates()
     }
     
     func refreshData() {
         logger.info("Manual refresh requested with cache busting")
-        loadBikePoints(cacheBusting: true)
+        loadBikePoints(trigger: .manual)
     }
     
     private func startBackgroundUpdates() {
-        var updateCount = 0
-        // Set up timer for regular background updates every 30 seconds
-        backgroundUpdateTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+        backgroundUpdateTimer?.invalidate()
+        let interval = backgroundRefreshInterval
+
+        backgroundUpdateTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                updateCount += 1
-                // Use cache busting every 4th background update (every 2 minutes) to ensure fresh data
-                let useCacheBusting = updateCount % 4 == 0
-                if useCacheBusting {
-                    self?.logger.info("Background update triggered with cache busting")
-                } else {
-                    self?.logger.info("Background update triggered")
-                }
-                self?.loadBikePoints(cacheBusting: useCacheBusting)
+                self?.logger.info("Background update triggered")
+                self?.loadBikePoints(trigger: .background)
             }
         }
-        // Fire the timer immediately to ensure first update happens right away
-        backgroundUpdateTimer?.fire()
-        logger.info("Background updates started (30 second interval, with cache busting every 2 minutes)")
+        logger.info("Background updates started with interval: \(interval, privacy: .public)s")
     }
     
-    func updateMapRegion(_ region: MKCoordinateRegion) {
-        // Update the current map center and span, then refresh visible points with debouncing
+    func handleMapCameraChange(_ region: MKCoordinateRegion) {
         currentMapCenter = region.center
         currentMapSpan = region.span
-        
-        // Cancel existing timer and create a new one for debouncing
+
+        isUserInteractingWithMap = true
+
         updateTimer?.invalidate()
         updateTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 self?.updateVisibleBikePoints()
+            }
+        }
+
+        interactionIdleTimer?.invalidate()
+        interactionIdleTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.completeMapInteraction()
             }
         }
     }
@@ -190,38 +203,107 @@ class MapViewModel: BaseViewModel {
     func bikePoint(for id: String) -> BikePoint? {
         allBikePoints.first(where: { $0.id == id })
     }
-    
-    private func loadBikePoints(cacheBusting: Bool = false) {
+
+    private var backgroundRefreshInterval: TimeInterval {
+        if TfLAPIService.shared.isConstrainedConnection {
+            return 180
+        }
+        if TfLAPIService.shared.isExpensiveConnection {
+            return 90
+        }
+        return AppConstants.App.refreshInterval
+    }
+
+    private var retryInterval: TimeInterval {
+        let baseInterval = AppConstants.App.mapTransientRetryInterval
+        if TfLAPIService.shared.isConstrainedConnection {
+            return max(baseInterval * 4, 30)
+        }
+        if TfLAPIService.shared.isExpensiveConnection {
+            return max(baseInterval * 2, 16)
+        }
+        return baseInterval
+    }
+
+    private func observeNetworkChanges() {
+        TfLAPIService.shared.$isExpensiveConnection
+            .combineLatest(TfLAPIService.shared.$isConstrainedConnection)
+            .sink { [weak self] _, _ in
+                guard let self else { return }
+                self.logger.info(
+                    "Network conditions changed. Expensive: \(TfLAPIService.shared.isExpensiveConnection, privacy: .public), constrained: \(TfLAPIService.shared.isConstrainedConnection, privacy: .public)"
+                )
+                self.startBackgroundUpdates()
+                if self.transientRetryTimer != nil {
+                    self.scheduleTransientRetry(forceRestart: true)
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func loadBikePoints(trigger: FetchTrigger) {
+        if isUserInteractingWithMap, trigger != .manual {
+            logger.info("Deferring map fetch until interaction ends")
+            pendingFetchTrigger = trigger
+            return
+        }
+
+        if activeFetchCancellable != nil {
+            if trigger == .manual {
+                logger.info("Cancelling in-flight map request for manual refresh")
+                activeFetchCancellable?.cancel()
+                activeFetchCancellable = nil
+                isLoading = false
+            } else {
+                logger.info("Skipping map fetch because another request is already in flight")
+                return
+            }
+        }
+
+        let cacheBusting = trigger == .manual
+        currentFetchRequestID += 1
+        let requestID = currentFetchRequestID
         isLoading = true
         clearError()
-        
+
         if cacheBusting {
             logger.info("Loading bike points with cache busting")
         }
-        
-        TfLAPIService.shared
+
+        activeFetchCancellable = TfLAPIService.shared
             .fetchAllBikePoints(
                 cacheBusting: cacheBusting,
                 timeoutInterval: AppConstants.App.mapFetchTimeout
             )
             .sink(
                 receiveCompletion: { [weak self] completion in
-                    self?.isLoading = false
-                    if case .failure(let error) = completion {
-                        let usedFallback = self?.handleFetchFailure(error) ?? false
+                    guard let self else { return }
+                    guard requestID == self.currentFetchRequestID else { return }
+                    self.activeFetchCancellable = nil
+                    self.isLoading = false
+
+                    switch completion {
+                    case .finished:
+                        break
+                    case .failure(let error):
+                        let usedFallback = self.handleFetchFailure(error, trigger: trigger)
                         if !usedFallback {
-                            self?.setError(error)
-                            self?.scheduleTransientRetry()
+                            self.setError(error)
+                            self.scheduleTransientRetry()
                         }
                     }
+
+                    self.runPendingFetchIfNeeded()
                 },
                 receiveValue: { [weak self] bikePoints in
+                    guard let self else { return }
+                    guard requestID == self.currentFetchRequestID else { return }
                     let installedBikePoints = bikePoints.filter { $0.isInstalled }
                     guard !installedBikePoints.isEmpty else {
-                        let usedFallback = self?.handleFetchFailure(NetworkError.noData) ?? false
+                        let usedFallback = self.handleFetchFailure(NetworkError.noData, trigger: trigger)
                         if !usedFallback {
-                            self?.setError(NetworkError.noData)
-                            self?.scheduleTransientRetry()
+                            self.setError(NetworkError.noData)
+                            self.scheduleTransientRetry()
                         }
                         return
                     }
@@ -229,10 +311,9 @@ class MapViewModel: BaseViewModel {
                     for bikePoint in installedBikePoints {
                         DockArrivalMonitoringService.shared.updateMonitoredDockIfNeeded(using: bikePoint)
                     }
-                    self?.applyFreshBikePoints(installedBikePoints)
+                    self.applyFetchedBikePoints(installedBikePoints)
                 }
             )
-            .store(in: &cancellables)
     }
 
     private func loadCachedBikePointsIfAvailable() {
@@ -245,6 +326,16 @@ class MapViewModel: BaseViewModel {
         lastUpdateTime = cachedSnapshot.savedAt
         updateVisibleBikePoints()
         logger.info("Loaded \(installedBikePoints.count, privacy: .public) cached bike points for map startup")
+    }
+
+    private func applyFetchedBikePoints(_ bikePoints: [BikePoint]) {
+        if isUserInteractingWithMap {
+            logger.info("Deferring map data application until interaction ends")
+            pendingAppliedBikePoints = bikePoints
+            return
+        }
+
+        applyFreshBikePoints(bikePoints)
     }
 
     private func applyFreshBikePoints(_ bikePoints: [BikePoint]) {
@@ -266,11 +357,17 @@ class MapViewModel: BaseViewModel {
         clearErrorOnSuccess()
     }
 
-    private func handleFetchFailure(_ error: Error) -> Bool {
+    private func handleFetchFailure(_ error: Error, trigger: FetchTrigger) -> Bool {
+        if isUserInteractingWithMap {
+            pendingAppliedBikePoints = nil
+        }
+
         if !allBikePoints.isEmpty {
             logger.warning("Keeping in-memory bike points due to TfL fetch issue: \(error.localizedDescription, privacy: .public)")
             updateStaleDataWarning(savedAt: lastUpdateTime)
-            scheduleTransientRetry()
+            if trigger != .manual {
+                scheduleTransientRetry()
+            }
             return true
         }
 
@@ -297,7 +394,9 @@ class MapViewModel: BaseViewModel {
         }
 
         logger.warning("Using cached bike points due to TfL fetch issue: \(error.localizedDescription, privacy: .public)")
-        scheduleTransientRetry()
+        if trigger != .manual {
+            scheduleTransientRetry()
+        }
         return true
     }
 
@@ -315,13 +414,17 @@ class MapViewModel: BaseViewModel {
         }
     }
 
-    private func scheduleTransientRetry() {
-        guard transientRetryTimer == nil else { return }
+    private func scheduleTransientRetry(forceRestart: Bool = false) {
+        if forceRestart {
+            stopTransientRetry()
+        } else if transientRetryTimer != nil {
+            return
+        }
 
         logger.info("Starting transient map retry loop")
         transientRetryAttemptCount = 0
         transientRetryTimer = Timer.scheduledTimer(
-            withTimeInterval: AppConstants.App.mapTransientRetryInterval,
+            withTimeInterval: retryInterval,
             repeats: true
         ) { [weak self] _ in
             Task { @MainActor in
@@ -331,10 +434,10 @@ class MapViewModel: BaseViewModel {
                     self.stopTransientRetry()
                     return
                 }
-                guard !self.isLoading else { return }
+                guard self.activeFetchCancellable == nil else { return }
                 self.transientRetryAttemptCount += 1
                 self.logger.info("Transient retry: attempting map refresh")
-                self.loadBikePoints(cacheBusting: true)
+                self.loadBikePoints(trigger: .retry)
             }
         }
     }
@@ -343,6 +446,24 @@ class MapViewModel: BaseViewModel {
         transientRetryTimer?.invalidate()
         transientRetryTimer = nil
         transientRetryAttemptCount = 0
+    }
+
+    private func completeMapInteraction() {
+        isUserInteractingWithMap = false
+        updateVisibleBikePoints()
+
+        if let pendingAppliedBikePoints {
+            self.pendingAppliedBikePoints = nil
+            applyFreshBikePoints(pendingAppliedBikePoints)
+        }
+
+        runPendingFetchIfNeeded()
+    }
+
+    private func runPendingFetchIfNeeded() {
+        guard activeFetchCancellable == nil, !isUserInteractingWithMap, let pendingFetchTrigger else { return }
+        self.pendingFetchTrigger = nil
+        loadBikePoints(trigger: pendingFetchTrigger)
     }
     
     private func updateVisibleBikePoints() {
@@ -378,7 +499,9 @@ class MapViewModel: BaseViewModel {
     
     deinit {
         updateTimer?.invalidate()
+        interactionIdleTimer?.invalidate()
         backgroundUpdateTimer?.invalidate()
         transientRetryTimer?.invalidate()
+        activeFetchCancellable?.cancel()
     }
 }

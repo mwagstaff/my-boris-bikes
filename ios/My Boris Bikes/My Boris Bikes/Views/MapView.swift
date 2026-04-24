@@ -87,9 +87,9 @@ struct MapView: View {
                 }
                 .mapStyle(.standard(elevation: .flat)) // Optimize map rendering
                 .mapControlVisibility(.hidden) // Hide unnecessary controls
-                .onMapCameraChange { context in
-                    // Update bike points when user scrolls to new location or zooms
-                    viewModel.updateMapRegion(context.region)
+                .onMapCameraChange(frequency: .continuous) { context in
+                    // Track active interaction so network refreshes don't churn annotations mid-pan.
+                    viewModel.handleMapCameraChange(context.region)
                 }
                 .onAppear {
                     // If we have a selected bike point when appearing, center on it before setting up location services
