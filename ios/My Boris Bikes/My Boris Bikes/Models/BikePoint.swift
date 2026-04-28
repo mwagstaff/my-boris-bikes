@@ -1,7 +1,7 @@
 import Foundation
 import CoreLocation
 
-struct BikePoint: Codable, Identifiable, Equatable {
+struct BikePoint: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let commonName: String
     let url: String
@@ -110,7 +110,7 @@ struct BikePoint: Codable, Identifiable, Equatable {
     }
 }
 
-struct AdditionalProperty: Codable, Equatable {
+struct AdditionalProperty: Codable, Equatable, Sendable {
     let key: String
     let value: String
 

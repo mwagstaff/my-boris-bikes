@@ -259,6 +259,10 @@ final class DockArrivalMonitoringService: NSObject {
             ?? LiveActivityArrivalSettings.defaultEnabled
     }
 
+    var monitoredDockID: String? {
+        monitoredDock?.dockId
+    }
+
     private var debugDeviceIdentifier: String? {
         DeviceTokenHelper.apnsDeviceToken ?? DeviceTokenHelper.analyticsDeviceToken
     }

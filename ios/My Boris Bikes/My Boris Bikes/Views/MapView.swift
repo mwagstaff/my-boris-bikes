@@ -68,12 +68,13 @@ struct MapView: View {
                                 isFavorite: favoritesService.isFavorite(bikePoint.id),
                                 displayMode: mapAvailabilityDisplayMode
                             ) {
+                                guard let fullBikePoint = viewModel.bikePoint(for: bikePoint.id) else { return }
                                 AnalyticsService.shared.trackDockTap(
                                     screen: .map,
-                                    bikePoint: bikePoint,
+                                    bikePoint: fullBikePoint,
                                     source: "map_pin"
                                 )
-                                selectedBikePointForDetail = bikePoint
+                                selectedBikePointForDetail = fullBikePoint
                             }
                         }
                     }
@@ -370,7 +371,7 @@ struct MapView: View {
 }
 
 struct BikePointMapPin: View {
-    let bikePoint: BikePoint
+    let bikePoint: MapBikePointSummary
     let isFavorite: Bool
     let displayMode: MapAvailabilityDisplayMode
     let onTap: () -> Void

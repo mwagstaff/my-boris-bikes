@@ -10,6 +10,7 @@ final class AllBikePointsCache {
 
     private let appGroup = AppConstants.App.appGroup
     private let fileName = "all_bike_points_cache.json"
+    private let writeQueue = DispatchQueue(label: "AllBikePointsCache.WriteQueue", qos: .utility)
 
     private init() {}
 
@@ -55,13 +56,15 @@ final class AllBikePointsCache {
         }
         guard let fileURL = fileURL else { return }
 
-        do {
-            let encoder = JSONEncoder()
-            let payload = CachedAllBikePointsPayload(savedAt: savedAt, bikePoints: bikePoints)
-            let data = try encoder.encode(payload)
-            try data.write(to: fileURL, options: [.atomic])
-        } catch {
-            print("AllBikePointsCache: Failed to save cache: \(error)")
+        writeQueue.async {
+            do {
+                let encoder = JSONEncoder()
+                let payload = CachedAllBikePointsPayload(savedAt: savedAt, bikePoints: bikePoints)
+                let data = try encoder.encode(payload)
+                try data.write(to: fileURL, options: [.atomic])
+            } catch {
+                print("AllBikePointsCache: Failed to save cache: \(error)")
+            }
         }
     }
 }
