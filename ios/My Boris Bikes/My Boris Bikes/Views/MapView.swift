@@ -36,7 +36,7 @@ enum MapAvailabilityDisplayMode: String, CaseIterable, Identifiable {
 }
 
 struct MapView: View {
-    @StateObject private var viewModel = MapViewModel()
+    @State private var viewModel = MapViewModel()
     @EnvironmentObject var locationService: LocationService
     @EnvironmentObject var favoritesService: FavoritesService
     @EnvironmentObject var bannerService: BannerService
@@ -58,6 +58,7 @@ struct MapView: View {
     }
     
     var body: some View {
+        @Bindable var viewModel = viewModel
         NavigationStack {
             ZStack {
                 Map(position: $viewModel.position) {
@@ -88,8 +89,7 @@ struct MapView: View {
                 }
                 .mapStyle(.standard(elevation: .flat)) // Optimize map rendering
                 .mapControlVisibility(.hidden) // Hide unnecessary controls
-                .onMapCameraChange(frequency: .continuous) { context in
-                    // Track active interaction so network refreshes don't churn annotations mid-pan.
+                .onMapCameraChange(frequency: .onEnd) { context in
                     viewModel.handleMapCameraChange(context.region)
                 }
                 .onAppear {

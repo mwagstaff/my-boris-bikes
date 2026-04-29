@@ -3,6 +3,7 @@ import SwiftUI
 import MapKit
 import Combine
 import OSLog
+import Observation
 
 struct MapBikePointSummary: Identifiable, Equatable, Sendable {
     let id: String
@@ -27,8 +28,9 @@ private struct ProcessedMapData: Sendable {
     let monitoredDock: BikePoint?
 }
 
+@Observable
 @MainActor
-class MapViewModel: BaseViewModel {
+class MapViewModel {
     enum FetchTrigger {
         case initial
         case manual
@@ -36,38 +38,53 @@ class MapViewModel: BaseViewModel {
         case retry
     }
 
-    @Published var position = MapCameraPosition.region(
+    // MARK: - Published state (observed by SwiftUI views)
+
+    var position = MapCameraPosition.region(
         MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278),
             span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
         )
     )
-    @Published var visibleBikePoints: [MapBikePointSummary] = []
-    @Published var shouldShowZoomMessage = false
-    @Published var lastUpdateTime: Date?
-    @Published var staleDataWarningMessage: String?
+    var visibleBikePoints: [MapBikePointSummary] = []
+    var shouldShowZoomMessage = false
+    var lastUpdateTime: Date?
+    var staleDataWarningMessage: String?
 
-    private var locationService: LocationService?
-    private var allBikePointsByID: [String: BikePoint] = [:]
-    private var allBikePointSummaries: [MapBikePointSummary] = []
+    // Inlined from BaseViewModel
+    var isLoading = false
+    var errorMessage: String?
+
+    // MARK: - Internal state (not observed)
+
+    @ObservationIgnored private var locationService: LocationService?
+    @ObservationIgnored private var allBikePointsByID: [String: BikePoint] = [:]
+    @ObservationIgnored private var allBikePointSummaries: [MapBikePointSummary] = []
     private let maxVisiblePoints = 50
-    private var currentMapCenter = CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278)
-    private var currentMapSpan = MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-    private var updateTimer: Timer?
-    private var interactionIdleTimer: Timer?
-    private var backgroundUpdateTimer: Timer?
-    private var transientRetryTimer: Timer?
-    private var activeFetchCancellable: AnyCancellable?
-    private var currentFetchRequestID = 0
-    private var transientRetryAttemptCount = 0
+    @ObservationIgnored private var currentMapCenter = CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278)
+    @ObservationIgnored private var currentMapSpan = MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+    @ObservationIgnored private var backgroundUpdateTimer: Timer?
+    @ObservationIgnored private var transientRetryTimer: Timer?
+    @ObservationIgnored private var activeFetchCancellable: AnyCancellable?
+    @ObservationIgnored private var currentFetchRequestID = 0
+    @ObservationIgnored private var transientRetryAttemptCount = 0
+    @ObservationIgnored private var hasInitiallyeCentered = false
+    @ObservationIgnored private var isSetup = false
+    @ObservationIgnored private var hasPendingBikePointCenter = false
+    @ObservationIgnored private var pendingDockId: String?
+
+    // Inlined from BaseViewModel (error delay logic)
+    @ObservationIgnored private var cancellables = Set<AnyCancellable>()
+    @ObservationIgnored private var errorDelayTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingError: String?
+    @ObservationIgnored private var consecutiveFailureCount = 0
+    @ObservationIgnored private var lastFailureDate: Date?
+    private let failureThreshold = 3
+    private let failureWindow: TimeInterval = 120
+
     private let logger = Logger(subsystem: "com.myborisbikes.app", category: "MapViewModel")
-    private var hasInitiallyeCentered = false
-    private var isSetup = false
-    private var hasPendingBikePointCenter = false
-    private var pendingDockId: String?
-    private var isUserInteractingWithMap = false
-    private var pendingProcessedMapData: ProcessedMapData?
-    private var pendingFetchTrigger: FetchTrigger?
+
+    // MARK: - Setup
 
     func setup(locationService: LocationService) {
         guard !isSetup else {
@@ -112,24 +129,11 @@ class MapViewModel: BaseViewModel {
         loadBikePoints(trigger: .manual)
     }
 
+    // Called from .onMapCameraChange(frequency: .onEnd) — fires once when panning settles.
     func handleMapCameraChange(_ region: MKCoordinateRegion) {
         currentMapCenter = region.center
         currentMapSpan = region.span
-        isUserInteractingWithMap = true
-
-        updateTimer?.invalidate()
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                self?.updateVisibleBikePoints()
-            }
-        }
-
-        interactionIdleTimer?.invalidate()
-        interactionIdleTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                self?.completeMapInteraction()
-            }
-        }
+        updateVisibleBikePoints()
     }
 
     func centerOnNearestBikePoint() {
@@ -179,6 +183,48 @@ class MapViewModel: BaseViewModel {
     func bikePoint(for id: String) -> BikePoint? {
         allBikePointsByID[id]
     }
+
+    // MARK: - Inlined BaseViewModel error/loading methods
+
+    func setError(_ error: Error) {
+        let errorText = error.localizedDescription
+        let now = Date()
+
+        if let lastFailureDate,
+           now.timeIntervalSince(lastFailureDate) <= failureWindow {
+            consecutiveFailureCount += 1
+        } else {
+            consecutiveFailureCount = 1
+        }
+        self.lastFailureDate = now
+
+        errorDelayTask?.cancel()
+        pendingError = errorText
+
+        guard consecutiveFailureCount >= failureThreshold else { return }
+
+        errorDelayTask = Task {
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            if !Task.isCancelled, pendingError == errorText {
+                errorMessage = errorText
+                pendingError = nil
+            }
+        }
+    }
+
+    func clearError() {
+        errorDelayTask?.cancel()
+        pendingError = nil
+        errorMessage = nil
+    }
+
+    func clearErrorOnSuccess() {
+        clearError()
+        consecutiveFailureCount = 0
+        lastFailureDate = nil
+    }
+
+    // MARK: - Private
 
     private func startBackgroundUpdates() {
         backgroundUpdateTimer?.invalidate()
@@ -231,12 +277,6 @@ class MapViewModel: BaseViewModel {
     }
 
     private func loadBikePoints(trigger: FetchTrigger) {
-        if isUserInteractingWithMap, trigger != .manual {
-            logger.info("Deferring map fetch until interaction ends")
-            pendingFetchTrigger = trigger
-            return
-        }
-
         if activeFetchCancellable != nil {
             if trigger == .manual {
                 logger.info("Cancelling in-flight map request for manual refresh")
@@ -281,8 +321,6 @@ class MapViewModel: BaseViewModel {
                             self.scheduleTransientRetry()
                         }
                     }
-
-                    self.runPendingFetchIfNeeded()
                 },
                 receiveValue: { [weak self] bikePoints in
                     guard let self else { return }
@@ -310,7 +348,7 @@ class MapViewModel: BaseViewModel {
                                 return
                             }
 
-                            self.applyProcessedMapData(processed)
+                            self.applyFreshProcessedMapData(processed)
                         }
                     }
                 }
@@ -333,16 +371,6 @@ class MapViewModel: BaseViewModel {
         lastUpdateTime = cachedSnapshot.savedAt
         updateVisibleBikePoints()
         logger.info("Loaded \(processed.summaries.count, privacy: .public) cached bike points for map startup")
-    }
-
-    private func applyProcessedMapData(_ processed: ProcessedMapData) {
-        if isUserInteractingWithMap {
-            logger.info("Deferring map data application until interaction ends")
-            pendingProcessedMapData = processed
-            return
-        }
-
-        applyFreshProcessedMapData(processed)
     }
 
     private func applyFreshProcessedMapData(_ processed: ProcessedMapData) {
@@ -368,10 +396,6 @@ class MapViewModel: BaseViewModel {
     }
 
     private func handleFetchFailure(_ error: Error, trigger: FetchTrigger) -> Bool {
-        if isUserInteractingWithMap {
-            pendingProcessedMapData = nil
-        }
-
         if !allBikePointsByID.isEmpty {
             logger.warning("Keeping in-memory bike points due to TfL fetch issue: \(error.localizedDescription, privacy: .public)")
             updateStaleDataWarning(savedAt: lastUpdateTime)
@@ -454,24 +478,6 @@ class MapViewModel: BaseViewModel {
         transientRetryTimer?.invalidate()
         transientRetryTimer = nil
         transientRetryAttemptCount = 0
-    }
-
-    private func completeMapInteraction() {
-        isUserInteractingWithMap = false
-        updateVisibleBikePoints()
-
-        if let pendingProcessedMapData {
-            self.pendingProcessedMapData = nil
-            applyFreshProcessedMapData(pendingProcessedMapData)
-        }
-
-        runPendingFetchIfNeeded()
-    }
-
-    private func runPendingFetchIfNeeded() {
-        guard activeFetchCancellable == nil, !isUserInteractingWithMap, let pendingFetchTrigger else { return }
-        self.pendingFetchTrigger = nil
-        loadBikePoints(trigger: pendingFetchTrigger)
     }
 
     private func updateVisibleBikePoints() {
@@ -599,8 +605,6 @@ class MapViewModel: BaseViewModel {
     }
 
     deinit {
-        updateTimer?.invalidate()
-        interactionIdleTimer?.invalidate()
         backgroundUpdateTimer?.invalidate()
         transientRetryTimer?.invalidate()
         activeFetchCancellable?.cancel()
