@@ -163,7 +163,7 @@ struct MapView: View {
                 
                 VStack {
                     Spacer()
-                    
+
                     // Zoom message centered and at bottom
                     if viewModel.shouldShowZoomMessage {
                         HStack {
@@ -182,20 +182,41 @@ struct MapView: View {
                             .shadow(radius: 3)
                             Spacer()
                         }
-                        .padding(.bottom, 20)
+                        .padding(.bottom, 12)
                     }
-                    
-                    HStack {
+
+                    // Bottom bar: warning + update time on the left, action buttons on the right
+                    HStack(alignment: .bottom, spacing: 8) {
+                        // Left column: TfL warning and last update time
+                        VStack(alignment: .leading, spacing: 4) {
+                            if let warning = viewModel.tflDataStaleWarning ?? viewModel.staleDataWarningMessage {
+                                TflDataWarningBanner(message: warning)
+                            }
+                            if let lastUpdate = viewModel.lastUpdateTime {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "clock")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                    Text("Updated \(formatTime(lastUpdate))")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color(.systemBackground).opacity(0.7))
+                                .cornerRadius(8)
+                                .shadow(radius: 1)
+                            }
+                        }
+
                         Spacer()
-                        
-                        VStack {
-                            Spacer()
-                            
+
+                        // Right column: action buttons
+                        VStack(spacing: 0) {
                             // Refresh button with animation when loading
                             Button(action: {
                                 viewModel.refreshData()
                             }) {
-                                // Fixed-size container to prevent layout drift on rotation
                                 Image(systemName: "arrow.clockwise")
                                     .font(.title2)
                                     .foregroundColor(.accentColor)
@@ -203,16 +224,14 @@ struct MapView: View {
                                     .background(Color(.systemBackground))
                                     .clipShape(Circle())
                                     .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
-                                    // Use system rotation effect for stability across OS versions
                                     .symbolEffect(.rotate, isActive: viewModel.isLoading)
                             }
                             .disabled(viewModel.isLoading)
                             .opacity(viewModel.isLoading ? 0.7 : 1.0)
                             .padding(.bottom, 10)
-                            
+
                             // Center on nearest bike point button
                             Button(action: viewModel.centerOnNearestBikePoint) {
-                                // Display a bike icon
                                 Image(systemName: "bicycle")
                                     .font(.title2)
                                     .foregroundColor(.accentColor)
@@ -239,56 +258,10 @@ struct MapView: View {
                             }
                             .disabled(locationService.location == nil)
                             .opacity(locationService.location == nil ? 0.5 : 1.0)
-                            .padding(.bottom, 0) // Above tab bar and message area
                         }
                     }
-                    .padding(.horizontal)
+                    .padding(.horizontal, 12)
                     .padding(.bottom, 50) // Above tab bar
-                }
-                
-                // Last update time label
-                VStack {
-                    Spacer()
-                    if let staleDataWarningMessage = viewModel.staleDataWarningMessage {
-                        HStack {
-                            Spacer()
-                            HStack(spacing: 6) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(.orange)
-                                Text(staleDataWarningMessage)
-                                    .font(.caption2)
-                                    .multilineTextAlignment(.trailing)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color(.systemBackground).opacity(0.9))
-                            .cornerRadius(8)
-                            .shadow(radius: 2)
-                        }
-                        .padding(.horizontal)
-                        .padding(.bottom, 6)
-                    }
-                    HStack {
-                        Spacer()
-                        if let lastUpdate = viewModel.lastUpdateTime {
-                            HStack(spacing: 4) {
-                                Image(systemName: "clock")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text("Updated \(formatTime(lastUpdate))")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color(.systemBackground).opacity(0.7))
-                            .cornerRadius(8)
-                            .shadow(radius: 1)
-                        }
-                    }
-                    .padding(.horizontal)
-                    .padding(.bottom, 20) // Above tab bar and other UI elements
                 }
                 
                 // Error banner at the top

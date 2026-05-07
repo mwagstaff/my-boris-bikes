@@ -26,6 +26,7 @@ private struct ProcessedMapData: Sendable {
     let summaries: [MapBikePointSummary]
     let savedAt: Date
     let monitoredDock: BikePoint?
+    let tflDataStaleWarning: String?
 }
 
 @Observable
@@ -50,6 +51,7 @@ class MapViewModel {
     var shouldShowZoomMessage = false
     var lastUpdateTime: Date?
     var staleDataWarningMessage: String?
+    var tflDataStaleWarning: String?
 
     // Inlined from BaseViewModel
     var isLoading = false
@@ -378,6 +380,7 @@ class MapViewModel {
         allBikePointSummaries = processed.summaries
         lastUpdateTime = processed.savedAt
         staleDataWarningMessage = nil
+        tflDataStaleWarning = processed.tflDataStaleWarning
         AllBikePointsCache.shared.save(Array(processed.bikePointsByID.values), savedAt: processed.savedAt)
         updateVisibleBikePoints()
         stopTransientRetry()
@@ -596,12 +599,32 @@ class MapViewModel {
             )
         }
 
+        let tflDataStaleWarning = detectTflApiStaleness(installedBikePoints, fetchedAt: savedAt)
+
         return ProcessedMapData(
             bikePointsByID: bikePointsByID,
             summaries: summaries,
             savedAt: savedAt,
-            monitoredDock: monitoredDockID.flatMap { bikePointsByID[$0] }
+            monitoredDock: monitoredDockID.flatMap { bikePointsByID[$0] },
+            tflDataStaleWarning: tflDataStaleWarning
         )
+    }
+
+    /// Returns a warning string if the most recent `modified` timestamp across all dock
+    /// additionalProperties is older than `tflApiStalenessThreshold`, indicating TfL is
+    /// serving stale data rather than a local connectivity problem.
+    private static func detectTflApiStaleness(_ bikePoints: [BikePoint], fetchedAt: Date) -> String? {
+        let mostRecentModified = bikePoints
+            .flatMap { $0.additionalProperties }
+            .compactMap { $0.modified }
+            .max()
+
+        guard let mostRecentModified else { return nil }
+
+        let age = fetchedAt.timeIntervalSince(mostRecentModified)
+        guard age > AppConstants.App.tflApiStalenessThreshold else { return nil }
+
+        return "Warning: TfL bike data may be out of date"
     }
 
     deinit {

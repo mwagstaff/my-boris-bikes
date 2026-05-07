@@ -233,7 +233,7 @@ const httpRequestsTotal = new promClient.Counter({
 const tflRequestDuration = new promClient.Histogram({
   name: "tfl_request_duration_seconds",
   help: "Duration of TfL API requests in seconds",
-  labelNames: ["method", "url_path", "status_code"],
+  labelNames: ["method", "url_path", "query_string", "status_code"],
   buckets: [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10],
   registers: [register],
 });
@@ -241,7 +241,7 @@ const tflRequestDuration = new promClient.Histogram({
 const tflRequestsTotal = new promClient.Counter({
   name: "tfl_requests_total",
   help: "Total number of TfL API requests",
-  labelNames: ["method", "url_path", "status_code"],
+  labelNames: ["method", "url_path", "query_string", "status_code"],
   registers: [register],
 });
 
@@ -279,6 +279,146 @@ const dockPollsTotal = new promClient.Counter({
   labelNames: ["dock_id", "status"], // status: "success"/"failure"
   registers: [register],
 });
+
+const tflFreshnessState = {
+  lastCheckedMs: null,
+  lastModifiedMs: null,
+  staleDocks: null,
+  totalDocks: null,
+  propertiesChecked: null,
+};
+
+const tflDataAgeSeconds = new promClient.Gauge({
+  name: "tfl_data_age_seconds",
+  help: "Current age in seconds of the most recently modified bike-count property in the full TfL /BikePoint feed",
+  registers: [register],
+  collect() {
+    if (tflFreshnessState.lastModifiedMs !== null) {
+      this.set(
+        Math.max(0, (Date.now() - tflFreshnessState.lastModifiedMs) / 1000)
+      );
+    }
+  },
+});
+
+const tflDataLastModifiedTimestampSeconds = new promClient.Gauge({
+  name: "tfl_data_last_modified_timestamp_seconds",
+  help: "Unix timestamp of the most recently modified bike-count property in the full TfL /BikePoint feed",
+  registers: [register],
+});
+
+const tflDataLastCheckedTimestampSeconds = new promClient.Gauge({
+  name: "tfl_data_last_checked_timestamp_seconds",
+  help: "Unix timestamp when the full TfL /BikePoint freshness check last completed successfully",
+  registers: [register],
+});
+
+const tflStaleDockRatio = new promClient.Gauge({
+  name: "tfl_stale_dock_ratio",
+  help: "Fraction of docks in the full TfL /BikePoint feed whose bike-count properties have not been modified within the staleness threshold",
+  registers: [register],
+});
+
+const tflStaleDocksTotal = new promClient.Gauge({
+  name: "tfl_stale_docks_total",
+  help: "Number of docks in the full TfL /BikePoint feed whose bike-count properties have not been modified within the staleness threshold",
+  registers: [register],
+});
+
+const tflDocksCheckedTotal = new promClient.Gauge({
+  name: "tfl_docks_checked_total",
+  help: "Number of docks in the full TfL /BikePoint feed with parseable bike-count modified timestamps",
+  registers: [register],
+});
+
+const tflFreshnessPropertiesCheckedTotal = new promClient.Gauge({
+  name: "tfl_freshness_properties_checked_total",
+  help: "Number of bike-count modified timestamp properties checked in the last full TfL /BikePoint freshness check",
+  registers: [register],
+});
+
+// Only these properties reflect actual bike availability; others (Installed, Locked, TerminalName)
+// are updated by TfL even during a data freeze, so they would mask staleness.
+const TFL_COUNT_KEYS = new Set([
+  "NbBikes",
+  "NbStandardBikes",
+  "NbEBikes",
+  "NbEmptyDocks",
+]);
+const TFL_STALENESS_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+
+function updateTflBikePointFreshness(bikePoints) {
+  if (!Array.isArray(bikePoints)) {
+    logger.warn("TfL freshness: expected full /BikePoint array");
+    return;
+  }
+
+  const now = Date.now();
+  let maxModifiedMs = null;
+  let totalDocks = 0;
+  let staleDocks = 0;
+  let propertiesChecked = 0;
+
+  for (const bp of bikePoints) {
+    let dockMaxMs = null;
+    for (const prop of bp?.additionalProperties || []) {
+      if (TFL_COUNT_KEYS.has(prop?.key) && prop?.modified) {
+        propertiesChecked++;
+        const t = new Date(prop.modified).getTime();
+        if (!isNaN(t)) {
+          if (dockMaxMs === null || t > dockMaxMs) dockMaxMs = t;
+          if (maxModifiedMs === null || t > maxModifiedMs) maxModifiedMs = t;
+        }
+      }
+    }
+    if (dockMaxMs !== null) {
+      totalDocks++;
+      if (now - dockMaxMs > TFL_STALENESS_THRESHOLD_MS) staleDocks++;
+    }
+  }
+
+  if (maxModifiedMs !== null) {
+    tflFreshnessState.lastCheckedMs = now;
+    tflFreshnessState.lastModifiedMs = maxModifiedMs;
+    tflFreshnessState.staleDocks = staleDocks;
+    tflFreshnessState.totalDocks = totalDocks;
+    tflFreshnessState.propertiesChecked = propertiesChecked;
+
+    const ageSeconds = Math.max(0, (now - maxModifiedMs) / 1000);
+    tflDataAgeSeconds.set(ageSeconds);
+    tflDataLastModifiedTimestampSeconds.set(maxModifiedMs / 1000);
+    tflDataLastCheckedTimestampSeconds.set(now / 1000);
+    tflStaleDockRatio.set(totalDocks > 0 ? staleDocks / totalDocks : 0);
+    tflStaleDocksTotal.set(staleDocks);
+    tflDocksCheckedTotal.set(totalDocks);
+    tflFreshnessPropertiesCheckedTotal.set(propertiesChecked);
+
+    logger.info(
+      `TfL freshness: age=${Math.round(ageSeconds)}s, stale=${staleDocks}/${totalDocks} docks, ` +
+      `last_modified=${new Date(maxModifiedMs).toISOString()} (${propertiesChecked} props checked)`
+    );
+  } else {
+    logger.warn(
+      `TfL freshness: no parseable modified timestamps on count properties ` +
+      `across ${bikePoints.length} dock(s) - ${propertiesChecked} props checked`
+    );
+  }
+}
+
+const TFL_FRESHNESS_CHECK_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
+
+async function checkTflDataFreshness() {
+  try {
+    const bikePoints = await fetchTflJson("/BikePoint");
+    if (!Array.isArray(bikePoints) || bikePoints.length === 0) {
+      logger.warn("TfL freshness check: unexpected /BikePoint response");
+      return;
+    }
+    updateTflBikePointFreshness(bikePoints);
+  } catch (err) {
+    logger.error(`TfL freshness check failed: ${err.message}`);
+  }
+}
 
 const appActionsTotal = new promClient.Counter({
   name: "app_actions_total",
@@ -441,6 +581,41 @@ const complicationTokensGauge = new promClient.Gauge({
 });
 
 // ── TfL API ──────────────────────────────────────────────────────────
+const REDACTED_TFL_QUERY_KEYS = new Set([
+  "app_key",
+  "api_key",
+  "key",
+  "subscription-key",
+  "subscription_key",
+]);
+const VOLATILE_TFL_QUERY_KEYS = new Set(["_", "cb", "cachebuster"]);
+
+function tflQueryStringMetricLabel(params) {
+  const entries = Array.from(params.entries());
+  if (entries.length === 0) return "(none)";
+
+  return entries
+    .map(([key, value]) => {
+      const normalizedKey = key.toLowerCase();
+      if (REDACTED_TFL_QUERY_KEYS.has(normalizedKey)) {
+        return [key, "<redacted>"];
+      }
+      if (VOLATILE_TFL_QUERY_KEYS.has(normalizedKey)) {
+        return [key, "<cache-buster>"];
+      }
+      return [key, value];
+    })
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => {
+      const metricValue =
+        value.startsWith("<") && value.endsWith(">")
+          ? value
+          : encodeURIComponent(value);
+      return `${encodeURIComponent(key)}=${metricValue}`;
+    })
+    .join("&");
+}
+
 async function fetchTflJson(urlPath, queryParams = {}, options = {}) {
   const { dockIdForPolling = null } = options;
   const params = new URLSearchParams();
@@ -456,6 +631,7 @@ async function fetchTflJson(urlPath, queryParams = {}, options = {}) {
   }
 
   const queryString = params.toString();
+  const queryStringMetric = tflQueryStringMetricLabel(params);
   const url = `${TFL_API_BASE}${urlPath}${queryString ? `?${queryString}` : ""}`;
   const method = "GET";
   const start = Date.now();
@@ -466,12 +642,18 @@ async function fetchTflJson(urlPath, queryParams = {}, options = {}) {
   } catch (err) {
     const duration = (Date.now() - start) / 1000;
     tflRequestDuration.observe(
-      { method, url_path: urlPath, status_code: "error" },
+      {
+        method,
+        url_path: urlPath,
+        query_string: queryStringMetric,
+        status_code: "error",
+      },
       duration
     );
     tflRequestsTotal.inc({
       method,
       url_path: urlPath,
+      query_string: queryStringMetric,
       status_code: "error",
     });
     if (dockIdForPolling) {
@@ -483,12 +665,18 @@ async function fetchTflJson(urlPath, queryParams = {}, options = {}) {
   const statusCode = res.status ? res.status.toString() : "unknown";
   const duration = (Date.now() - start) / 1000;
   tflRequestDuration.observe(
-    { method, url_path: urlPath, status_code: statusCode },
+    {
+      method,
+      url_path: urlPath,
+      query_string: queryStringMetric,
+      status_code: statusCode,
+    },
     duration
   );
   tflRequestsTotal.inc({
     method,
     url_path: urlPath,
+    query_string: queryStringMetric,
     status_code: statusCode,
   });
 
@@ -2514,6 +2702,7 @@ app.get("/BikePoint", async (req, res) => {
     if (!Array.isArray(bikePoints)) {
       return res.json(bikePoints);
     }
+    updateTflBikePointFreshness(bikePoints);
     res.json(bikePoints.map((bikePoint) => applyOverrideToBikePoint(bikePoint)));
   } catch (err) {
     logger.error(`Failed to proxy /BikePoint: ${err.message}`);
@@ -3432,4 +3621,8 @@ app.listen(PORT, () => {
   );
   logger.info(`APNS live activity topic: ${APNS_TOPIC}`);
   logger.info(`APNS app/background topic: ${APNS_BACKGROUND_TOPIC}`);
+
+  // Start periodic TfL data freshness monitoring (independent of live activity polling)
+  checkTflDataFreshness().catch(() => {});
+  setInterval(checkTflDataFreshness, TFL_FRESHNESS_CHECK_INTERVAL_MS);
 });

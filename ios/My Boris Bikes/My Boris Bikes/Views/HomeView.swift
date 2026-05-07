@@ -27,6 +27,7 @@ struct HomeView: View {
                             bikePoints: viewModel.favoriteBikePoints,
                             allBikePoints: viewModel.allBikePoints,
                             lastUpdateTime: viewModel.lastUpdateTime,
+                            tflDataStaleWarning: viewModel.tflDataStaleWarning,
                             onBikePointSelected: onBikePointSelected
                         )
                     }
@@ -132,6 +133,7 @@ struct FavoritesListView: View {
     let bikePoints: [BikePoint]
     let allBikePoints: [BikePoint]
     let lastUpdateTime: Date?
+    let tflDataStaleWarning: String?
     let onBikePointSelected: ((BikePoint) -> Void)?
     @EnvironmentObject var favoritesService: FavoritesService
     @EnvironmentObject var locationService: LocationService
@@ -397,24 +399,32 @@ struct FavoritesListView: View {
         }
         .listStyle(PlainListStyle())
         .safeAreaInset(edge: .bottom) {
-            if let lastUpdate = lastUpdateTime {
-                HStack {
-                    Spacer()
-                    HStack(spacing: 4) {
-                        Image(systemName: "clock")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        Text("Updated \(formatTime(lastUpdate))")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color(.systemBackground))
-                    Spacer()
+            VStack(spacing: 0) {
+                if let warning = tflDataStaleWarning {
+                    TflDataWarningBanner(message: warning)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal)
+                        .padding(.top, 6)
                 }
-                .padding(.bottom, 8)
-                .background(.clear)
+                if let lastUpdate = lastUpdateTime {
+                    HStack {
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Image(systemName: "clock")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            Text("Updated \(formatTime(lastUpdate))")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color(.systemBackground))
+                        Spacer()
+                    }
+                    .padding(.bottom, 8)
+                    .background(.clear)
+                }
             }
         }
         .sheet(item: $editingBikePoint) { bikePoint in

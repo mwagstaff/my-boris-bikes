@@ -113,11 +113,19 @@ struct BikePoint: Codable, Identifiable, Equatable, Sendable {
 struct AdditionalProperty: Codable, Equatable, Sendable {
     let key: String
     let value: String
+    let modified: Date?
 
     private enum CodingKeys: String, CodingKey {
         case key
         case value
+        case modified
     }
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -125,22 +133,21 @@ struct AdditionalProperty: Codable, Equatable, Sendable {
 
         if let stringValue = try? container.decode(String.self, forKey: .value) {
             value = stringValue
-            return
-        }
-        if let intValue = try? container.decode(Int.self, forKey: .value) {
+        } else if let intValue = try? container.decode(Int.self, forKey: .value) {
             value = String(intValue)
-            return
-        }
-        if let doubleValue = try? container.decode(Double.self, forKey: .value) {
+        } else if let doubleValue = try? container.decode(Double.self, forKey: .value) {
             value = String(doubleValue)
-            return
-        }
-        if let boolValue = try? container.decode(Bool.self, forKey: .value) {
+        } else if let boolValue = try? container.decode(Bool.self, forKey: .value) {
             value = boolValue ? "true" : "false"
-            return
+        } else {
+            value = ""
         }
 
-        value = ""
+        if let dateString = try? container.decodeIfPresent(String.self, forKey: .modified) {
+            modified = Self.isoFormatter.date(from: dateString)
+        } else {
+            modified = nil
+        }
     }
 
     func encode(to encoder: Encoder) throws {

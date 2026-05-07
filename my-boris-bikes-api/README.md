@@ -198,6 +198,14 @@ The `/metrics` endpoint exposes the following metrics:
 - `apns_pushes_total` - Counter of APNS pushes sent (by event, build type, status)
 - `dock_polls_total` - Counter of dock polls (by dock ID, status)
 
+**TfL Freshness Metrics:**
+- `tfl_data_age_seconds` - Current age of the newest bike-count timestamp in the full `/BikePoint` feed
+- `tfl_data_last_modified_timestamp_seconds` - Unix timestamp for that newest bike-count update
+- `tfl_data_last_checked_timestamp_seconds` - Unix timestamp when the full `/BikePoint` freshness check last completed
+- `tfl_stale_dock_ratio` - Fraction of docks with bike-count data older than 10 minutes
+- `tfl_stale_docks_total` / `tfl_docks_checked_total` - Stale dock count and total checked docks
+- `tfl_freshness_properties_checked_total` - Count of bike-count timestamp properties checked in the last run
+
 **App Interaction Metrics:**
 - `app_actions_total` - Counter of app actions (by action, screen, dock ID/name, build type)
 - `dock_stats_total` - Counter of dock-focused actions for `favorite_add`, `dock_tap`, and `live_activity_start` (by action, screen, dock ID/name, build type)

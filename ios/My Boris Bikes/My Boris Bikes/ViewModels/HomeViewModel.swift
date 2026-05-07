@@ -7,6 +7,7 @@ class HomeViewModel: BaseViewModel {
     @Published var favoriteBikePoints: [BikePoint] = []
     @Published var allBikePoints: [BikePoint] = []
     @Published var lastUpdateTime: Date?
+    @Published var tflDataStaleWarning: String?
 
     private var favoritesService: FavoritesService?
     private var locationService: LocationService?
@@ -192,6 +193,20 @@ class HomeViewModel: BaseViewModel {
                         
                         // Update last refresh time
                         self?.lastUpdateTime = Date()
+
+                        // Detect TfL API staleness from modified timestamps
+                        let mostRecentModified = newBikePoints
+                            .flatMap { $0.additionalProperties }
+                            .compactMap { $0.modified }
+                            .max()
+                        if let mostRecentModified {
+                            let age = Date().timeIntervalSince(mostRecentModified)
+                            self?.tflDataStaleWarning = age > AppConstants.App.tflApiStalenessThreshold
+                                ? "Warning: TfL bike data may be out of date"
+                                : nil
+                        } else {
+                            self?.tflDataStaleWarning = nil
+                        }
 
                         // Clear any existing errors on successful data load
                         self?.clearErrorOnSuccess()

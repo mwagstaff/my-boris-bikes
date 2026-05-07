@@ -2,69 +2,100 @@
   "title": "Node.js Runtime Health",
   "timezone": "browser",
   "schemaVersion": 38,
-  "version": 3,
-  "refresh": "5s",
+  "version": 4,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "tags": ["boris-bikes", "nodejs", "runtime", "performance"],
   "panels": [
     {
       "type": "timeseries",
-      "title": "Process Memory (MB)",
+      "title": "Process Memory",
       "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
       "targets": [
-        {
-          "expr": "process_resident_memory_bytes / 1024 / 1024",
-          "legendFormat": "RSS Memory"
-        }
+        { "expr": "process_resident_memory_bytes", "legendFormat": "RSS" },
+        { "expr": "process_virtual_memory_bytes", "legendFormat": "Virtual" },
+        { "expr": "nodejs_external_memory_bytes", "legendFormat": "External" },
+        { "expr": "nodejs_heap_space_size_used_bytes{space=\"large_object_space\"}", "legendFormat": "Array Buffers" }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Heap Used (MB)",
+      "title": "Heap",
       "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
       "targets": [
-        {
-          "expr": "nodejs_heap_size_used_bytes / 1024 / 1024",
-          "legendFormat": "Heap Used"
-        }
+        { "expr": "nodejs_heap_size_used_bytes", "legendFormat": "Heap Used" },
+        { "expr": "nodejs_heap_size_total_bytes", "legendFormat": "Heap Total" },
+        { "expr": "sum(nodejs_heap_space_size_used_bytes)", "legendFormat": "Heap Physical" },
+        { "expr": "nodejs_heap_size_limit_bytes", "legendFormat": "Heap Limit" }
       ]
     },
     {
       "type": "timeseries",
       "title": "CPU Usage",
       "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
       "targets": [
-        {
-          "expr": "rate(process_cpu_seconds_total[1m])",
-          "legendFormat": "CPU/sec"
-        }
+        { "expr": "100 * rate(process_cpu_seconds_total[$__rate_interval])", "legendFormat": "CPU" }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Event Loop Lag (p99)",
+      "title": "Event Loop Lag",
       "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        { "expr": "1000 * nodejs_eventloop_lag_p50_seconds", "legendFormat": "p50" },
+        { "expr": "1000 * nodejs_eventloop_lag_p90_seconds", "legendFormat": "p90" },
+        { "expr": "1000 * nodejs_eventloop_lag_p99_seconds", "legendFormat": "p99" },
+        { "expr": "1000 * nodejs_eventloop_lag_max_seconds", "legendFormat": "max" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Event Loop Utilization",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "targets": [
+        { "expr": "100 * nodejs_eventloop_utilization", "legendFormat": "ELU" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Active Runtime Objects",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "nodejs_active_handles_total", "legendFormat": "Handles" },
+        { "expr": "nodejs_active_resources_total", "legendFormat": "Resources" },
+        { "expr": "nodejs_active_requests_total", "legendFormat": "Requests" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Heap Spaces (Used)",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "stacking": { "group": "A", "mode": "normal" } }
+        },
+        "overrides": []
+      },
       "targets": [
         {
-          "expr": "nodejs_eventloop_lag_p99_seconds",
-          "legendFormat": "p99 lag"
+          "expr": "nodejs_heap_space_size_used_bytes{space!~\"read_only_space|shared_space|shared_trusted_space|shared_large_object_space|shared_trusted_large_object_space|trusted_space|trusted_large_object_space\"}",
+          "legendFormat": "{{space}}"
         }
       ]
     },
     {
       "type": "stat",
       "title": "Uptime",
-      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 6 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s"
-        },
-        "overrides": []
-      },
+      "gridPos": { "x": 0, "y": 32, "w": 6, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
       "options": {
-        "reduceOptions": {
-          "values": false,
-          "calcs": ["lastNotNull"],
-          "fields": ""
-        },
+        "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
         "orientation": "auto",
         "textMode": "value",
         "wideLayout": true,
@@ -73,27 +104,16 @@
         "justifyMode": "auto"
       },
       "targets": [
-        {
-          "expr": "max(time() - process_start_time_seconds)"
-        }
+        { "expr": "max(time() - process_start_time_seconds)" }
       ]
     },
     {
       "type": "stat",
       "title": "Server Start Date",
-      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 6 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "time:dddd, MMM D, YYYY HH:mm:ss"
-        },
-        "overrides": []
-      },
+      "gridPos": { "x": 6, "y": 32, "w": 6, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "time:YYYY-MM-DD HH:mm:ss" }, "overrides": [] },
       "options": {
-        "reduceOptions": {
-          "values": false,
-          "calcs": ["lastNotNull"],
-          "fields": ""
-        },
+        "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
         "orientation": "auto",
         "textMode": "value",
         "wideLayout": true,
@@ -102,9 +122,43 @@
         "justifyMode": "auto"
       },
       "targets": [
-        {
-          "expr": "1000 * min(process_start_time_seconds)"
-        }
+        { "expr": "1000 * min(process_start_time_seconds)" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Heap Used %",
+      "gridPos": { "x": 12, "y": 32, "w": 6, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        { "expr": "100 * nodejs_heap_size_used_bytes / nodejs_heap_size_total_bytes" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Heap Limit Used %",
+      "gridPos": { "x": 18, "y": 32, "w": 6, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        { "expr": "100 * nodejs_heap_size_used_bytes / nodejs_heap_size_limit_bytes" }
       ]
     }
   ]

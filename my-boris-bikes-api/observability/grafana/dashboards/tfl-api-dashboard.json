@@ -1,13 +1,145 @@
 {
   "title": "TfL API Calls",
   "schemaVersion": 38,
-  "version": 2,
+  "version": 6,
   "refresh": "10s",
   "panels": [
     {
+      "type": "stat",
+      "title": "TfL Bike Count Data Age",
+      "description": "Current age of the most recently modified bike-count property in the full TfL /BikePoint feed. Individual /Place/:id polls are intentionally excluded so they cannot mask bulk-feed staleness. Green < 5 min, yellow 5-10 min, red > 10 min.",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 300 },
+              { "color": "red", "value": 600 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "expr": "tfl_data_age_seconds",
+          "legendFormat": "age"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "TfL Bike Counts Last Updated",
+      "description": "Timestamp of the most recently modified bike-count property in the full TfL /BikePoint feed.",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsSystem",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "text", "value": null }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "expr": "tfl_data_last_modified_timestamp_seconds * 1000",
+          "legendFormat": "last updated"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Stale Docks",
+      "description": "Percentage of docks in the full TfL /BikePoint feed whose bike-count data has not been updated within 10 minutes.",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "red", "value": 0.5 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "expr": "tfl_stale_dock_ratio",
+          "legendFormat": "stale ratio"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "TfL Data Age Over Time",
+      "description": "Historical view of full-feed bike-count data age. Yellow band = 5-10 min, red = > 10 min.",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 300 },
+              { "color": "red", "value": 600 }
+            ]
+          },
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 20,
+            "thresholdsStyle": { "mode": "area" }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "tfl_data_age_seconds",
+          "legendFormat": "age (s)"
+        }
+      ]
+    },
+    {
       "type": "timeseries",
       "title": "Good Requests (1xx-3xx) - req/sec",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
       "targets": [
         {
           "expr": "sum(rate(tfl_requests_total{status_code=~\"^[1-3][0-9][0-9]$\"}[$__rate_interval]))",
@@ -18,7 +150,7 @@
     {
       "type": "timeseries",
       "title": "Good Requests by Status Code - req/sec",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
       "targets": [
         {
           "expr": "sum(rate(tfl_requests_total{status_code=~\"^[1-3][0-9][0-9]$\"}[$__rate_interval])) by (status_code)",
@@ -29,7 +161,7 @@
     {
       "type": "timeseries",
       "title": "Bad Requests (4xx-5xx + error) - req/sec",
-      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -49,7 +181,7 @@
     {
       "type": "timeseries",
       "title": "Bad Requests by Status Code - req/sec",
-      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -69,18 +201,18 @@
     {
       "type": "timeseries",
       "title": "Dock Poll Rate",
-      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 8 },
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 8 },
       "targets": [
         { "expr": "rate(dock_polls_total[5m])" }
       ]
     },
     {
       "type": "table",
-      "title": "Top URLs by Count and Status",
-      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 10 },
+      "title": "Top URLs by Query and Status",
+      "gridPos": { "x": 0, "y": 28, "w": 24, "h": 10 },
       "targets": [
         {
-          "expr": "sort_desc(topk(20, sum(increase(tfl_requests_total[$__range])) by (url_path, status_code)))",
+          "expr": "sort_desc(topk(20, sum(increase(tfl_requests_total[$__range])) by (url_path, query_string, status_code)))",
           "instant": true,
           "format": "table"
         }
@@ -99,12 +231,14 @@
             },
             "indexByName": {
               "url_path": 0,
-              "status_code": 1,
-              "Value": 2,
-              "Value #A": 2
+              "query_string": 1,
+              "status_code": 2,
+              "Value": 3,
+              "Value #A": 3
             },
             "renameByName": {
               "url_path": "URL",
+              "query_string": "Query string",
               "status_code": "Status code",
               "Value": "Count",
               "Value #A": "Count"
@@ -116,7 +250,7 @@
     {
       "type": "timeseries",
       "title": "P95 Latency (All TfL Requests)",
-      "gridPos": { "x": 0, "y": 34, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 38, "w": 12, "h": 8 },
       "fieldConfig": {
         "defaults": {
           "unit": "ms"
@@ -133,7 +267,7 @@
     {
       "type": "timeseries",
       "title": "Error Rate (% of TfL Requests)",
-      "gridPos": { "x": 12, "y": 34, "w": 12, "h": 8 },
+      "gridPos": { "x": 12, "y": 38, "w": 12, "h": 8 },
       "targets": [
         {
           "expr": "100 * sum(rate(tfl_requests_total{status_code=~\"(^[4-5][0-9][0-9]$|^error$|^unknown$)\"}[$__rate_interval])) / sum(rate(tfl_requests_total[$__rate_interval]))",
