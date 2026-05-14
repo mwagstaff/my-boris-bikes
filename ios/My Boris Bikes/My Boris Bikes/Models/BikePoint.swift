@@ -18,6 +18,15 @@ struct BikePoint: Codable, Identifiable, Equatable, Sendable {
         case additionalProperties
     }
 
+    init(id: String, commonName: String, lat: Double, lon: Double, additionalProperties: [AdditionalProperty] = []) {
+        self.id = id
+        self.commonName = commonName
+        self.url = ""
+        self.lat = lat
+        self.lon = lon
+        self.additionalProperties = additionalProperties
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)

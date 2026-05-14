@@ -54,6 +54,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         Task {
             await registerComplicationToken(tokenString)
             await LiveActivityService.shared.handleDeviceTokenRegistration()
+            await ScheduledJourneyService.shared.registerDevice()
         }
     }
 

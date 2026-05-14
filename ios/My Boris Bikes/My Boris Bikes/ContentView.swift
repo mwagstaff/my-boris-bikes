@@ -17,6 +17,7 @@ struct ContentView: View {
     @StateObject private var favoritesService = FavoritesService.shared
     @StateObject private var bannerService = BannerService.shared
     @StateObject private var liveActivityService = LiveActivityService.shared
+    @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
     @State private var selectedTabIndex = 0
     @State private var selectedBikePointForMap: BikePoint?
     @State private var isServiceBannerDismissed = false
@@ -69,24 +70,18 @@ struct ContentView: View {
                 }
                 .tag(1)
 
-                PreferencesView()
+                ProfileView()
                     .tabItem {
-                        Image(systemName: "gearshape")
-                        Text("Preferences")
+                        Image(systemName: "person.crop.circle")
+                        Text("Profile")
                     }
                     .tag(2)
-
-                AboutView()
-                    .tabItem {
-                        Image(systemName: "info.circle")
-                        Text("About")
-                    }
-                    .tag(3)
             }
             .environmentObject(locationService)
             .environmentObject(favoritesService)
             .environmentObject(bannerService)
             .environmentObject(liveActivityService)
+            .environmentObject(scheduledJourneyService)
             .sheet(isPresented: Binding(
                 get: { shouldShowServiceBanner },
                 set: { if !$0 { isServiceBannerDismissed = true } }
@@ -120,11 +115,10 @@ struct ContentView: View {
 
                 if let notificationSession {
                     ActiveNotificationsBanner(
-                        dockName: notificationSession.dockName,
+                        session: notificationSession,
                         onTap: {
                             handleNotificationBannerTap(
-                                for: notificationSession.dockId,
-                                dockName: notificationSession.dockName
+                                notificationSession
                             )
                         }
                     )
@@ -138,6 +132,10 @@ struct ContentView: View {
             // Fetch banner config on app launch
             bannerService.fetchBannerConfig()
             Task { await liveActivityService.refreshNotificationStatusFromServer() }
+            Task {
+                await scheduledJourneyService.registerDevice()
+                await scheduledJourneyService.refresh()
+            }
             AnalyticsService.shared.trackAppLaunch(screen: analyticsScreen(for: selectedTabIndex))
 
             // Debug: Force sync with watch on app launch
@@ -180,13 +178,27 @@ struct ContentView: View {
         }
     }
 
-    private func handleNotificationBannerTap(for dockId: String, dockName: String) {
+    private func handleNotificationBannerTap(_ session: LiveActivityService.ActiveNotificationSession) {
         Task {
+            let didAdvance = session.scheduledJourneyPhase == .start
+                ? await liveActivityService.advanceScheduledJourneyFromStart(dockId: session.dockId)
+                : false
+            if didAdvance {
+                return
+            }
+            if session.scheduledJourneyPhase == .start {
+                await liveActivityService.refreshNotificationStatusFromServer()
+                return
+            }
+
             await liveActivityService.endLiveActivityFromUserAction(
-                dockId: dockId,
-                dockName: dockName,
-                reason: "app_banner"
+                dockId: session.dockId,
+                dockName: session.dockName,
+                reason: session.scheduledJourneyPhase == .end ? "scheduled_journey_banner_end" : "app_banner"
             )
+            if session.scheduledJourneyPhase == .end, let scheduledJourneyId = session.scheduledJourneyId {
+                await scheduledJourneyService.complete(journeyId: scheduledJourneyId)
+            }
         }
     }
     
@@ -215,9 +227,7 @@ struct ContentView: View {
         case 1:
             return .map
         case 2:
-            return .preferences
-        case 3:
-            return .about
+            return .profile
         default:
             return .unknown
         }
@@ -225,15 +235,26 @@ struct ContentView: View {
 }
 
 private struct ActiveNotificationsBanner: View {
-    let dockName: String
+    let session: LiveActivityService.ActiveNotificationSession
     let onTap: () -> Void
+
+    private var message: String {
+        switch session.scheduledJourneyPhase {
+        case .start:
+            return "Journey active for \(session.dockName) | Tap to advance"
+        case .end:
+            return "Journey active for \(session.dockName) | Tap to end"
+        case nil:
+            return "Notifications active for \(session.dockName) | Tap to end"
+        }
+    }
 
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 8) {
                 Image(systemName: "bell.badge.fill")
                     .foregroundColor(.white)
-                Text("Notifications active for \(dockName) | Tap to end")
+                Text(message)
                     .font(.caption.weight(.semibold))
                     .foregroundColor(.white)
                     .lineLimit(1)
@@ -247,7 +268,7 @@ private struct ActiveNotificationsBanner: View {
             .shadow(color: .black.opacity(0.12), radius: 4, x: 0, y: 1)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Notifications active for \(dockName). Tap to end")
+        .accessibilityLabel(message.replacingOccurrences(of: " | ", with: ". "))
     }
 }
 

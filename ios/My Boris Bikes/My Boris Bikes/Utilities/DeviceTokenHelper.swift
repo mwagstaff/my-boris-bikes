@@ -10,6 +10,7 @@ import UIKit
 
 struct DeviceTokenHelper {
     private static let apnsTokenStorageKey = "apns_device_token"
+    private static let scheduledJourneyDeviceIdStorageKey = "scheduled_journey_device_id"
 
     /// APNs device token used by the server to send direct alert/background pushes.
     static var apnsDeviceToken: String? {
@@ -28,6 +29,18 @@ struct DeviceTokenHelper {
     /// Stable identifier for analytics/user counting; not valid for APNs sends.
     static var analyticsDeviceToken: String? {
         UIDevice.current.identifierForVendor?.uuidString
+    }
+
+    static var scheduledJourneyDeviceId: String {
+        if let existing = UserDefaults.standard.string(forKey: scheduledJourneyDeviceIdStorageKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !existing.isEmpty {
+            return existing
+        }
+
+        let generated = UUID().uuidString
+        UserDefaults.standard.set(generated, forKey: scheduledJourneyDeviceIdStorageKey)
+        return generated
     }
 
     /// Backwards-compatible alias used by existing analytics call sites.

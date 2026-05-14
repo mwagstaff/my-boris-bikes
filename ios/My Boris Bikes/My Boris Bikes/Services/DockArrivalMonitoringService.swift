@@ -94,6 +94,9 @@ final class DockArrivalMonitoringService: NSObject {
     private var firstPreciseInsideThresholdAt: Date?
     private var hasRequestedAlwaysAuthorizationThisSession = false
     private var hasRequestedTemporaryFullAccuracyThisSession = false
+    private var scheduledJourneyId: String?
+    private var scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase?
+    private var scheduledDestinationDock: ScheduledJourneyDock?
 
     private override init() {
         super.init()
@@ -139,7 +142,12 @@ final class DockArrivalMonitoringService: NSObject {
         }
     }
 
-    func beginMonitoring(for bikePoint: BikePoint) {
+    func beginMonitoring(
+        for bikePoint: BikePoint,
+        scheduledJourneyId: String? = nil,
+        phase: ScheduledJourney.ActiveRun.Phase? = nil,
+        destinationDock: ScheduledJourneyDock? = nil
+    ) {
         let dock = MonitoredDock(
             dockId: bikePoint.id,
             dockName: bikePoint.commonName,
@@ -147,6 +155,9 @@ final class DockArrivalMonitoringService: NSObject {
             longitude: bikePoint.lon
         )
 
+        self.scheduledJourneyId = scheduledJourneyId
+        self.scheduledJourneyPhase = phase
+        self.scheduledDestinationDock = destinationDock
         monitoredDock = dock
         persistDock(dock)
         lastArrivalAttemptAt = nil
@@ -211,6 +222,9 @@ final class DockArrivalMonitoringService: NSObject {
         hasRequestedTemporaryFullAccuracyThisSession = false
         if !preserveDock {
             monitoredDock = nil
+            scheduledJourneyId = nil
+            scheduledJourneyPhase = nil
+            scheduledDestinationDock = nil
             AppConstants.UserDefaults.sharedDefaults.removeObject(forKey: monitoredDockStorageKey)
         }
     }
@@ -530,6 +544,28 @@ final class DockArrivalMonitoringService: NSObject {
 
     @discardableResult
     private func notifyServerOfArrival(for dock: MonitoredDock) async -> Bool {
+        if scheduledJourneyPhase == .start,
+           let scheduledJourneyId,
+           let scheduledDestinationDock {
+            logger.info("Scheduled journey start dock reached; transitioning to end dock after delay")
+            logLocationEvent(
+                "scheduled_start_arrival",
+                dock: dock,
+                message: "Start dock reached; transitioning scheduled journey to destination dock"
+            )
+            await MainActor.run {
+                LiveActivityService.shared.endLiveActivity(for: dock.dockId)
+            }
+            stopMonitoring(reason: "scheduled_start_arrival")
+            Task { @MainActor in
+                await LiveActivityService.shared.transitionScheduledJourneyToEndDock(
+                    journeyId: scheduledJourneyId,
+                    endDock: scheduledDestinationDock
+                )
+            }
+            return true
+        }
+
         guard let deviceToken = DeviceTokenHelper.apnsDeviceToken else {
             logger.warning("Cannot end live activity on arrival because APNs device token is unavailable")
             isSendingArrivalRequest = false
@@ -621,11 +657,15 @@ final class DockArrivalMonitoringService: NSObject {
                 ]
             )
 
+            let completedScheduledJourneyId = scheduledJourneyPhase == .end ? scheduledJourneyId : nil
             await MainActor.run {
                 LiveActivityService.shared.endLiveActivity(for: dock.dockId, skipServerUnregister: true)
             }
             stopMonitoring(reason: "arrival_confirmed")
             await LiveActivityService.shared.refreshNotificationStatusFromServer()
+            if let completedScheduledJourneyId {
+                await ScheduledJourneyService.shared.complete(journeyId: completedScheduledJourneyId)
+            }
             return true
         } catch {
             logger.error("Failed to notify server of dock arrival: \(error.localizedDescription)")

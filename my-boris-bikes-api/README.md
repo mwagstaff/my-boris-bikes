@@ -112,6 +112,10 @@ Environment variables:
 - `APNS_TOPIC` - Live Activity APNS topic (for example `com.example.app.push-type.liveactivity`)
 - `APNS_BACKGROUND_TOPIC_MY_BORIS_BIKES` - App bundle topic for alert/background pushes (preferred)
 - `APNS_BACKGROUND_TOPIC` - Legacy alias still supported for backward compatibility
+- `MONGODB_URI_MY_BORIS_BIKES` - MongoDB connection string for scheduled journeys (preferred)
+- `MONGODB_URI` / `MONGO_URI` - Legacy MongoDB connection string fallbacks
+- `MONGODB_DB_NAME` - Mongo database name (default: `my_boris_bikes`)
+- `SCHEDULED_JOURNEYS_COLLECTION` - Collection name (default: `scheduled_journeys`)
 
 ## Endpoints
 
@@ -125,6 +129,15 @@ Environment variables:
 - `POST /live-activity/start` - Start tracking a dock
 - `POST /live-activity/session/update` - Update tracked session settings (focused metric/thresholds)
 - `POST /live-activity/end` - Stop tracking a dock
+- `GET /scheduled-journeys` - List scheduled journeys for a device
+- `POST /scheduled-journeys` - Create a scheduled journey
+- `PUT /scheduled-journeys/:id` - Update a scheduled journey
+- `DELETE /scheduled-journeys/:id` - Soft-delete a scheduled journey
+- `POST /scheduled-journeys/:id/activate` - Manually activate the current run
+- `POST /scheduled-journeys/:id/stop` - Pause only the current active run and end related sessions
+- `POST /scheduled-journeys/:id/phase` - Mark the active run as watching the start or end dock
+- `POST /scheduled-journeys/:id/complete` - Clear the active run after destination arrival
+- `POST /scheduled-journeys/device/register` - Register device, APNs, and ActivityKit push-to-start tokens
 - `POST /live-activity/test` - Start test mode with simulated data
 - `POST /live-activity/test/end` - Stop test mode
 - `GET /healthcheck` - Health check

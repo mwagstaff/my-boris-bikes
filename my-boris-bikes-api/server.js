@@ -5,6 +5,7 @@ const path = require("path");
 const http2 = require("http2");
 const winston = require("winston");
 const promClient = require("prom-client");
+const { MongoClient, ObjectId } = require("mongodb");
 require("winston-daily-rotate-file");
 
 // Configuration (override via environment variables)
@@ -56,10 +57,24 @@ const DOCK_OVERRIDES_PATH =
   process.env.DOCK_OVERRIDES_PATH ||
   path.join(__dirname, "dock-overrides.json");
 const MAX_LIVE_ACTIVITY_ALTERNATIVES = 5;
-const VALID_PRIMARY_DISPLAYS = new Set(["bikes", "eBikes", "spaces"]);
+const VALID_PRIMARY_DISPLAYS = new Set(["bikes", "eBikes", "allBikes", "spaces"]);
 const MAX_PUSH_EVENT_LOG_ENTRIES = 500;
 const MAX_BACKGROUND_LOCATION_EVENT_LOG_ENTRIES = 500;
 const LIVE_ACTIVITY_ALERT_CATEGORY = "LIVE_ACTIVITY_ALERT";
+const MONGODB_URI =
+  process.env.MONGODB_URI_MY_BORIS_BIKES ||
+  process.env.MONGODB_URI ||
+  process.env.MONGO_URI ||
+  "";
+const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || "my_boris_bikes";
+const SCHEDULED_JOURNEYS_COLLECTION =
+  process.env.SCHEDULED_JOURNEYS_COLLECTION || "scheduled_journeys";
+const SCHEDULED_JOURNEY_CHECK_INTERVAL_MS = parseInt(
+  process.env.SCHEDULED_JOURNEY_CHECK_INTERVAL_MS || "60000",
+  10
+);
+const MAX_SCHEDULED_JOURNEYS_PER_DEVICE = 5;
+const MAX_SCHEDULED_JOURNEY_WINDOW_MINUTES = 12 * 60;
 
 // Ensure logs directory exists
 if (!fs.existsSync(LOG_DIR)) {
@@ -469,6 +484,194 @@ const uniqueUsersGauge = new promClient.Gauge({
 // ── Active Sessions ──────────────────────────────────────────────────
 // dockPollers: Map<dockId, { interval, lastData, tokens: Map<pushToken, { buildType, startedAt, hardStopAt, expiryMs, alternatives, primaryDisplay, minimumThresholds, deviceToken, dockName }> }>
 const dockPollers = new Map();
+
+// ── Scheduled Journeys Persistence ───────────────────────────────────
+let mongoClient = null;
+let scheduledJourneysCollection = null;
+
+async function connectMongoIfConfigured() {
+  if (!MONGODB_URI) {
+    logger.warn(
+      "MONGODB_URI_MY_BORIS_BIKES is not configured; scheduled journey endpoints will return 503"
+    );
+    return;
+  }
+
+  try {
+    mongoClient = new MongoClient(MONGODB_URI);
+    await mongoClient.connect();
+    const db = mongoClient.db(MONGODB_DB_NAME);
+    scheduledJourneysCollection = db.collection(SCHEDULED_JOURNEYS_COLLECTION);
+    await scheduledJourneysCollection.createIndex({ deviceId: 1, deletedAt: 1 });
+    await scheduledJourneysCollection.createIndex({ enabled: 1, deletedAt: 1 });
+    logger.info(
+      `Connected to MongoDB database ${MONGODB_DB_NAME}, collection ${SCHEDULED_JOURNEYS_COLLECTION}`
+    );
+  } catch (err) {
+    scheduledJourneysCollection = null;
+    logger.error(`MongoDB connection failed: ${err.message}`);
+  }
+}
+
+function requireScheduledJourneysCollection(res) {
+  if (scheduledJourneysCollection) return scheduledJourneysCollection;
+  res.status(503).json({ error: "Scheduled journeys storage is not configured" });
+  return null;
+}
+
+function normalizeDeviceId(rawValue) {
+  if (typeof rawValue !== "string") return "";
+  return rawValue.trim().slice(0, 128);
+}
+
+function deviceIdFromRequest(req) {
+  return normalizeDeviceId(
+    req.headers["x-device-id"] || req.body?.deviceId || req.query?.deviceId
+  );
+}
+
+function sanitizeJourneyDock(rawDock) {
+  if (!rawDock || typeof rawDock !== "object") return null;
+  const id = typeof rawDock.id === "string" ? rawDock.id.trim() : "";
+  const name = typeof rawDock.name === "string" ? rawDock.name.trim() : "";
+  const latitude = Number(rawDock.latitude);
+  const longitude = Number(rawDock.longitude);
+  if (!id || !name) return null;
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) return null;
+  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) return null;
+  return { id, name, latitude, longitude };
+}
+
+function sanitizeWeekdays(rawWeekdays) {
+  if (!Array.isArray(rawWeekdays)) return null;
+  const unique = Array.from(
+    new Set(
+      rawWeekdays
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value >= 1 && value <= 7)
+    )
+  ).sort((a, b) => a - b);
+  return unique.length > 0 ? unique : null;
+}
+
+function parseMinutesSinceMidnight(rawValue) {
+  if (typeof rawValue !== "string") return null;
+  const match = rawValue.trim().match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function scheduledWindowMinutes(startTime, endTime) {
+  const startMinutes = parseMinutesSinceMidnight(startTime);
+  const endMinutes = parseMinutesSinceMidnight(endTime);
+  if (startMinutes === null || endMinutes === null) return null;
+  const diff = (endMinutes - startMinutes + 24 * 60) % (24 * 60);
+  return diff === 0 ? 24 * 60 : diff;
+}
+
+function sanitizeTimeZone(rawValue) {
+  const timezone = typeof rawValue === "string" && rawValue.trim()
+    ? rawValue.trim()
+    : "Europe/London";
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: timezone }).format(new Date());
+    return timezone;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeScheduledJourneyPayload(body) {
+  const startDock = sanitizeJourneyDock(body?.startDock);
+  const endDock = sanitizeJourneyDock(body?.endDock);
+  const weekdays = sanitizeWeekdays(body?.weekdays);
+  const startTime = typeof body?.startTime === "string" ? body.startTime.trim() : "";
+  const endTime = typeof body?.endTime === "string" ? body.endTime.trim() : "";
+  const timezone = sanitizeTimeZone(body?.timezone);
+  const windowMinutes = scheduledWindowMinutes(startTime, endTime);
+
+  if (!startDock || !endDock) return { error: "Valid startDock and endDock are required" };
+  if (startDock.id === endDock.id) return { error: "Start and end docks must be different" };
+  if (!weekdays) return { error: "At least one weekday is required" };
+  if (!timezone) return { error: "Invalid timezone" };
+  if (windowMinutes === null) return { error: "startTime and endTime must use HH:mm" };
+  if (windowMinutes > MAX_SCHEDULED_JOURNEY_WINDOW_MINUTES) {
+    return { error: "Scheduled journey window cannot exceed 12 hours" };
+  }
+
+  return {
+    value: {
+      startDock,
+      endDock,
+      weekdays,
+      startTime,
+      endTime,
+      timezone,
+      enabled: body?.enabled !== false,
+    },
+  };
+}
+
+function serializeScheduledJourney(doc) {
+  return {
+    id: doc._id.toString(),
+    deviceId: doc.deviceId,
+    startDock: doc.startDock,
+    endDock: doc.endDock,
+    weekdays: doc.weekdays || [],
+    startTime: doc.startTime,
+    endTime: doc.endTime,
+    timezone: doc.timezone || "Europe/London",
+    enabled: doc.enabled !== false,
+    activeRun: doc.activeRun || null,
+    pausedRunKeys: doc.pausedRunKeys || [],
+    createdAt: doc.createdAt?.toISOString?.() || doc.createdAt,
+    updatedAt: doc.updatedAt?.toISOString?.() || doc.updatedAt,
+  };
+}
+
+function localDateParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const weekdayMap = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+  return {
+    weekday: weekdayMap[lookup.weekday],
+    dateKey: `${lookup.year}-${lookup.month}-${lookup.day}`,
+    time: `${lookup.hour}:${lookup.minute}`,
+  };
+}
+
+function scheduledRunKey(journey, date = new Date()) {
+  const parts = localDateParts(date, journey.timezone || "Europe/London");
+  return `${parts.dateKey}:${journey.startTime}`;
+}
+
+function shouldStartScheduledJourney(journey, date = new Date()) {
+  if (journey.enabled === false || journey.deletedAt) return false;
+  if (journey.activeRun?.phase) return false;
+
+  const parts = localDateParts(date, journey.timezone || "Europe/London");
+  if (!journey.weekdays?.includes(parts.weekday)) return false;
+  if (parts.time !== journey.startTime) return false;
+
+  const runKey = `${parts.dateKey}:${journey.startTime}`;
+  return !Array.isArray(journey.pausedRunKeys) || !journey.pausedRunKeys.includes(runKey);
+}
+
+function shouldEndScheduledJourneyWindow(journey, date = new Date()) {
+  if (!journey.activeRun?.phase) return false;
+  const parts = localDateParts(date, journey.timezone || "Europe/London");
+  return parts.time === journey.endTime;
+}
 
 // ── Dock Value Overrides ─────────────────────────────────────────────
 // Map<dockId, { standardBikes: number, eBikes: number, emptySpaces: number, latitude: number|null, longitude: number|null, updatedAt: number }>
@@ -910,6 +1113,8 @@ function collectSessionsForDevice(deviceToken, buildType = null) {
         buildType: session.buildType,
         startedAt,
         expiresAtMs,
+        scheduledJourneyId: session.scheduledJourneyId || null,
+        scheduledJourneyPhase: session.scheduledJourneyPhase || null,
       });
     }
   }
@@ -919,6 +1124,8 @@ function collectSessionsForDevice(deviceToken, buildType = null) {
 
 function primaryValueForDisplay(data, primaryDisplay) {
   switch (primaryDisplay) {
+    case "allBikes":
+      return data.standardBikes + data.eBikes;
     case "eBikes":
       return data.eBikes;
     case "spaces":
@@ -931,6 +1138,8 @@ function primaryValueForDisplay(data, primaryDisplay) {
 
 function singularMetricLabel(primaryDisplay) {
   switch (primaryDisplay) {
+    case "allBikes":
+      return "bike";
     case "eBikes":
       return "e-bike";
     case "spaces":
@@ -943,6 +1152,8 @@ function singularMetricLabel(primaryDisplay) {
 
 function pluralMetricLabel(primaryDisplay) {
   switch (primaryDisplay) {
+    case "allBikes":
+      return "bikes";
     case "eBikes":
       return "e-bikes";
     case "spaces":
@@ -962,6 +1173,10 @@ function metricLabelForValue(primaryDisplay, value) {
 function minimumThresholdForDisplay(minimumThresholds, primaryDisplay) {
   if (!minimumThresholds || typeof minimumThresholds !== "object") {
     return 0;
+  }
+  if (primaryDisplay === "allBikes") {
+    return sanitizeThresholdValue(minimumThresholds.bikes) +
+      sanitizeThresholdValue(minimumThresholds.eBikes);
   }
   return sanitizeThresholdValue(minimumThresholds[primaryDisplay]);
 }
@@ -1276,6 +1491,83 @@ async function sendApnsPush(pushToken, contentState, event, buildType) {
     );
     throw err;
   }
+}
+
+async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
+  const token = normalizeApnsDeviceToken(journey.pushToStartToken);
+  if (!token) {
+    throw new Error("Scheduled journey is missing a push-to-start token");
+  }
+
+  const startDock = journey.startDock;
+  const endDock = journey.endDock;
+  const contentState = {
+    standardBikes: 0,
+    eBikes: 0,
+    emptySpaces: 0,
+    alternatives: [],
+  };
+  const aps = {
+    timestamp: Math.floor(Date.now() / 1000),
+    event: "start",
+    "content-state": contentState,
+    "attributes-type": "DockActivityAttributes",
+    attributes: {
+      dockId: startDock.id,
+      dockName: startDock.name,
+      alias: null,
+      scheduledJourneyId: journey._id.toString(),
+      scheduledJourneyPhase: "start",
+      latitude: startDock.latitude,
+      longitude: startDock.longitude,
+      destinationDockId: endDock.id,
+      destinationDockName: endDock.name,
+      destinationLatitude: endDock.latitude,
+      destinationLongitude: endDock.longitude,
+    },
+    "input-push-token": 1,
+    alert: {
+      title: "Scheduled journey",
+      body: `Live updates started for ${startDock.name}`,
+      sound: "default",
+    },
+  };
+  const payload = JSON.stringify({ aps });
+  const buildType = journey.buildType === "production" ? "production" : "development";
+
+  const result = await sendApnsRequestWithFallback(
+    token,
+    buildType,
+    payload,
+    (pushToken, authToken) => ({
+      ":method": "POST",
+      ":path": `/3/device/${pushToken}`,
+      authorization: `bearer ${authToken}`,
+      "apns-topic": APNS_TOPIC,
+      "apns-push-type": "liveactivity",
+      "apns-priority": "10",
+      "content-type": "application/json",
+    }),
+    "scheduled liveactivity start"
+  );
+
+  recordPushEvent({
+    target: token,
+    channel: "live_activity",
+    type: "scheduled_journey_start",
+    title: "Scheduled journey",
+    body: `Live updates started for ${startDock.name}`,
+    result: "ok",
+    status: result.statusCode,
+    apnsEnv: result.buildType,
+    raw: { journeyId: journey._id.toString(), reason },
+  });
+  apnsPushesTotal.inc({
+    event: "scheduled_journey_start",
+    build_type: result.buildType,
+    status: "success",
+  });
+  return result;
 }
 
 async function sendAlertPush(
@@ -2846,6 +3138,282 @@ app.delete(adminRoutePaths("/api/overrides/:dockId"), (req, res) => {
   res.json({ success: true, existed, dockId });
 });
 
+app.post("/scheduled-journeys/device/register", async (req, res) => {
+  const collection = requireScheduledJourneysCollection(res);
+  if (!collection) return;
+
+  const deviceId = deviceIdFromRequest(req);
+  if (!deviceId) {
+    return res.status(400).json({ error: "Missing required deviceId" });
+  }
+
+  const pushToStartToken = normalizeApnsDeviceToken(req.body?.pushToStartToken);
+  const deviceToken = normalizeApnsDeviceToken(req.body?.deviceToken);
+  const buildType = req.body?.buildType === "production" ? "production" : "development";
+  const timezone = sanitizeTimeZone(req.body?.timezone) || "Europe/London";
+
+  const update = {
+    deviceId,
+    buildType,
+    timezone,
+    updatedAt: new Date(),
+  };
+  if (pushToStartToken) update.pushToStartToken = pushToStartToken;
+  if (deviceToken) update.deviceToken = deviceToken;
+
+  await collection.updateMany(
+    { deviceId, deletedAt: { $exists: false } },
+    { $set: update }
+  );
+
+  res.json({ success: true, deviceId, hasPushToStartToken: !!pushToStartToken });
+});
+
+app.get("/scheduled-journeys", async (req, res) => {
+  const collection = requireScheduledJourneysCollection(res);
+  if (!collection) return;
+
+  const deviceId = deviceIdFromRequest(req);
+  if (!deviceId) {
+    return res.status(400).json({ error: "Missing required deviceId" });
+  }
+
+  const journeys = await collection
+    .find({ deviceId, deletedAt: { $exists: false } })
+    .sort({ createdAt: 1 })
+    .toArray();
+
+  res.json({ success: true, journeys: journeys.map(serializeScheduledJourney) });
+});
+
+app.post("/scheduled-journeys", async (req, res) => {
+  const collection = requireScheduledJourneysCollection(res);
+  if (!collection) return;
+
+  const deviceId = deviceIdFromRequest(req);
+  if (!deviceId) {
+    return res.status(400).json({ error: "Missing required deviceId" });
+  }
+
+  const existingCount = await collection.countDocuments({
+    deviceId,
+    deletedAt: { $exists: false },
+  });
+  if (existingCount >= MAX_SCHEDULED_JOURNEYS_PER_DEVICE) {
+    return res.status(409).json({ error: "You can add up to 5 scheduled journeys" });
+  }
+
+  const sanitized = sanitizeScheduledJourneyPayload(req.body);
+  if (sanitized.error) {
+    return res.status(400).json({ error: sanitized.error });
+  }
+
+  const now = new Date();
+  const doc = {
+    ...sanitized.value,
+    deviceId,
+    deviceToken: normalizeApnsDeviceToken(req.body?.deviceToken) || null,
+    pushToStartToken: normalizeApnsDeviceToken(req.body?.pushToStartToken) || null,
+    buildType: req.body?.buildType === "production" ? "production" : "development",
+    activeRun: null,
+    pausedRunKeys: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  const result = await collection.insertOne(doc);
+  const inserted = await collection.findOne({ _id: result.insertedId });
+  res.status(201).json({ success: true, journey: serializeScheduledJourney(inserted) });
+});
+
+app.put("/scheduled-journeys/:id", async (req, res) => {
+  const collection = requireScheduledJourneysCollection(res);
+  if (!collection) return;
+
+  const deviceId = deviceIdFromRequest(req);
+  const journeyId = req.params.id;
+  if (!deviceId || !ObjectId.isValid(journeyId)) {
+    return res.status(400).json({ error: "Missing deviceId or invalid journey id" });
+  }
+
+  const sanitized = sanitizeScheduledJourneyPayload(req.body);
+  if (sanitized.error) {
+    return res.status(400).json({ error: sanitized.error });
+  }
+
+  const result = await collection.findOneAndUpdate(
+    { _id: new ObjectId(journeyId), deviceId, deletedAt: { $exists: false } },
+    { $set: { ...sanitized.value, updatedAt: new Date() } },
+    { returnDocument: "after" }
+  );
+  if (!result) return res.status(404).json({ error: "Scheduled journey not found" });
+  res.json({ success: true, journey: serializeScheduledJourney(result) });
+});
+
+app.delete("/scheduled-journeys/:id", async (req, res) => {
+  const collection = requireScheduledJourneysCollection(res);
+  if (!collection) return;
+
+  const deviceId = deviceIdFromRequest(req);
+  const journeyId = req.params.id;
+  if (!deviceId || !ObjectId.isValid(journeyId)) {
+    return res.status(400).json({ error: "Missing deviceId or invalid journey id" });
+  }
+
+  const result = await collection.findOneAndUpdate(
+    { _id: new ObjectId(journeyId), deviceId, deletedAt: { $exists: false } },
+    { $set: { deletedAt: new Date(), activeRun: null, updatedAt: new Date() } },
+    { returnDocument: "after" }
+  );
+  if (!result) return res.status(404).json({ error: "Scheduled journey not found" });
+  res.json({ success: true });
+});
+
+app.post("/scheduled-journeys/:id/activate", async (req, res) => {
+  const collection = requireScheduledJourneysCollection(res);
+  if (!collection) return;
+
+  const deviceId = deviceIdFromRequest(req);
+  const journeyId = req.params.id;
+  if (!deviceId || !ObjectId.isValid(journeyId)) {
+    return res.status(400).json({ error: "Missing deviceId or invalid journey id" });
+  }
+
+  const journey = await collection.findOne({
+    _id: new ObjectId(journeyId),
+    deviceId,
+    deletedAt: { $exists: false },
+  });
+  if (!journey) return res.status(404).json({ error: "Scheduled journey not found" });
+
+  const runKey = scheduledRunKey(journey);
+  await collection.updateOne(
+    { _id: journey._id },
+    {
+      $set: {
+        activeRun: {
+          phase: "start",
+          dockId: journey.startDock.id,
+          dockName: journey.startDock.name,
+          startedAt: new Date(),
+          runKey,
+          manuallyActivated: true,
+        },
+        updatedAt: new Date(),
+      },
+      $pull: { pausedRunKeys: runKey },
+    }
+  );
+
+  if (req.body?.remoteStart !== false) {
+    try {
+      await sendScheduledJourneyStartPush({ ...journey, activeRun: { runKey } }, "manual");
+    } catch (err) {
+      logger.warn(`Manual scheduled journey push-start failed: ${err.message}`);
+    }
+  }
+
+  const updated = await collection.findOne({ _id: journey._id });
+  res.json({ success: true, journey: serializeScheduledJourney(updated) });
+});
+
+app.post("/scheduled-journeys/:id/stop", async (req, res) => {
+  const collection = requireScheduledJourneysCollection(res);
+  if (!collection) return;
+
+  const deviceId = deviceIdFromRequest(req);
+  const journeyId = req.params.id;
+  if (!deviceId || !ObjectId.isValid(journeyId)) {
+    return res.status(400).json({ error: "Missing deviceId or invalid journey id" });
+  }
+
+  const journey = await collection.findOne({
+    _id: new ObjectId(journeyId),
+    deviceId,
+    deletedAt: { $exists: false },
+  });
+  if (!journey) return res.status(404).json({ error: "Scheduled journey not found" });
+
+  const runKey = journey.activeRun?.runKey || scheduledRunKey(journey);
+  await collection.updateOne(
+    { _id: journey._id },
+    {
+      $set: { activeRun: null, updatedAt: new Date() },
+      $addToSet: { pausedRunKeys: runKey },
+    }
+  );
+
+  for (const dockId of [journey.startDock.id, journey.endDock.id]) {
+    await endTrackedSessionsForDock(
+      dockId,
+      (_pushToken, session) =>
+        session.deviceToken === journey.deviceToken ||
+        session.scheduledJourneyId === journey._id.toString(),
+      "scheduled_stop"
+    );
+  }
+
+  const updated = await collection.findOne({ _id: journey._id });
+  res.json({ success: true, journey: serializeScheduledJourney(updated) });
+});
+
+app.post("/scheduled-journeys/:id/phase", async (req, res) => {
+  const collection = requireScheduledJourneysCollection(res);
+  if (!collection) return;
+
+  const deviceId = deviceIdFromRequest(req);
+  const journeyId = req.params.id;
+  const phase = req.body?.phase === "end" ? "end" : req.body?.phase === "start" ? "start" : null;
+  if (!deviceId || !ObjectId.isValid(journeyId) || !phase) {
+    return res.status(400).json({ error: "Missing deviceId, phase, or invalid journey id" });
+  }
+
+  const journey = await collection.findOne({
+    _id: new ObjectId(journeyId),
+    deviceId,
+    deletedAt: { $exists: false },
+  });
+  if (!journey) return res.status(404).json({ error: "Scheduled journey not found" });
+
+  const dock = phase === "end" ? journey.endDock : journey.startDock;
+  const result = await collection.findOneAndUpdate(
+    { _id: journey._id },
+    {
+      $set: {
+        activeRun: {
+          phase,
+          dockId: dock.id,
+          dockName: dock.name,
+          startedAt: journey.activeRun?.startedAt || new Date(),
+          runKey: journey.activeRun?.runKey || scheduledRunKey(journey),
+        },
+        updatedAt: new Date(),
+      },
+    },
+    { returnDocument: "after" }
+  );
+
+  res.json({ success: true, journey: serializeScheduledJourney(result) });
+});
+
+app.post("/scheduled-journeys/:id/complete", async (req, res) => {
+  const collection = requireScheduledJourneysCollection(res);
+  if (!collection) return;
+
+  const deviceId = deviceIdFromRequest(req);
+  const journeyId = req.params.id;
+  if (!deviceId || !ObjectId.isValid(journeyId)) {
+    return res.status(400).json({ error: "Missing deviceId or invalid journey id" });
+  }
+
+  const result = await collection.findOneAndUpdate(
+    { _id: new ObjectId(journeyId), deviceId, deletedAt: { $exists: false } },
+    { $set: { activeRun: null, updatedAt: new Date() } },
+    { returnDocument: "after" }
+  );
+  if (!result) return res.status(404).json({ error: "Scheduled journey not found" });
+  res.json({ success: true, journey: serializeScheduledJourney(result) });
+});
+
 app.post("/live-activity/start", (req, res) => {
   const {
     dockId,
@@ -2856,6 +3424,8 @@ app.post("/live-activity/start", (req, res) => {
     alternatives,
     primaryDisplay,
     minimumThresholds,
+    scheduledJourneyId,
+    scheduledJourneyPhase,
   } = req.body;
   const normalizedPushToken = normalizeApnsDeviceToken(pushToken);
 
@@ -2970,7 +3540,37 @@ app.post("/live-activity/start", (req, res) => {
     primaryDisplay: normalizedPrimaryDisplay,
     minimumThresholds: normalizedMinimumThresholds,
     deviceToken,
+    scheduledJourneyId:
+      typeof scheduledJourneyId === "string" && ObjectId.isValid(scheduledJourneyId)
+        ? scheduledJourneyId
+        : null,
+    scheduledJourneyPhase:
+      scheduledJourneyPhase === "end" ? "end" : scheduledJourneyPhase === "start" ? "start" : null,
   });
+
+  if (
+    scheduledJourneysCollection &&
+    typeof scheduledJourneyId === "string" &&
+    ObjectId.isValid(scheduledJourneyId)
+  ) {
+    scheduledJourneysCollection.updateOne(
+      { _id: new ObjectId(scheduledJourneyId), deletedAt: { $exists: false } },
+      {
+        $set: {
+          activeRun: {
+            phase: scheduledJourneyPhase === "end" ? "end" : "start",
+            dockId,
+            dockName: normalizedDockName || dockId,
+            startedAt: new Date(),
+            runKey: req.body?.scheduledRunKey || null,
+          },
+          updatedAt: new Date(),
+        },
+      }
+    ).catch((err) => {
+      logger.warn(`Failed to mark scheduled journey active: ${err.message}`);
+    });
+  }
 
   // Start polling if not already
   startPollingForDock(dockId);
@@ -3496,6 +4096,8 @@ app.post("/live-activity/device/status", (req, res) => {
           startedAt: new Date(latestSession.startedAt).toISOString(),
           expiresAt: new Date(latestSession.expiresAtMs).toISOString(),
           buildType: latestSession.buildType,
+          scheduledJourneyId: latestSession.scheduledJourneyId,
+          scheduledJourneyPhase: latestSession.scheduledJourneyPhase,
         }
       : null,
   });
@@ -3612,6 +4214,77 @@ app.get("/complication/status", (_req, res) => {
   });
 });
 
+async function processScheduledJourneyStarts() {
+  if (!scheduledJourneysCollection) return;
+
+  const activeJourneys = await scheduledJourneysCollection
+    .find({
+      deletedAt: { $exists: false },
+      "activeRun.phase": { $in: ["start", "end"] },
+    })
+    .toArray();
+
+  for (const journey of activeJourneys) {
+    if (!shouldEndScheduledJourneyWindow(journey)) continue;
+    for (const dockId of [journey.startDock.id, journey.endDock.id]) {
+      await endTrackedSessionsForDock(
+        dockId,
+        (_pushToken, session) =>
+          session.scheduledJourneyId === journey._id.toString() ||
+          session.deviceToken === journey.deviceToken,
+        "scheduled_window_end"
+      );
+    }
+    await scheduledJourneysCollection.updateOne(
+      { _id: journey._id },
+      { $set: { activeRun: null, updatedAt: new Date() } }
+    );
+    logger.info(`Ended scheduled journey ${journey._id} at end of window`);
+  }
+
+  const candidates = await scheduledJourneysCollection
+    .find({
+      enabled: { $ne: false },
+      deletedAt: { $exists: false },
+      pushToStartToken: { $type: "string" },
+      $or: [{ activeRun: null }, { activeRun: { $exists: false } }],
+    })
+    .toArray();
+
+  for (const journey of candidates) {
+    if (!shouldStartScheduledJourney(journey)) continue;
+
+    const runKey = scheduledRunKey(journey);
+    try {
+      await sendScheduledJourneyStartPush(journey, "schedule");
+      await scheduledJourneysCollection.updateOne(
+        { _id: journey._id },
+        {
+          $set: {
+            activeRun: {
+              phase: "start",
+              dockId: journey.startDock.id,
+              dockName: journey.startDock.name,
+              startedAt: new Date(),
+              runKey,
+            },
+            updatedAt: new Date(),
+          },
+        }
+      );
+      logger.info(`Started scheduled journey ${journey._id} for ${journey.deviceId}`);
+    } catch (err) {
+      logger.error(`Failed to start scheduled journey ${journey._id}: ${err.message}`);
+      if (isApnsTokenInvalidError(err)) {
+        await scheduledJourneysCollection.updateOne(
+          { _id: journey._id },
+          { $unset: { pushToStartToken: "" }, $set: { updatedAt: new Date() } }
+        );
+      }
+    }
+  }
+}
+
 app.listen(PORT, () => {
   logger.info(`My Boris Bikes Live Activity server running on port ${PORT}`);
   logger.info(`Poll interval: ${POLL_INTERVAL_MS}ms`);
@@ -3625,4 +4298,15 @@ app.listen(PORT, () => {
   // Start periodic TfL data freshness monitoring (independent of live activity polling)
   checkTflDataFreshness().catch(() => {});
   setInterval(checkTflDataFreshness, TFL_FRESHNESS_CHECK_INTERVAL_MS);
+
+  connectMongoIfConfigured().then(() => {
+    processScheduledJourneyStarts().catch((err) => {
+      logger.error(`Scheduled journey check failed: ${err.message}`);
+    });
+    setInterval(() => {
+      processScheduledJourneyStarts().catch((err) => {
+        logger.error(`Scheduled journey check failed: ${err.message}`);
+      });
+    }, SCHEDULED_JOURNEY_CHECK_INTERVAL_MS);
+  });
 });

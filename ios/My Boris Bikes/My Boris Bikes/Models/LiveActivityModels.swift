@@ -13,6 +13,40 @@ struct DockActivityAttributes: ActivityAttributes {
     let dockId: String
     let dockName: String
     let alias: String?
+    let scheduledJourneyId: String?
+    let scheduledJourneyPhase: String?
+    let latitude: Double?
+    let longitude: Double?
+    let destinationDockId: String?
+    let destinationDockName: String?
+    let destinationLatitude: Double?
+    let destinationLongitude: Double?
+
+    init(
+        dockId: String,
+        dockName: String,
+        alias: String?,
+        scheduledJourneyId: String? = nil,
+        scheduledJourneyPhase: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        destinationDockId: String? = nil,
+        destinationDockName: String? = nil,
+        destinationLatitude: Double? = nil,
+        destinationLongitude: Double? = nil
+    ) {
+        self.dockId = dockId
+        self.dockName = dockName
+        self.alias = alias
+        self.scheduledJourneyId = scheduledJourneyId
+        self.scheduledJourneyPhase = scheduledJourneyPhase
+        self.latitude = latitude
+        self.longitude = longitude
+        self.destinationDockId = destinationDockId
+        self.destinationDockName = destinationDockName
+        self.destinationLatitude = destinationLatitude
+        self.destinationLongitude = destinationLongitude
+    }
 
     struct ContentState: Codable, Hashable {
         /// Dynamic properties updated via push notification

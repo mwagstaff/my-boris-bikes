@@ -4,6 +4,7 @@ enum AnalyticsScreen: String {
     case app = "App"
     case favourites = "Favourites"
     case map = "Map"
+    case profile = "Profile"
     case preferences = "Preferences"
     case about = "About"
     case unknown = "Unknown"

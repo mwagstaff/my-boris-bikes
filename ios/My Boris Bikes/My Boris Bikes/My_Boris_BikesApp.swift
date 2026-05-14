@@ -23,6 +23,8 @@ struct My_Boris_BikesApp: App {
 
         // Restore any active Live Activities from a previous session
         LiveActivityService.shared.restoreActivities()
+        LiveActivityService.shared.startActivityUpdateObservation()
+        ScheduledJourneyService.shared.startPushToStartTokenObservation()
     }
 
     var body: some Scene {

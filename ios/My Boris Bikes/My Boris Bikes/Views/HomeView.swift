@@ -8,6 +8,8 @@ struct HomeView: View {
     @EnvironmentObject var locationService: LocationService
     @EnvironmentObject var favoritesService: FavoritesService
     @EnvironmentObject var bannerService: BannerService
+    @EnvironmentObject var scheduledJourneyService: ScheduledJourneyService
+    @State private var isShowingAddJourney = false
     let onBikePointSelected: ((BikePoint) -> Void)?
     let onShowServiceStatus: (() -> Void)?
 
@@ -43,21 +45,34 @@ struct HomeView: View {
                     }
 
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        SortMenu(
-                            sortMode: favoritesService.sortMode,
-                            onSortModeChanged: { mode in
-                                favoritesService.updateSortMode(mode)
-                                AnalyticsService.shared.track(
-                                    action: .sortModeUpdate,
-                                    screen: .favourites,
-                                    metadata: [
-                                        "preference": AppConstants.UserDefaults.sortModeKey,
-                                        "value": mode.rawValue
-                                    ]
-                                )
+                        HStack(spacing: 12) {
+                            Button {
+                                isShowingAddJourney = true
+                            } label: {
+                                Text("+ Add journey")
+                                    .font(.subheadline.weight(.semibold))
                             }
-                        )
+                            .disabled(scheduledJourneyService.journeys.count >= 5)
+
+                            SortMenu(
+                                sortMode: favoritesService.sortMode,
+                                onSortModeChanged: { mode in
+                                    favoritesService.updateSortMode(mode)
+                                    AnalyticsService.shared.track(
+                                        action: .sortModeUpdate,
+                                        screen: .favourites,
+                                        metadata: [
+                                            "preference": AppConstants.UserDefaults.sortModeKey,
+                                            "value": mode.rawValue
+                                        ]
+                                    )
+                                }
+                            )
+                        }
                     }
+                }
+                .sheet(isPresented: $isShowingAddJourney) {
+                    AddJourneyView()
                 }
                 .refreshable {
                     await viewModel.refreshData()

@@ -15,6 +15,8 @@ class LiveActivityService: ObservableObject {
         let dockId: String
         let dockName: String
         let expiresAt: Date?
+        let scheduledJourneyId: String?
+        let scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase?
     }
 
     private struct DeviceEndResponse: Decodable {
@@ -28,6 +30,8 @@ class LiveActivityService: ObservableObject {
             let dockId: String
             let dockName: String
             let expiresAt: String?
+            let scheduledJourneyId: String?
+            let scheduledJourneyPhase: String?
         }
 
         let active: Bool
@@ -51,7 +55,9 @@ class LiveActivityService: ObservableObject {
             return ActiveNotificationSession(
                 dockId: activity.attributes.dockId,
                 dockName: activity.attributes.dockName,
-                expiresAt: activity.content.staleDate
+                expiresAt: activity.content.staleDate,
+                scheduledJourneyId: activity.attributes.scheduledJourneyId,
+                scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase(rawValue: activity.attributes.scheduledJourneyPhase ?? "")
             )
         }
 
@@ -63,6 +69,7 @@ class LiveActivityService: ObservableObject {
 
     /// Track observation tasks to cancel them when activities end
     private var observationTasks: [String: [Task<Void, Never>]] = [:]
+    private var activityUpdatesTask: Task<Void, Never>?
 
     /// Server base URL for the live activity API
     var serverBaseURL: String {
@@ -84,6 +91,7 @@ class LiveActivityService: ObservableObject {
             }
             logger.info("Deinit: Cancelled \(tasks.count) observation task(s) for dock \(dockId)")
         }
+        activityUpdatesTask?.cancel()
     }
 
     // MARK: - Helper Methods
@@ -205,7 +213,14 @@ class LiveActivityService: ObservableObject {
 
     // MARK: - Public API
 
-    func startLiveActivity(for bikePoint: BikePoint, alias: String?, alternatives: [BikePoint] = []) {
+    func startLiveActivity(
+        for bikePoint: BikePoint,
+        alias: String?,
+        alternatives: [BikePoint] = [],
+        scheduledJourneyId: String? = nil,
+        scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase? = nil,
+        destinationDock: ScheduledJourneyDock? = nil
+    ) {
         let dockId = bikePoint.id
 
         // Enforce a single active live activity across the app
@@ -225,7 +240,15 @@ class LiveActivityService: ObservableObject {
         let attributes = DockActivityAttributes(
             dockId: dockId,
             dockName: bikePoint.commonName,
-            alias: alias
+            alias: alias,
+            scheduledJourneyId: scheduledJourneyId,
+            scheduledJourneyPhase: scheduledJourneyPhase?.rawValue,
+            latitude: bikePoint.lat,
+            longitude: bikePoint.lon,
+            destinationDockId: destinationDock?.id,
+            destinationDockName: destinationDock?.name,
+            destinationLatitude: destinationDock?.latitude,
+            destinationLongitude: destinationDock?.longitude
         )
 
         // Store up to 5 nearby alternatives; the watch view caps display at 2–3 based on filter preference
@@ -261,7 +284,16 @@ class LiveActivityService: ObservableObject {
             activeActivities[dockId] = activity
             staleDates[dockId] = staleDate
             logger.info("Started live activity for dock \(dockId) with stale date: \(staleDate)")
-            DockArrivalMonitoringService.shared.beginMonitoring(for: bikePoint)
+            if let scheduledJourneyId, let scheduledJourneyPhase {
+                DockArrivalMonitoringService.shared.beginMonitoring(
+                    for: bikePoint,
+                    scheduledJourneyId: scheduledJourneyId,
+                    phase: scheduledJourneyPhase,
+                    destinationDock: destinationDock
+                )
+            } else {
+                DockArrivalMonitoringService.shared.beginMonitoring(for: bikePoint)
+            }
 
             // Register immediately if the token is already available.
             // In some launches the first push token can be present synchronously and
@@ -275,7 +307,9 @@ class LiveActivityService: ObservableObject {
                         dockId: dockId,
                         pushToken: tokenString,
                         dockName: bikePoint.commonName,
-                        alternatives: activity.content.state.alternatives
+                        alternatives: activity.content.state.alternatives,
+                        scheduledJourneyId: scheduledJourneyId,
+                        scheduledJourneyPhase: scheduledJourneyPhase
                     )
                 }
             }
@@ -293,7 +327,9 @@ class LiveActivityService: ObservableObject {
                         dockId: dockId,
                         pushToken: tokenString,
                         dockName: bikePoint.commonName,
-                        alternatives: activity.content.state.alternatives
+                        alternatives: activity.content.state.alternatives,
+                        scheduledJourneyId: scheduledJourneyId,
+                        scheduledJourneyPhase: scheduledJourneyPhase
                     )
                 }
             }
@@ -458,13 +494,167 @@ class LiveActivityService: ObservableObject {
                 activeNotificationSession = ActiveNotificationSession(
                     dockId: session.dockId,
                     dockName: session.dockName,
-                    expiresAt: parseServerISODate(session.expiresAt)
+                    expiresAt: parseServerISODate(session.expiresAt),
+                    scheduledJourneyId: session.scheduledJourneyId,
+                    scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase(rawValue: session.scheduledJourneyPhase ?? "")
                 )
             } else {
                 activeNotificationSession = nil
             }
         } catch {
             logger.error("Failed to refresh notification status: \(error.localizedDescription)")
+        }
+    }
+
+    func startActivityUpdateObservation() {
+        guard activityUpdatesTask == nil else { return }
+        activityUpdatesTask = Task { [weak self] in
+            for await activity in Activity<DockActivityAttributes>.activityUpdates {
+                guard let self else { break }
+                await self.handleObservedActivity(activity)
+            }
+        }
+    }
+
+    func startScheduledJourney(
+        _ journey: ScheduledJourney,
+        phase: ScheduledJourney.ActiveRun.Phase,
+        manuallyActivated: Bool = false
+    ) async {
+        let dock = phase == .start ? journey.startDock : journey.endDock
+        let destination = phase == .start ? journey.endDock : nil
+
+        let bikePoint = await fetchBikePointIfPossible(dock: dock)
+        startLiveActivity(
+            for: bikePoint,
+            alias: nil,
+            scheduledJourneyId: journey.id,
+            scheduledJourneyPhase: phase,
+            destinationDock: destination
+        )
+
+        if manuallyActivated {
+            AnalyticsService.shared.track(
+                action: .liveActivityStart,
+                screen: .profile,
+                dock: AnalyticsDockInfo(id: dock.id, name: dock.name),
+                metadata: ["source": "scheduled_journey_manual_activate"]
+            )
+        }
+    }
+
+    func advanceScheduledJourneyFromStart(dockId: String) async -> Bool {
+        guard let activity = activeActivities[dockId] ?? activeActivities.values.first(where: {
+            $0.attributes.scheduledJourneyPhase == ScheduledJourney.ActiveRun.Phase.start.rawValue
+        }),
+              let journeyId = activity.attributes.scheduledJourneyId,
+              activity.attributes.scheduledJourneyPhase == ScheduledJourney.ActiveRun.Phase.start.rawValue,
+              let destinationDockId = activity.attributes.destinationDockId,
+              let destinationDockName = activity.attributes.destinationDockName,
+              let destinationLatitude = activity.attributes.destinationLatitude,
+              let destinationLongitude = activity.attributes.destinationLongitude else {
+            return false
+        }
+
+        let endDock = ScheduledJourneyDock(
+            id: destinationDockId,
+            name: destinationDockName,
+            latitude: destinationLatitude,
+            longitude: destinationLongitude
+        )
+        await transitionScheduledJourneyToEndDock(
+            journeyId: journeyId,
+            endDock: endDock,
+            delaySeconds: 0
+        )
+        return true
+    }
+
+    func transitionScheduledJourneyToEndDock(
+        journeyId: String,
+        endDock: ScheduledJourneyDock,
+        delaySeconds: UInt64 = 60
+    ) async {
+        let endBikePoint = await fetchBikePointIfPossible(dock: endDock)
+        if let current = activeActivities.values.first {
+            endLiveActivity(for: current.attributes.dockId, skipServerUnregister: false)
+        }
+
+        if delaySeconds > 0 {
+            try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+        }
+        await ScheduledJourneyService.shared.updatePhase(journeyId: journeyId, phase: .end)
+        startLiveActivity(
+            for: endBikePoint,
+            alias: nil,
+            scheduledJourneyId: journeyId,
+            scheduledJourneyPhase: .end,
+            destinationDock: nil
+        )
+    }
+
+    private func handleObservedActivity(_ activity: Activity<DockActivityAttributes>) async {
+        let dockId = activity.attributes.dockId
+        activeActivities[dockId] = activity
+        staleDates[dockId] = activity.content.staleDate
+
+        if let pushToken = activity.pushToken {
+            let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
+            await registerWithServer(
+                dockId: dockId,
+                pushToken: tokenString,
+                dockName: activity.attributes.dockName,
+                alternatives: activity.content.state.alternatives,
+                scheduledJourneyId: activity.attributes.scheduledJourneyId,
+                scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase(rawValue: activity.attributes.scheduledJourneyPhase ?? "")
+            )
+        }
+
+        if let journeyId = activity.attributes.scheduledJourneyId,
+           let phase = ScheduledJourney.ActiveRun.Phase(rawValue: activity.attributes.scheduledJourneyPhase ?? ""),
+           let latitude = activity.attributes.latitude,
+           let longitude = activity.attributes.longitude {
+            let bikePoint = BikePoint(
+                id: dockId,
+                commonName: activity.attributes.dockName,
+                lat: latitude,
+                lon: longitude
+            )
+            let destinationDock: ScheduledJourneyDock?
+            if let destinationDockId = activity.attributes.destinationDockId,
+               let destinationDockName = activity.attributes.destinationDockName,
+               let destinationLatitude = activity.attributes.destinationLatitude,
+               let destinationLongitude = activity.attributes.destinationLongitude {
+                destinationDock = ScheduledJourneyDock(
+                    id: destinationDockId,
+                    name: destinationDockName,
+                    latitude: destinationLatitude,
+                    longitude: destinationLongitude
+                )
+            } else {
+                destinationDock = nil
+            }
+            DockArrivalMonitoringService.shared.beginMonitoring(
+                for: bikePoint,
+                scheduledJourneyId: journeyId,
+                phase: phase,
+                destinationDock: destinationDock
+            )
+        }
+    }
+
+    private func fetchBikePointIfPossible(dock: ScheduledJourneyDock) async -> BikePoint {
+        let urlString = "\(AppConstants.API.baseURL)\(AppConstants.API.placeEndpoint)/\(dock.id)?cb=\(Int(Date().timeIntervalSince1970))"
+        guard let url = URL(string: urlString) else {
+            return BikePoint(id: dock.id, commonName: dock.name, lat: dock.latitude, lon: dock.longitude)
+        }
+
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            return (try? JSONDecoder().decode(BikePoint.self, from: data))
+                ?? BikePoint(id: dock.id, commonName: dock.name, lat: dock.latitude, lon: dock.longitude)
+        } catch {
+            return BikePoint(id: dock.id, commonName: dock.name, lat: dock.latitude, lon: dock.longitude)
         }
     }
 
@@ -481,7 +671,9 @@ class LiveActivityService: ObservableObject {
                 dockId: activity.attributes.dockId,
                 pushToken: tokenString,
                 dockName: activity.attributes.dockName,
-                alternatives: activity.content.state.alternatives
+                alternatives: activity.content.state.alternatives,
+                scheduledJourneyId: activity.attributes.scheduledJourneyId,
+                scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase(rawValue: activity.attributes.scheduledJourneyPhase ?? "")
             )
         }
 
@@ -611,7 +803,9 @@ class LiveActivityService: ObservableObject {
                             dockId: dockId,
                             pushToken: tokenString,
                             dockName: activity.attributes.dockName,
-                            alternatives: activity.content.state.alternatives
+                            alternatives: activity.content.state.alternatives,
+                            scheduledJourneyId: activity.attributes.scheduledJourneyId,
+                            scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase(rawValue: activity.attributes.scheduledJourneyPhase ?? "")
                         )
                     }
                 }
@@ -625,7 +819,9 @@ class LiveActivityService: ObservableObject {
                             dockId: dockId,
                             pushToken: tokenString,
                             dockName: activity.attributes.dockName,
-                            alternatives: activity.content.state.alternatives
+                            alternatives: activity.content.state.alternatives,
+                            scheduledJourneyId: activity.attributes.scheduledJourneyId,
+                            scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase(rawValue: activity.attributes.scheduledJourneyPhase ?? "")
                         )
                     }
                 }
@@ -689,11 +885,40 @@ class LiveActivityService: ObservableObject {
         ]
     }
 
+    private func scheduledJourneyPrimaryDisplay(
+        dockId: String,
+        scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase?
+    ) -> String {
+        guard let scheduledJourneyPhase else {
+            return getPrimaryDisplay(for: dockId).rawValue
+        }
+
+        switch scheduledJourneyPhase {
+        case .end:
+            return LiveActivityPrimaryDisplay.spaces.rawValue
+        case .start:
+            let rawFilter = AppConstants.UserDefaults.sharedDefaults.string(
+                forKey: BikeDataFilter.userDefaultsKey
+            ) ?? BikeDataFilter.both.rawValue
+            let filter = BikeDataFilter(rawValue: rawFilter) ?? .both
+            switch filter {
+            case .bikesOnly:
+                return LiveActivityPrimaryDisplay.bikes.rawValue
+            case .eBikesOnly:
+                return LiveActivityPrimaryDisplay.eBikes.rawValue
+            case .both:
+                return "allBikes"
+            }
+        }
+    }
+
     private func registerWithServer(
         dockId: String,
         pushToken: String,
         dockName: String,
-        alternatives: [DockActivityAttributes.AlternativeDock]
+        alternatives: [DockActivityAttributes.AlternativeDock],
+        scheduledJourneyId: String? = nil,
+        scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase? = nil
     ) async {
         let urlString = "\(serverBaseURL)/live-activity/start"
         guard let url = URL(string: urlString) else {
@@ -725,10 +950,13 @@ class LiveActivityService: ObservableObject {
                 "emptySpaces": alternative.emptySpaces,
             ]
         }
-        let primaryDisplayRawValue = getPrimaryDisplay(for: dockId).rawValue
+        let primaryDisplayRawValue = scheduledJourneyPrimaryDisplay(
+            dockId: dockId,
+            scheduledJourneyPhase: scheduledJourneyPhase
+        )
         let minimumThresholds = minimumThresholdsPayload()
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "dockId": dockId,
             "dockName": dockName,
             "pushToken": pushToken,
@@ -738,13 +966,19 @@ class LiveActivityService: ObservableObject {
             "primaryDisplay": primaryDisplayRawValue,
             "minimumThresholds": minimumThresholds,
         ]
+        if let scheduledJourneyId {
+            body["scheduledJourneyId"] = scheduledJourneyId
+            body["scheduledJourneyPhase"] = scheduledJourneyPhase?.rawValue ?? "start"
+        }
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (_, response) = try await URLSession.shared.data(for: request)
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                 trackServerSession(dockId: dockId, pushToken: pushToken)
-                let activeThreshold = minimumThresholds[primaryDisplayRawValue] ?? 0
+                let activeThreshold = primaryDisplayRawValue == "allBikes"
+                    ? (minimumThresholds[LiveActivityPrimaryDisplay.bikes.rawValue] ?? 0) + (minimumThresholds[LiveActivityPrimaryDisplay.eBikes.rawValue] ?? 0)
+                    : minimumThresholds[primaryDisplayRawValue] ?? 0
                 logger.info("Registered live activity with server for dock \(dockId) (expires in \(Int(finalExpirySeconds))s, alternatives: \(serializedAlternatives.count), primaryDisplay: \(primaryDisplayRawValue), minimumThreshold: \(activeThreshold))")
                 await refreshNotificationStatusFromServer()
             } else {
