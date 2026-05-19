@@ -4,33 +4,17 @@ import SwiftUI
 
 struct ProfileView: View {
     @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
-    @State private var isShowingAddJourney = false
+    @State private var journeyEditorPresentation: JourneyEditorPresentation?
     @State private var journeyToDelete: ScheduledJourney?
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    HStack(spacing: 10) {
-                        NavigationLink {
-                            PreferencesView()
-                        } label: {
-                            Label("Preferences", systemImage: "gearshape")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.regular)
-
-                        NavigationLink {
-                            AboutView()
-                        } label: {
-                            Label("About", systemImage: "info.circle")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.regular)
-                    }
-                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                    ProfileNavigationCard()
+                        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
 
                 Section {
@@ -38,23 +22,39 @@ struct ProfileView: View {
                         ContentUnavailableView(
                             "No scheduled journeys",
                             systemImage: "calendar.badge.clock",
-                            description: Text("Add a journey from Favourites to start dock updates automatically.")
+                            description: Text("")
                         )
+                        Button {
+                            journeyEditorPresentation = .add
+                        } label: {
+                            Text("+ Add journey")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(scheduledJourneyService.journeys.count >= 5)
+                        .listRowSeparator(.hidden)
                     } else {
                         ForEach(scheduledJourneyService.journeys) { journey in
                             ScheduledJourneyRow(
                                 journey: journey,
+                                canCreateReturn: scheduledJourneyService.journeys.count < 5,
                                 onStop: {
                                     Task { await scheduledJourneyService.stop(journey) }
                                 },
                                 onActivate: {
                                     Task { await scheduledJourneyService.activate(journey) }
                                 },
+                                onEdit: {
+                                    journeyEditorPresentation = .edit(journey)
+                                },
                                 onDelete: {
                                     journeyToDelete = journey
                                 },
                                 onCreateReturn: {
-                                    Task { await createReturnJourney(from: journey) }
+                                    guard scheduledJourneyService.journeys.count < 5 else { return }
+                                    var draft = ScheduledJourneyDraft.returnJourney(from: journey)
+                                    draft.timezone = TimeZone.current.identifier
+                                    journeyEditorPresentation = .addReturn(draft)
                                 }
                             )
                         }
@@ -67,7 +67,7 @@ struct ProfileView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        isShowingAddJourney = true
+                        journeyEditorPresentation = .add
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -81,8 +81,8 @@ struct ProfileView: View {
             .refreshable {
                 await scheduledJourneyService.refresh()
             }
-            .sheet(isPresented: $isShowingAddJourney) {
-                AddJourneyView()
+            .sheet(item: $journeyEditorPresentation) { presentation in
+                AddJourneyView(presentation: presentation)
             }
             .alert("Delete scheduled journey?", isPresented: Binding(
                 get: { journeyToDelete != nil },
@@ -102,19 +102,124 @@ struct ProfileView: View {
             }
         }
     }
+}
 
-    private func createReturnJourney(from journey: ScheduledJourney) async {
-        guard scheduledJourneyService.journeys.count < 5 else { return }
-        var draft = ScheduledJourneyDraft.returnJourney(from: journey)
-        draft.timezone = TimeZone.current.identifier
-        _ = try? await scheduledJourneyService.createJourney(from: draft)
+enum JourneyEditorPresentation: Identifiable {
+    case add
+    case edit(ScheduledJourney)
+    case addReturn(ScheduledJourneyDraft)
+
+    var id: String {
+        switch self {
+        case .add:
+            return "add"
+        case .edit(let journey):
+            return "edit-\(journey.id)"
+        case .addReturn(let draft):
+            return "return-\(draft.startDock?.id ?? "start")-\(draft.endDock?.id ?? "end")-\(draft.startTime)-\(draft.endTime)"
+        }
+    }
+
+    var initialDraft: ScheduledJourneyDraft {
+        switch self {
+        case .add:
+            return ScheduledJourneyDraft()
+        case .edit(let journey):
+            return ScheduledJourneyDraft(journey: journey)
+        case .addReturn(let draft):
+            return draft
+        }
+    }
+
+    var editedJourney: ScheduledJourney? {
+        if case .edit(let journey) = self {
+            return journey
+        }
+        return nil
+    }
+
+    var navigationTitle: String {
+        switch self {
+        case .add, .addReturn:
+            return "Add Journey"
+        case .edit:
+            return "Edit Journey"
+        }
+    }
+
+    var isEditing: Bool {
+        editedJourney != nil
+    }
+}
+
+private struct ProfileNavigationCard: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            NavigationLink {
+                PreferencesView()
+            } label: {
+                ProfileNavigationRow(
+                    title: "Preferences",
+                    subtitle: "Notifications, Live Activity, journey sorting, and display settings.",
+                    systemImage: "slider.horizontal.3"
+                )
+            }
+            .buttonStyle(.plain)
+
+            Divider()
+                .padding(.leading, 88)
+
+            NavigationLink {
+                AboutView()
+            } label: {
+                ProfileNavigationRow(
+                    title: "About",
+                    subtitle: "Version info, feedback, credits, and data sources.",
+                    systemImage: "info.circle"
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+}
+
+private struct ProfileNavigationRow: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(systemName: systemImage)
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 40, height: 40)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 20)
+        .contentShape(Rectangle())
     }
 }
 
 private struct ScheduledJourneyRow: View {
     let journey: ScheduledJourney
+    let canCreateReturn: Bool
     let onStop: () -> Void
     let onActivate: () -> Void
+    let onEdit: () -> Void
     let onDelete: () -> Void
     let onCreateReturn: () -> Void
 
@@ -139,28 +244,50 @@ private struct ScheduledJourneyRow: View {
                 }
             }
 
-            HStack(spacing: 8) {
-                if journey.isActive {
-                    Button("Stop", role: .destructive, action: onStop)
-                        .buttonStyle(.bordered)
-                } else {
-                    Button("Activate", action: onActivate)
-                        .buttonStyle(.borderedProminent)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    primaryActions
+                    secondaryActions
                 }
 
-                Button("Return", action: onCreateReturn)
-                    .buttonStyle(.bordered)
-
-                Spacer()
-
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "trash")
+                VStack(alignment: .leading, spacing: 8) {
+                    primaryActions
+                    secondaryActions
                 }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Delete scheduled journey")
             }
         }
         .padding(.vertical, 6)
+    }
+
+    private var primaryActions: some View {
+        HStack(spacing: 8) {
+            if journey.isActive {
+                Button("Stop", role: .destructive, action: onStop)
+                    .buttonStyle(.bordered)
+            } else {
+                Button("Start now", action: onActivate)
+                    .buttonStyle(.borderedProminent)
+            }
+
+            Button("Edit", action: onEdit)
+                .buttonStyle(.bordered)
+        }
+    }
+
+    private var secondaryActions: some View {
+        HStack(spacing: 8) {
+            Button("+ Add return journey", action: onCreateReturn)
+                .buttonStyle(.bordered)
+                .disabled(!canCreateReturn)
+
+            Spacer(minLength: 0)
+
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Delete scheduled journey")
+        }
     }
 
     private func weekdaySummary(_ weekdays: [Int]) -> String {
@@ -174,10 +301,16 @@ private struct ScheduledJourneyRow: View {
 struct AddJourneyView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
-    @State private var draft = ScheduledJourneyDraft()
+    private let presentation: JourneyEditorPresentation
+    @State private var draft: ScheduledJourneyDraft
     @State private var selectedDockField: DockField?
     @State private var isSaving = false
     @State private var errorMessage: String?
+
+    init(presentation: JourneyEditorPresentation = .add) {
+        self.presentation = presentation
+        _draft = State(initialValue: presentation.initialDraft)
+    }
 
     enum DockField: Identifiable {
         case start
@@ -224,7 +357,7 @@ struct AddJourneyView: View {
                     }
                 }
             }
-            .navigationTitle("Add Journey")
+            .navigationTitle(presentation.navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -257,7 +390,7 @@ struct AddJourneyView: View {
         draft.startDock?.id != draft.endDock?.id &&
         !draft.weekdays.isEmpty &&
         windowMinutes.map { $0 <= 12 * 60 } == true &&
-        scheduledJourneyService.journeys.count < 5
+        (presentation.isEditing || scheduledJourneyService.journeys.count < 5)
     }
 
     private var windowMinutes: Int? {
@@ -280,7 +413,11 @@ struct AddJourneyView: View {
         isSaving = true
         defer { isSaving = false }
         do {
-            _ = try await scheduledJourneyService.createJourney(from: draft)
+            if let editedJourney = presentation.editedJourney {
+                _ = try await scheduledJourneyService.update(editedJourney, from: draft)
+            } else {
+                _ = try await scheduledJourneyService.createJourney(from: draft)
+            }
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
@@ -424,15 +561,15 @@ private struct DockPickerView: View {
                 case .map:
                     Map(position: $mapPosition) {
                         ForEach(mapBikePoints) { bikePoint in
-                            Annotation(bikePoint.commonName, coordinate: bikePoint.coordinate) {
+                            Annotation("", coordinate: bikePoint.coordinate) {
                                 Button {
                                     onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
                                     dismiss()
                                 } label: {
-                                    Image(systemName: "mappin.circle.fill")
-                                        .font(.title2)
-                                        .foregroundStyle(.red)
+                                    DockAcronymMarker(name: bikePoint.commonName)
                                 }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Select \(bikePoint.commonName)")
                             }
                         }
                     }
@@ -489,6 +626,43 @@ private struct DockPickerView: View {
     }
 }
 
+private struct DockAcronymMarker: View {
+    let name: String
+
+    var body: some View {
+        Text(acronym)
+            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .frame(width: 30, height: 30)
+            .background(AppConstants.Colors.standardBike, in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(.white, lineWidth: 2)
+            }
+            .shadow(color: .black.opacity(0.25), radius: 3, x: 0, y: 1)
+    }
+
+    private var acronym: String {
+        let primaryName = name
+            .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init) ?? name
+
+        let words = primaryName
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+
+        if words.count >= 2 {
+            return words.prefix(2)
+                .compactMap(\.first)
+                .map { String($0).uppercased() }
+                .joined()
+        }
+
+        return String((words.first ?? primaryName).prefix(2)).uppercased()
+    }
+}
+
 private struct DockPickerRow: View {
     let bikePoint: BikePoint
     let action: () -> Void
@@ -525,4 +699,3 @@ private func minutesBetween(start: String, end: String) -> Int? {
     let diff = (endMinutes - startMinutes + 24 * 60) % (24 * 60)
     return diff == 0 ? 24 * 60 : diff
 }
-

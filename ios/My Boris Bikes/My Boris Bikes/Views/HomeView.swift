@@ -45,30 +45,17 @@ struct HomeView: View {
                     }
 
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        HStack(spacing: 12) {
-                            Button {
-                                isShowingAddJourney = true
-                            } label: {
+                        Button {
+                            isShowingAddJourney = true
+                        } label: {
+                            HStack(spacing: 6) {
                                 Text("+ Add journey")
                                     .font(.subheadline.weight(.semibold))
+                                Image(systemName: "map")
                             }
-                            .disabled(scheduledJourneyService.journeys.count >= 5)
-
-                            SortMenu(
-                                sortMode: favoritesService.sortMode,
-                                onSortModeChanged: { mode in
-                                    favoritesService.updateSortMode(mode)
-                                    AnalyticsService.shared.track(
-                                        action: .sortModeUpdate,
-                                        screen: .favourites,
-                                        metadata: [
-                                            "preference": AppConstants.UserDefaults.sortModeKey,
-                                            "value": mode.rawValue
-                                        ]
-                                    )
-                                }
-                            )
                         }
+                        .disabled(scheduledJourneyService.journeys.count >= 5)
+                        .accessibilityLabel("Add journey")
                     }
                 }
                 .sheet(isPresented: $isShowingAddJourney) {

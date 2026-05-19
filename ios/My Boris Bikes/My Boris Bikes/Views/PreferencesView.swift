@@ -111,6 +111,9 @@ struct PreferencesView: View {
                             liveActivityPrimaryDisplayRawValue = validCases.first?.rawValue ?? LiveActivityPrimaryDisplay.bikes.rawValue
                         }
                         trackPreferenceChange(key: BikeDataFilter.userDefaultsKey, value: bikeDataFilterRawValue)
+                        Task {
+                            await ScheduledJourneyService.shared.registerDevice()
+                        }
                     }
 
                     Text("Show information on standard bikes, e-bikes, or both.")

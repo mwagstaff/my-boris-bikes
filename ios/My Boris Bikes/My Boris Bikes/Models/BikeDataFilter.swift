@@ -151,6 +151,7 @@ struct AlternativeDockSettings {
     static let defaultMinEBikes = 3
     static let defaultDistanceThresholdMiles = 1.0
     static let defaultMaxAlternatives = 3
+    static let defaultEnabled = false
     static let defaultWidgetEnabled = true
     static let defaultUseStartingPointLogic = false
     static let defaultUseMinimumThresholds = false
@@ -170,22 +171,22 @@ struct LiveActivityArrivalSettings {
     }
 
     static let defaultEnabled = false
-    static let defaultArrivalDistanceMeters = 25
+    static let defaultArrivalDistanceMeters = 35
     static let minimumArrivalDistanceMeters = 10
-    static let maximumArrivalDistanceMeters = 50
+    static let maximumArrivalDistanceMeters = 75
     static let arrivalDistanceStepMeters = 5
     static let minimumRetryIntervalSeconds: TimeInterval = 5
     static let minimumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 45
     static let maximumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 100
-    static let maximumArrivalThresholdExpansionMeters: CLLocationDistance = 35
+    static let maximumArrivalThresholdExpansionMeters: CLLocationDistance = 45
     static let maximumActivationAccuracyExpansionMeters: CLLocationDistance = 120
-    static let confirmationDwellTimeSeconds: TimeInterval = 3
+    static let confirmationDwellTimeSeconds: TimeInterval = 1.5
     static let confirmationTimeoutSeconds: TimeInterval = 120
-    static let confirmationResetHysteresisMeters: CLLocationDistance = 10
-    static let highFrequencyActivationDistanceMeters: CLLocationDistance = 400
-    static let preciseActivationDistanceMeters: CLLocationDistance = 350
+    static let confirmationResetHysteresisMeters: CLLocationDistance = 15
+    static let highFrequencyActivationDistanceMeters: CLLocationDistance = 500
+    static let preciseActivationDistanceMeters: CLLocationDistance = 450
     static let regionRadiusBufferMeters: CLLocationDistance = 50
-    static let preferredMaximumRegionRadiusMeters: CLLocationDistance = 400
+    static let preferredMaximumRegionRadiusMeters: CLLocationDistance = 500
 
     static var distanceOptions: [Int] {
         Array(stride(

@@ -26,8 +26,9 @@ class HomeViewModel: BaseViewModel {
         self.favoritesService = favoritesService
         self.locationService = locationService
         self.widgetService = WidgetService.shared
-        if allBikePoints.isEmpty {
-            let cachedAllBikePoints = AllBikePointsCache.shared.load()
+        if allBikePoints.isEmpty,
+           let cachedSnapshot = AllBikePointsCache.shared.loadSnapshot() {
+            let cachedAllBikePoints = cachedSnapshot.bikePoints.filter(\.isInstalled)
             if !cachedAllBikePoints.isEmpty {
                 allBikePoints = cachedAllBikePoints
             }
@@ -194,20 +195,6 @@ class HomeViewModel: BaseViewModel {
                         // Update last refresh time
                         self?.lastUpdateTime = Date()
 
-                        // Detect TfL API staleness from modified timestamps
-                        let mostRecentModified = newBikePoints
-                            .flatMap { $0.additionalProperties }
-                            .compactMap { $0.modified }
-                            .max()
-                        if let mostRecentModified {
-                            let age = Date().timeIntervalSince(mostRecentModified)
-                            self?.tflDataStaleWarning = age > AppConstants.App.tflApiStalenessThreshold
-                                ? "Warning: TfL bike data may be out of date"
-                                : nil
-                        } else {
-                            self?.tflDataStaleWarning = nil
-                        }
-
                         // Clear any existing errors on successful data load
                         self?.clearErrorOnSuccess()
 
@@ -307,13 +294,8 @@ class HomeViewModel: BaseViewModel {
     }
 
     private func loadAllBikePointsIfNeeded(forceRefresh: Bool) {
-        let defaults = AlternativeDockSettings.userDefaultsStore
-        let isEnabled = defaults.bool(forKey: AlternativeDockSettings.enabledKey)
-        let widgetEnabled = defaults.object(forKey: AlternativeDockSettings.widgetEnabledKey) as? Bool
-            ?? AlternativeDockSettings.defaultWidgetEnabled
-        guard isEnabled || widgetEnabled else { return }
         let intervalElapsed = lastAllBikePointsRefreshTime.map {
-            Date().timeIntervalSince($0) >= AppConstants.App.refreshInterval
+            Date().timeIntervalSince($0) >= AppConstants.App.allBikePointsPrewarmInterval
         } ?? true
         guard forceRefresh || allBikePoints.isEmpty || intervalElapsed else { return }
         guard !isAllBikePointsRefreshInFlight else { return }
@@ -330,13 +312,31 @@ class HomeViewModel: BaseViewModel {
                     let installedBikePoints = bikePoints.filter { $0.isInstalled }
                     guard !installedBikePoints.isEmpty else { return }
                     self?.allBikePoints = installedBikePoints
-                    self?.lastAllBikePointsRefreshTime = Date()
-                    AllBikePointsCache.shared.save(installedBikePoints)
+                    let fetchedAt = Date()
+                    self?.lastAllBikePointsRefreshTime = fetchedAt
+                    self?.updateTflDataStaleWarning(from: installedBikePoints, fetchedAt: fetchedAt)
+                    AllBikePointsCache.shared.save(installedBikePoints, savedAt: fetchedAt)
                     if let favoriteBikePoints = self?.favoriteBikePoints {
                         self?.updateWidgetData(favoriteBikePoints)
                     }
                 }
             )
+    }
+
+    private func updateTflDataStaleWarning(from bikePoints: [BikePoint], fetchedAt: Date) {
+        let staleRatio = BikePoint.staleAvailabilityDataRatio(
+            in: bikePoints,
+            fetchedAt: fetchedAt,
+            staleAfter: AppConstants.App.tflApiStalenessThreshold
+        )
+        guard let staleRatio else {
+            tflDataStaleWarning = nil
+            return
+        }
+
+        tflDataStaleWarning = staleRatio >= AppConstants.App.tflApiStaleDockWarningRatio
+            ? "Warning: TfL bike data may be out of date"
+            : nil
     }
 
     deinit {

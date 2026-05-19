@@ -9,6 +9,13 @@ struct BikePoint: Codable, Identifiable, Equatable, Sendable {
     let lon: Double
     let additionalProperties: [AdditionalProperty]
 
+    private static let availabilityModifiedKeys: Set<String> = [
+        "NbBikes",
+        "NbStandardBikes",
+        "NbEBikes",
+        "NbEmptyDocks"
+    ]
+
     private enum CodingKeys: String, CodingKey {
         case id
         case commonName
@@ -111,6 +118,28 @@ struct BikePoint: Codable, Identifiable, Equatable, Sendable {
     
     var isAvailable: Bool {
         isInstalled && !isLocked
+    }
+
+    var availabilityDataModifiedAt: Date? {
+        additionalProperties
+            .filter { Self.availabilityModifiedKeys.contains($0.key) }
+            .compactMap(\.modified)
+            .max()
+    }
+
+    static func staleAvailabilityDataRatio(
+        in bikePoints: [BikePoint],
+        fetchedAt: Date,
+        staleAfter threshold: TimeInterval
+    ) -> Double? {
+        let modifiedDates = bikePoints.compactMap(\.availabilityDataModifiedAt)
+        guard !modifiedDates.isEmpty else { return nil }
+
+        let staleDockCount = modifiedDates.filter {
+            fetchedAt.timeIntervalSince($0) > threshold
+        }.count
+
+        return Double(staleDockCount) / Double(modifiedDates.count)
     }
     
     /// Indicates whether this dock has any broken docks

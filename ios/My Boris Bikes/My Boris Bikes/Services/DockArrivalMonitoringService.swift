@@ -1,6 +1,7 @@
 import CoreLocation
 import Foundation
 import UIKit
+import UserNotifications
 import os.log
 
 enum DockArrivalHeuristics {
@@ -85,6 +86,13 @@ final class DockArrivalMonitoringService: NSObject {
         let message: String
     }
 
+    private struct PersistedMonitoringState: Codable {
+        let dock: MonitoredDock
+        let scheduledJourneyId: String?
+        let scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase?
+        let scheduledDestinationDock: ScheduledJourneyDock?
+    }
+
     private var monitoredDock: MonitoredDock?
     private var backgroundActivitySession: CLBackgroundActivitySession?
     private var isSendingArrivalRequest = false
@@ -159,7 +167,7 @@ final class DockArrivalMonitoringService: NSObject {
         self.scheduledJourneyPhase = phase
         self.scheduledDestinationDock = destinationDock
         monitoredDock = dock
-        persistDock(dock)
+        persistMonitoringState(for: dock)
         lastArrivalAttemptAt = nil
         isSendingArrivalRequest = false
         lastRoutineLocationLogAt = nil
@@ -168,7 +176,7 @@ final class DockArrivalMonitoringService: NSObject {
         hasRequestedTemporaryFullAccuracyThisSession = false
         logLocationEvent("monitor_begin", dock: dock, message: "Preparing dock arrival monitoring")
 
-        guard isEnabled else {
+        guard shouldMonitorCurrentDock else {
             logger.info("Dock arrival monitoring preference is disabled; skipping monitoring for dock \(dock.dockId)")
             stopPreciseLocationUpdates()
             stopMonitoringDockRegion()
@@ -181,7 +189,7 @@ final class DockArrivalMonitoringService: NSObject {
     }
 
     func restoreMonitoringIfNeeded(activeDockIds: Set<String>) {
-        guard isEnabled else {
+        guard shouldMonitorCurrentDock else {
             stopMonitoring(reason: "preference_disabled", preserveDock: true)
             return
         }
@@ -251,7 +259,7 @@ final class DockArrivalMonitoringService: NSObject {
             longitude: bikePoint.lon
         )
         monitoredDock = dock
-        persistDock(dock)
+        persistMonitoringState(for: dock)
         logLocationEvent(
             "monitor_dock_updated",
             dock: dock,
@@ -262,7 +270,7 @@ final class DockArrivalMonitoringService: NSObject {
             ]
         )
 
-        if isEnabled {
+        if shouldMonitorCurrentDock {
             startMonitoringIfPossible()
         }
     }
@@ -273,6 +281,10 @@ final class DockArrivalMonitoringService: NSObject {
             ?? LiveActivityArrivalSettings.defaultEnabled
     }
 
+    private var shouldMonitorCurrentDock: Bool {
+        scheduledJourneyPhase != nil || isEnabled
+    }
+
     var monitoredDockID: String? {
         monitoredDock?.dockId
     }
@@ -281,9 +293,15 @@ final class DockArrivalMonitoringService: NSObject {
         DeviceTokenHelper.apnsDeviceToken ?? DeviceTokenHelper.analyticsDeviceToken
     }
 
-    private func persistDock(_ dock: MonitoredDock) {
+    private func persistMonitoringState(for dock: MonitoredDock) {
         let encoder = JSONEncoder()
-        guard let data = try? encoder.encode(dock) else { return }
+        let state = PersistedMonitoringState(
+            dock: dock,
+            scheduledJourneyId: scheduledJourneyId,
+            scheduledJourneyPhase: scheduledJourneyPhase,
+            scheduledDestinationDock: scheduledDestinationDock
+        )
+        guard let data = try? encoder.encode(state) else { return }
         AppConstants.UserDefaults.sharedDefaults.set(data, forKey: monitoredDockStorageKey)
     }
 
@@ -292,7 +310,15 @@ final class DockArrivalMonitoringService: NSObject {
             return nil
         }
 
-        return try? JSONDecoder().decode(MonitoredDock.self, from: data)
+        let decoder = JSONDecoder()
+        if let state = try? decoder.decode(PersistedMonitoringState.self, from: data) {
+            scheduledJourneyId = state.scheduledJourneyId
+            scheduledJourneyPhase = state.scheduledJourneyPhase
+            scheduledDestinationDock = state.scheduledDestinationDock
+            return state.dock
+        }
+
+        return try? decoder.decode(MonitoredDock.self, from: data)
     }
 
     private func startMonitoringIfPossible() {
@@ -356,13 +382,13 @@ final class DockArrivalMonitoringService: NSObject {
             )
         }
 
-        startContinuousHighSensitivityTracking(reason: "active_live_activity")
+        startContinuousLowSensitivityTracking(reason: "active_live_activity")
 
         logger.info("Starting continuous dock arrival monitoring")
         logLocationEvent(
             "location_updates_started",
             dock: dock,
-            message: "Started continuous high-sensitivity location monitoring",
+            message: "Started continuous low-sensitivity location monitoring",
             raw: [
                 "authorizationStatus": authorizationStatusLabel(authorizationStatus),
                 "regionRadiusMeters": configuredRegionRadiusMeters(),
@@ -547,22 +573,19 @@ final class DockArrivalMonitoringService: NSObject {
         if scheduledJourneyPhase == .start,
            let scheduledJourneyId,
            let scheduledDestinationDock {
-            logger.info("Scheduled journey start dock reached; transitioning to end dock after delay")
+            logger.info("Scheduled journey start dock reached; transitioning to end dock")
             logLocationEvent(
                 "scheduled_start_arrival",
                 dock: dock,
                 message: "Start dock reached; transitioning scheduled journey to destination dock"
             )
-            await MainActor.run {
-                LiveActivityService.shared.endLiveActivity(for: dock.dockId)
-            }
+            sendScheduledStartArrivalNotification(for: dock)
             stopMonitoring(reason: "scheduled_start_arrival")
-            Task { @MainActor in
-                await LiveActivityService.shared.transitionScheduledJourneyToEndDock(
-                    journeyId: scheduledJourneyId,
-                    endDock: scheduledDestinationDock
-                )
-            }
+            await LiveActivityService.shared.transitionScheduledJourneyToEndDock(
+                journeyId: scheduledJourneyId,
+                endDock: scheduledDestinationDock,
+                delaySeconds: 0
+            )
             return true
         }
 
@@ -676,6 +699,24 @@ final class DockArrivalMonitoringService: NSObject {
                 message: "Network error: \(error.localizedDescription)"
             )
             return false
+        }
+    }
+
+    private func sendScheduledStartArrivalNotification(for dock: MonitoredDock) {
+        let content = UNMutableNotificationContent()
+        content.title = "Dock arrival"
+        content.body = "Welcome to \(dock.dockName)!"
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "scheduled-start-arrival-\(dock.dockId)-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { [weak self] error in
+            if let error {
+                self?.logger.error("Failed to schedule start-dock arrival notification: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -847,9 +888,9 @@ final class DockArrivalMonitoringService: NSObject {
     }
 
     private func configureLowPowerTrackingProfile() {
-        locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        locationManager.distanceFilter = kCLDistanceFilterNone
-        locationManager.activityType = .otherNavigation
+        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        locationManager.distanceFilter = 25
+        locationManager.activityType = .fitness
         locationManager.pausesLocationUpdatesAutomatically = false
     }
 
@@ -869,6 +910,19 @@ final class DockArrivalMonitoringService: NSObject {
             "continuous_high_sensitivity_started",
             dock: monitoredDock,
             message: "Started continuous high-sensitivity location updates",
+            raw: ["reason": reason]
+        )
+    }
+
+    private func startContinuousLowSensitivityTracking(reason: String) {
+        configureLowPowerTrackingProfile()
+        startBackgroundActivitySessionIfNeeded()
+        locationManager.startUpdatingLocation()
+        locationManager.requestLocation()
+        logLocationEvent(
+            "continuous_low_sensitivity_started",
+            dock: monitoredDock,
+            message: "Started continuous low-sensitivity location updates",
             raw: ["reason": reason]
         )
     }

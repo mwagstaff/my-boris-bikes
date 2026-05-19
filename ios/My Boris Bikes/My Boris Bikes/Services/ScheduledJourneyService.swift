@@ -69,6 +69,7 @@ final class ScheduledJourneyService: ObservableObject {
             "deviceId": deviceId,
             "buildType": PushEnvironment.buildType,
             "timezone": TimeZone.current.identifier,
+            "bikeDataFilter": currentBikeDataFilterRawValue(),
         ]
         if let deviceToken = DeviceTokenHelper.apnsDeviceToken {
             body["deviceToken"] = deviceToken
@@ -114,17 +115,11 @@ final class ScheduledJourneyService: ObservableObject {
             throw ScheduledJourneyError.invalidDraft
         }
 
-        var body: [String: Any] = [
-            "deviceId": deviceId,
-            "startDock": dockPayload(startDock),
-            "endDock": dockPayload(endDock),
-            "weekdays": draft.weekdays,
-            "startTime": draft.startTime,
-            "endTime": draft.endTime,
-            "timezone": draft.timezone,
-            "enabled": draft.enabled,
-            "buildType": PushEnvironment.buildType,
-        ]
+        var body = scheduledJourneyPayload(
+            startDock: startDock,
+            endDock: endDock,
+            draft: draft
+        )
         if let deviceToken = DeviceTokenHelper.apnsDeviceToken {
             body["deviceToken"] = deviceToken
         }
@@ -140,6 +135,49 @@ final class ScheduledJourneyService: ObservableObject {
         )
         await refresh()
         return response.journey
+    }
+
+    func update(_ journey: ScheduledJourney, from draft: ScheduledJourneyDraft) async throws -> ScheduledJourney {
+        guard let startDock = draft.startDock, let endDock = draft.endDock else {
+            throw ScheduledJourneyError.invalidDraft
+        }
+
+        let response = try await request(
+            path: "/scheduled-journeys/\(journey.id)",
+            method: "PUT",
+            body: scheduledJourneyPayload(
+                startDock: startDock,
+                endDock: endDock,
+                draft: draft
+            ),
+            responseType: JourneyResponse.self
+        )
+        await refresh()
+        return response.journey
+    }
+
+    private func scheduledJourneyPayload(
+        startDock: ScheduledJourneyDock,
+        endDock: ScheduledJourneyDock,
+        draft: ScheduledJourneyDraft
+    ) -> [String: Any] {
+        [
+            "deviceId": deviceId,
+            "startDock": dockPayload(startDock),
+            "endDock": dockPayload(endDock),
+            "weekdays": draft.weekdays,
+            "startTime": draft.startTime,
+            "endTime": draft.endTime,
+            "timezone": draft.timezone,
+            "enabled": draft.enabled,
+            "buildType": PushEnvironment.buildType,
+            "bikeDataFilter": currentBikeDataFilterRawValue(),
+        ]
+    }
+
+    private func currentBikeDataFilterRawValue() -> String {
+        BikeDataFilter.userDefaultsStore.string(forKey: BikeDataFilter.userDefaultsKey)
+            ?? BikeDataFilter.both.rawValue
     }
 
     func delete(_ journey: ScheduledJourney) async {

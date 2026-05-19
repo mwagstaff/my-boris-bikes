@@ -610,19 +610,18 @@ class MapViewModel {
         )
     }
 
-    /// Returns a warning string if the most recent `modified` timestamp across all dock
-    /// additionalProperties is older than `tflApiStalenessThreshold`, indicating TfL is
-    /// serving stale data rather than a local connectivity problem.
+    /// Returns a warning string when nearly all docks have old availability timestamps,
+    /// indicating a TfL feed-wide stale data issue rather than normal per-dock variance.
     private static func detectTflApiStaleness(_ bikePoints: [BikePoint], fetchedAt: Date) -> String? {
-        let mostRecentModified = bikePoints
-            .flatMap { $0.additionalProperties }
-            .compactMap { $0.modified }
-            .max()
-
-        guard let mostRecentModified else { return nil }
-
-        let age = fetchedAt.timeIntervalSince(mostRecentModified)
-        guard age > AppConstants.App.tflApiStalenessThreshold else { return nil }
+        let staleRatio = BikePoint.staleAvailabilityDataRatio(
+            in: bikePoints,
+            fetchedAt: fetchedAt,
+            staleAfter: AppConstants.App.tflApiStalenessThreshold
+        )
+        guard let staleRatio,
+              staleRatio >= AppConstants.App.tflApiStaleDockWarningRatio else {
+            return nil
+        }
 
         return "Warning: TfL bike data may be out of date"
     }

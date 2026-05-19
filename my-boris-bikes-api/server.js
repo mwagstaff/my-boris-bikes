@@ -513,7 +513,9 @@ async function connectMongoIfConfigured() {
   }
 }
 
-function requireScheduledJourneysCollection(res) {
+async function requireScheduledJourneysCollection(res) {
+  if (scheduledJourneysCollection) return scheduledJourneysCollection;
+  await connectMongoIfConfigured();
   if (scheduledJourneysCollection) return scheduledJourneysCollection;
   res.status(503).json({ error: "Scheduled journeys storage is not configured" });
   return null;
@@ -608,6 +610,7 @@ function sanitizeScheduledJourneyPayload(body) {
       endTime,
       timezone,
       enabled: body?.enabled !== false,
+      bikeDataFilter: sanitizeBikeDataFilter(body?.bikeDataFilter),
     },
   };
 }
@@ -623,11 +626,18 @@ function serializeScheduledJourney(doc) {
     endTime: doc.endTime,
     timezone: doc.timezone || "Europe/London",
     enabled: doc.enabled !== false,
+    bikeDataFilter: sanitizeBikeDataFilter(doc.bikeDataFilter),
     activeRun: doc.activeRun || null,
     pausedRunKeys: doc.pausedRunKeys || [],
     createdAt: doc.createdAt?.toISOString?.() || doc.createdAt,
     updatedAt: doc.updatedAt?.toISOString?.() || doc.updatedAt,
   };
+}
+
+function sanitizeBikeDataFilter(rawValue) {
+  return rawValue === "bikesOnly" || rawValue === "eBikesOnly" || rawValue === "both"
+    ? rawValue
+    : "both";
 }
 
 function localDateParts(date, timeZone) {
@@ -1501,10 +1511,18 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
 
   const startDock = journey.startDock;
   const endDock = journey.endDock;
+  let startDockData = null;
+  try {
+    startDockData = await fetchDockData(startDock.id);
+  } catch (err) {
+    logger.warn(
+      `Failed to fetch initial scheduled journey dock data for ${startDock.id}: ${err.message}`
+    );
+  }
   const contentState = {
-    standardBikes: 0,
-    eBikes: 0,
-    emptySpaces: 0,
+    standardBikes: sanitizeThresholdValue(startDockData?.standardBikes),
+    eBikes: sanitizeThresholdValue(startDockData?.eBikes),
+    emptySpaces: sanitizeThresholdValue(startDockData?.emptySpaces),
     alternatives: [],
   };
   const aps = {
@@ -1568,6 +1586,42 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
     status: "success",
   });
   return result;
+}
+
+function scheduledJourneyStartAlertBody(dockName, dockData, bikeDataFilter) {
+  const resolvedDockName =
+    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "Start dock";
+  const standardBikes = sanitizeThresholdValue(dockData?.standardBikes);
+  const eBikes = sanitizeThresholdValue(dockData?.eBikes);
+
+  switch (sanitizeBikeDataFilter(bikeDataFilter)) {
+    case "bikesOnly":
+      return `${resolvedDockName}: ${standardBikes} ${standardBikes === 1 ? "bike" : "bikes"}`;
+    case "eBikesOnly":
+      return `${resolvedDockName}: ${eBikes} ${eBikes === 1 ? "e-bike" : "e-bikes"}`;
+    case "both":
+    default:
+      return `${resolvedDockName}: ${standardBikes} ${standardBikes === 1 ? "bike" : "bikes"}, ${eBikes} ${eBikes === 1 ? "e-bike" : "e-bikes"}`;
+  }
+}
+
+async function sendScheduledJourneyInitialAvailabilityPush(journey) {
+  const deviceToken = normalizeApnsDeviceToken(journey.deviceToken);
+  if (!deviceToken) return null;
+
+  const dockData = await fetchDockData(journey.startDock.id);
+  return sendAlertPush(
+    deviceToken,
+    journey.buildType === "production" ? "production" : "development",
+    "Scheduled journey",
+    scheduledJourneyStartAlertBody(
+      journey.startDock.name,
+      dockData,
+      journey.bikeDataFilter
+    ),
+    "scheduled_journey_initial_availability",
+    "scheduled journey initial availability"
+  );
 }
 
 async function sendAlertPush(
@@ -3139,7 +3193,7 @@ app.delete(adminRoutePaths("/api/overrides/:dockId"), (req, res) => {
 });
 
 app.post("/scheduled-journeys/device/register", async (req, res) => {
-  const collection = requireScheduledJourneysCollection(res);
+  const collection = await requireScheduledJourneysCollection(res);
   if (!collection) return;
 
   const deviceId = deviceIdFromRequest(req);
@@ -3151,11 +3205,13 @@ app.post("/scheduled-journeys/device/register", async (req, res) => {
   const deviceToken = normalizeApnsDeviceToken(req.body?.deviceToken);
   const buildType = req.body?.buildType === "production" ? "production" : "development";
   const timezone = sanitizeTimeZone(req.body?.timezone) || "Europe/London";
+  const bikeDataFilter = sanitizeBikeDataFilter(req.body?.bikeDataFilter);
 
   const update = {
     deviceId,
     buildType,
     timezone,
+    bikeDataFilter,
     updatedAt: new Date(),
   };
   if (pushToStartToken) update.pushToStartToken = pushToStartToken;
@@ -3170,7 +3226,7 @@ app.post("/scheduled-journeys/device/register", async (req, res) => {
 });
 
 app.get("/scheduled-journeys", async (req, res) => {
-  const collection = requireScheduledJourneysCollection(res);
+  const collection = await requireScheduledJourneysCollection(res);
   if (!collection) return;
 
   const deviceId = deviceIdFromRequest(req);
@@ -3187,7 +3243,7 @@ app.get("/scheduled-journeys", async (req, res) => {
 });
 
 app.post("/scheduled-journeys", async (req, res) => {
-  const collection = requireScheduledJourneysCollection(res);
+  const collection = await requireScheduledJourneysCollection(res);
   if (!collection) return;
 
   const deviceId = deviceIdFromRequest(req);
@@ -3215,6 +3271,7 @@ app.post("/scheduled-journeys", async (req, res) => {
     deviceToken: normalizeApnsDeviceToken(req.body?.deviceToken) || null,
     pushToStartToken: normalizeApnsDeviceToken(req.body?.pushToStartToken) || null,
     buildType: req.body?.buildType === "production" ? "production" : "development",
+    bikeDataFilter: sanitized.value.bikeDataFilter,
     activeRun: null,
     pausedRunKeys: [],
     createdAt: now,
@@ -3226,7 +3283,7 @@ app.post("/scheduled-journeys", async (req, res) => {
 });
 
 app.put("/scheduled-journeys/:id", async (req, res) => {
-  const collection = requireScheduledJourneysCollection(res);
+  const collection = await requireScheduledJourneysCollection(res);
   if (!collection) return;
 
   const deviceId = deviceIdFromRequest(req);
@@ -3250,7 +3307,7 @@ app.put("/scheduled-journeys/:id", async (req, res) => {
 });
 
 app.delete("/scheduled-journeys/:id", async (req, res) => {
-  const collection = requireScheduledJourneysCollection(res);
+  const collection = await requireScheduledJourneysCollection(res);
   if (!collection) return;
 
   const deviceId = deviceIdFromRequest(req);
@@ -3269,7 +3326,7 @@ app.delete("/scheduled-journeys/:id", async (req, res) => {
 });
 
 app.post("/scheduled-journeys/:id/activate", async (req, res) => {
-  const collection = requireScheduledJourneysCollection(res);
+  const collection = await requireScheduledJourneysCollection(res);
   if (!collection) return;
 
   const deviceId = deviceIdFromRequest(req);
@@ -3317,7 +3374,7 @@ app.post("/scheduled-journeys/:id/activate", async (req, res) => {
 });
 
 app.post("/scheduled-journeys/:id/stop", async (req, res) => {
-  const collection = requireScheduledJourneysCollection(res);
+  const collection = await requireScheduledJourneysCollection(res);
   if (!collection) return;
 
   const deviceId = deviceIdFromRequest(req);
@@ -3357,7 +3414,7 @@ app.post("/scheduled-journeys/:id/stop", async (req, res) => {
 });
 
 app.post("/scheduled-journeys/:id/phase", async (req, res) => {
-  const collection = requireScheduledJourneysCollection(res);
+  const collection = await requireScheduledJourneysCollection(res);
   if (!collection) return;
 
   const deviceId = deviceIdFromRequest(req);
@@ -3396,7 +3453,7 @@ app.post("/scheduled-journeys/:id/phase", async (req, res) => {
 });
 
 app.post("/scheduled-journeys/:id/complete", async (req, res) => {
-  const collection = requireScheduledJourneysCollection(res);
+  const collection = await requireScheduledJourneysCollection(res);
   if (!collection) return;
 
   const deviceId = deviceIdFromRequest(req);
@@ -3426,6 +3483,9 @@ app.post("/live-activity/start", (req, res) => {
     minimumThresholds,
     scheduledJourneyId,
     scheduledJourneyPhase,
+    standardBikes,
+    eBikes,
+    emptySpaces,
   } = req.body;
   const normalizedPushToken = normalizeApnsDeviceToken(pushToken);
 
@@ -3470,6 +3530,20 @@ app.post("/live-activity/start", (req, res) => {
   }
 
   const poller = dockPollers.get(dockId);
+  const seededData = {
+    dockName: normalizedDockName || dockId,
+    standardBikes: sanitizeThresholdValue(standardBikes),
+    eBikes: sanitizeThresholdValue(eBikes),
+    emptySpaces: sanitizeThresholdValue(emptySpaces),
+  };
+  const hasSeededAvailability =
+    standardBikes !== undefined || eBikes !== undefined || emptySpaces !== undefined;
+  if (hasSeededAvailability && !poller.lastData) {
+    poller.lastData = seededData;
+    logger.info(
+      `Seeded live activity session for dock ${dockId}: bikes=${seededData.standardBikes}, eBikes=${seededData.eBikes}, spaces=${seededData.emptySpaces}`
+    );
+  }
   const existingSessionForPushToken = poller.tokens.get(normalizedPushToken);
   let startedAt = now;
   let hardStopAt = startedAt + HARD_NOTIFICATION_CUTOFF_MS;
@@ -4257,6 +4331,13 @@ async function processScheduledJourneyStarts() {
     const runKey = scheduledRunKey(journey);
     try {
       await sendScheduledJourneyStartPush(journey, "schedule");
+      try {
+        await sendScheduledJourneyInitialAvailabilityPush(journey);
+      } catch (err) {
+        logger.warn(
+          `Failed to send initial scheduled journey availability notification for ${journey._id}: ${err.message}`
+        );
+      }
       await scheduledJourneysCollection.updateOne(
         { _id: journey._id },
         {

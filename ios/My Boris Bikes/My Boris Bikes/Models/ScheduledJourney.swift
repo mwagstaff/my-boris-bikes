@@ -67,6 +67,36 @@ struct ScheduledJourneyDraft: Encodable, Equatable {
     var timezone: String = TimeZone.current.identifier
     var enabled: Bool = true
 
+    init(
+        startDock: ScheduledJourneyDock? = nil,
+        endDock: ScheduledJourneyDock? = nil,
+        weekdays: [Int] = [1, 2, 3, 4, 5],
+        startTime: String = "07:30",
+        endTime: String = "09:30",
+        timezone: String = TimeZone.current.identifier,
+        enabled: Bool = true
+    ) {
+        self.startDock = startDock
+        self.endDock = endDock
+        self.weekdays = weekdays
+        self.startTime = startTime
+        self.endTime = endTime
+        self.timezone = timezone
+        self.enabled = enabled
+    }
+
+    init(journey: ScheduledJourney) {
+        self.init(
+            startDock: journey.startDock,
+            endDock: journey.endDock,
+            weekdays: journey.weekdays,
+            startTime: journey.startTime,
+            endTime: journey.endTime,
+            timezone: journey.timezone,
+            enabled: journey.enabled
+        )
+    }
+
     static func returnJourney(from journey: ScheduledJourney) -> ScheduledJourneyDraft {
         ScheduledJourneyDraft(
             startDock: journey.endDock,
@@ -79,4 +109,3 @@ struct ScheduledJourneyDraft: Encodable, Equatable {
         )
     }
 }
-

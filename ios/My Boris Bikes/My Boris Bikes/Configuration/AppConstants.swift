@@ -20,6 +20,7 @@ struct AppConstants {
         static let refreshInterval: TimeInterval = 30
         static let staleDataWarningThreshold: TimeInterval = 120
         static let tflApiStalenessThreshold: TimeInterval = 600 // 10 minutes
+        static let tflApiStaleDockWarningRatio = 0.97
         static let mapFetchTimeout: TimeInterval = 12
         static let mapTransientRetryInterval: TimeInterval = 8
         static let allBikePointsPrewarmInterval: TimeInterval = 60
