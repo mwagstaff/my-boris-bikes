@@ -15,13 +15,18 @@ case "$1" in
     tail -f "$LOG_DIR/error-$TODAY.log"
     ;;
 
+  diagnostics|d)
+    # Tail today's structured diagnostics log
+    tail -f "$LOG_DIR/diagnostics-$TODAY.jsonl"
+    ;;
+
   search|s)
     # Search all logs for a pattern
     if [ -z "$2" ]; then
       echo "Usage: $0 search <pattern>"
       exit 1
     fi
-    grep -i "$2" "$LOG_DIR"/server-*.log
+    grep -i "$2" "$LOG_DIR"/server-*.log "$LOG_DIR"/diagnostics-*.jsonl 2>/dev/null
     ;;
 
   list|ls)
@@ -43,6 +48,7 @@ case "$1" in
     echo "Commands:"
     echo "  tail, t        - Tail today's server logs"
     echo "  error, e       - Tail today's error logs"
+    echo "  diagnostics, d - Tail today's structured diagnostics JSONL"
     echo "  search, s      - Search logs for a pattern"
     echo "  list, ls       - List all log files"
     echo "  clean          - Remove logs older than 7 days"
@@ -50,6 +56,7 @@ case "$1" in
     echo "Examples:"
     echo "  $0 tail                    # Watch live logs"
     echo "  $0 error                   # Watch live error logs"
+    echo "  $0 diagnostics             # Watch structured push/client journey events"
     echo "  $0 search BikePoints_316   # Search for dock ID"
     echo "  $0 search 'Session expired' # Search for expired sessions"
     exit 1

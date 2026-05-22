@@ -15,6 +15,7 @@ struct DockActivityAttributes: ActivityAttributes {
     let alias: String?
     let scheduledJourneyId: String?
     let scheduledJourneyPhase: String?
+    let adHocJourneyId: String?
     let latitude: Double?
     let longitude: Double?
     let destinationDockId: String?
@@ -28,6 +29,7 @@ struct DockActivityAttributes: ActivityAttributes {
         alias: String?,
         scheduledJourneyId: String? = nil,
         scheduledJourneyPhase: String? = nil,
+        adHocJourneyId: String? = nil,
         latitude: Double? = nil,
         longitude: Double? = nil,
         destinationDockId: String? = nil,
@@ -40,6 +42,7 @@ struct DockActivityAttributes: ActivityAttributes {
         self.alias = alias
         self.scheduledJourneyId = scheduledJourneyId
         self.scheduledJourneyPhase = scheduledJourneyPhase
+        self.adHocJourneyId = adHocJourneyId
         self.latitude = latitude
         self.longitude = longitude
         self.destinationDockId = destinationDockId
@@ -55,12 +58,33 @@ struct DockActivityAttributes: ActivityAttributes {
         let emptySpaces: Int
         /// Nearby favourite docks shown inline on the watch Smart Stack card
         var alternatives: [AlternativeDock]
+        /// Mutable dock identity for journey Live Activities. Regular dock activities leave these nil.
+        let activeDockId: String?
+        let activeDockName: String?
+        let activeDockAlias: String?
+        let activeJourneyPhase: String?
+        let primaryDisplay: String?
 
-        init(standardBikes: Int, eBikes: Int, emptySpaces: Int, alternatives: [AlternativeDock] = []) {
+        init(
+            standardBikes: Int,
+            eBikes: Int,
+            emptySpaces: Int,
+            alternatives: [AlternativeDock] = [],
+            activeDockId: String? = nil,
+            activeDockName: String? = nil,
+            activeDockAlias: String? = nil,
+            activeJourneyPhase: String? = nil,
+            primaryDisplay: String? = nil
+        ) {
             self.standardBikes = standardBikes
             self.eBikes = eBikes
             self.emptySpaces = emptySpaces
             self.alternatives = alternatives
+            self.activeDockId = activeDockId
+            self.activeDockName = activeDockName
+            self.activeDockAlias = activeDockAlias
+            self.activeJourneyPhase = activeJourneyPhase
+            self.primaryDisplay = primaryDisplay
         }
 
         // Custom decoding so push payloads that omit `alternatives` still decode successfully
@@ -70,6 +94,23 @@ struct DockActivityAttributes: ActivityAttributes {
             eBikes = try container.decode(Int.self, forKey: .eBikes)
             emptySpaces = try container.decode(Int.self, forKey: .emptySpaces)
             alternatives = try container.decodeIfPresent([AlternativeDock].self, forKey: .alternatives) ?? []
+            activeDockId = try container.decodeIfPresent(String.self, forKey: .activeDockId)
+            activeDockName = try container.decodeIfPresent(String.self, forKey: .activeDockName)
+            activeDockAlias = try container.decodeIfPresent(String.self, forKey: .activeDockAlias)
+            activeJourneyPhase = try container.decodeIfPresent(String.self, forKey: .activeJourneyPhase)
+            primaryDisplay = try container.decodeIfPresent(String.self, forKey: .primaryDisplay)
+        }
+
+        var resolvedDockId: String? {
+            activeDockId?.nilIfBlank
+        }
+
+        var resolvedDockName: String? {
+            activeDockName?.nilIfBlank
+        }
+
+        var resolvedAlias: String? {
+            activeDockAlias?.nilIfBlank
         }
     }
 
@@ -79,5 +120,13 @@ struct DockActivityAttributes: ActivityAttributes {
         let standardBikes: Int
         let eBikes: Int
         let emptySpaces: Int
+    }
+}
+
+
+private extension String {
+    var nilIfBlank: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

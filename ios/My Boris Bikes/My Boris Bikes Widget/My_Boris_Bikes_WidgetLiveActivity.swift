@@ -20,6 +20,33 @@ private func extractInitials(from text: String) -> String {
     return initials.joined()
 }
 
+
+private func displayDockId(attributes: DockActivityAttributes, state: DockActivityAttributes.ContentState) -> String {
+    state.activeDockId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        ? state.activeDockId!
+        : attributes.dockId
+}
+
+private func displayDockName(attributes: DockActivityAttributes, state: DockActivityAttributes.ContentState) -> String {
+    state.activeDockName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        ? state.activeDockName!
+        : attributes.dockName
+}
+
+private func displayAlias(attributes: DockActivityAttributes, state: DockActivityAttributes.ContentState) -> String? {
+    if let alias = state.activeDockAlias?.trimmingCharacters(in: .whitespacesAndNewlines), !alias.isEmpty {
+        return alias
+    }
+    if let alias = attributes.alias?.trimmingCharacters(in: .whitespacesAndNewlines), !alias.isEmpty {
+        return alias
+    }
+    return nil
+}
+
+private func displayTitle(attributes: DockActivityAttributes, state: DockActivityAttributes.ContentState) -> String {
+    displayAlias(attributes: attributes, state: state) ?? displayDockName(attributes: attributes, state: state)
+}
+
 // MARK: - Live Activity Legend Item (local to this file)
 
 private struct LiveActivityLegendItem: View {
@@ -93,7 +120,7 @@ private struct WatchLiveActivityView: View {
         var components = URLComponents()
         components.scheme = "myborisbikes"
         components.host = "dock"
-        components.path = "/\(attributes.dockId)"
+        components.path = "/\(displayDockId(attributes: attributes, state: state))"
         components.queryItems = [
             URLQueryItem(name: "bikeFilter", value: bikeDataFilter.rawValue),
             URLQueryItem(name: "minBikes", value: String(minBikes)),
@@ -114,21 +141,21 @@ private struct WatchLiveActivityView: View {
                     emptySpaces: state.emptySpaces,
                     size: 36,
                     strokeWidth: 7,
-                    centerText: extractInitials(from: attributes.alias ?? attributes.dockName)
+                    centerText: extractInitials(from: displayTitle(attributes: attributes, state: state))
                 )
                 .fixedSize()
 
                 VStack(alignment: .leading, spacing: 2) {
                     // Alias (or dock name if no alias)
-                    Text(attributes.alias ?? attributes.dockName)
+                    Text(displayTitle(attributes: attributes, state: state))
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.primary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
 
                     // Full dock name shown in caption when alias is set
-                    if let alias = attributes.alias, !alias.isEmpty, alias != attributes.dockName {
-                        Text(attributes.dockName)
+                    if let alias = displayAlias(attributes: attributes, state: state), alias != displayDockName(attributes: attributes, state: state) {
+                        Text(displayDockName(attributes: attributes, state: state))
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
                             .lineLimit(1)
@@ -283,23 +310,23 @@ private struct DockLiveActivityView: View {
                         emptySpaces: state.emptySpaces,
                         size: 42,
                         strokeWidth: 10,
-                        centerText: extractInitials(from: attributes.alias ?? attributes.dockName)
+                        centerText: extractInitials(from: displayTitle(attributes: attributes, state: state))
                     )
                     .fixedSize()
 
                     VStack(alignment: .leading, spacing: 4) {
-                        if let alias = attributes.alias, !alias.isEmpty {
+                        if let alias = displayAlias(attributes: attributes, state: state) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(alias)
                                     .font(.system(size: 16, weight: .semibold))
                                     .lineLimit(1)
-                                Text(attributes.dockName)
+                                Text(displayDockName(attributes: attributes, state: state))
                                     .font(.system(size: 11))
                                     .foregroundColor(.secondary)
                                     .lineLimit(1)
                             }
                         } else {
-                            Text(attributes.dockName)
+                            Text(displayDockName(attributes: attributes, state: state))
                                 .font(.system(size: 14, weight: .semibold))
                                 .lineLimit(2)
                         }
@@ -426,8 +453,12 @@ private struct PrimaryDisplayText: View {
     private var minEBikes: Int = AlternativeDockSettings.defaultMinEBikes
 
     private var primaryDisplay: LiveActivityPrimaryDisplay {
+        if let rawValue = state.primaryDisplay,
+           let display = LiveActivityPrimaryDisplay(rawValue: rawValue) {
+            return display
+        }
         // Check for per-dock override first, then fall back to global setting
-        if let override = LiveActivityDockSettings.getPrimaryDisplay(for: attributes.dockId) {
+        if let override = LiveActivityDockSettings.getPrimaryDisplay(for: displayDockId(attributes: attributes, state: state)) {
             return override
         }
         return LiveActivityPrimaryDisplay(rawValue: globalPrimaryDisplayRawValue) ?? .bikes
@@ -475,7 +506,7 @@ private struct ExpandedLeadingView: View {
             emptySpaces: state.emptySpaces,
             size: 32,
             strokeWidth: 7,
-            centerText: extractInitials(from: attributes.alias ?? attributes.dockName)
+            centerText: extractInitials(from: displayTitle(attributes: attributes, state: state))
         )
     }
 }
@@ -514,7 +545,7 @@ private struct ExpandedBottomView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(attributes.alias ?? attributes.dockName)
+            Text(displayTitle(attributes: attributes, state: state))
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
 
@@ -557,7 +588,7 @@ private struct CompactDonutView: View {
             emptySpaces: state.emptySpaces,
             size: 22,
             strokeWidth: 4.5,
-            centerText: extractInitials(from: attributes.alias ?? attributes.dockName)
+            centerText: extractInitials(from: displayTitle(attributes: attributes, state: state))
         )
         .padding(3)
     }

@@ -1266,11 +1266,31 @@ function sanitizeAlternatives(rawAlternatives) {
 }
 
 function contentStateWithAlternatives(data, session) {
+  const activeDockId =
+    typeof session?.activeDockId === "string" && session.activeDockId.trim()
+      ? session.activeDockId.trim()
+      : null;
+  const activeDockName =
+    typeof session?.activeDockName === "string" && session.activeDockName.trim()
+      ? session.activeDockName.trim()
+      : typeof data?.dockName === "string" && data.dockName.trim()
+        ? data.dockName.trim()
+        : null;
+  const activeDockAlias =
+    typeof session?.activeDockAlias === "string" && session.activeDockAlias.trim()
+      ? session.activeDockAlias.trim()
+      : null;
+
   return {
     standardBikes: data.standardBikes,
     eBikes: data.eBikes,
     emptySpaces: data.emptySpaces,
     alternatives: session?.alternatives || [],
+    activeDockId,
+    activeDockName,
+    activeDockAlias,
+    activeJourneyPhase: session?.scheduledJourneyPhase || null,
+    primaryDisplay: sanitizePrimaryDisplay(session?.primaryDisplay),
   };
 }
 
@@ -2199,6 +2219,21 @@ function formatUptime(ms) {
 const pushEventLog = [];
 const backgroundLocationEventLog = [];
 
+function appendDiagnosticJsonLine(kind, entry) {
+  const date = new Date().toISOString().slice(0, 10);
+  const filePath = path.join(LOG_DIR, `diagnostics-${date}.jsonl`);
+  const payload = JSON.stringify({
+    recordedAt: new Date().toISOString(),
+    kind,
+    ...entry,
+  });
+  fs.appendFile(filePath, payload + "\n", (err) => {
+    if (err) {
+      logger.warn(`Failed to write diagnostic log entry: ${err.message}`);
+    }
+  });
+}
+
 function appendBoundedLogEntry(log, entry, maxEntries) {
   log.unshift(entry);
   if (log.length > maxEntries) {
@@ -2223,60 +2258,60 @@ function resolveLogLimit(rawValue, fallback, max) {
 }
 
 function recordPushEvent(entry) {
-  appendBoundedLogEntry(
-    pushEventLog,
-    {
-      sentAt: new Date().toISOString(),
-      target: shortenIdentifier(entry.target),
-      channel: entry.channel || "unknown",
-      type: entry.type || "unknown",
-      title: entry.title || null,
-      body: entry.body || null,
-      result: entry.result || "unknown",
-      status: entry.status ?? null,
-      error: entry.error || null,
-      apnsEnv: entry.apnsEnv || "unknown",
-      raw: entry.raw || null,
-    },
-    MAX_PUSH_EVENT_LOG_ENTRIES
-  );
+  const normalizedEntry = {
+    sentAt: new Date().toISOString(),
+    target: shortenIdentifier(entry.target),
+    channel: entry.channel || "unknown",
+    type: entry.type || "unknown",
+    title: entry.title || null,
+    body: entry.body || null,
+    result: entry.result || "unknown",
+    status: entry.status ?? null,
+    error: entry.error || null,
+    apnsEnv: entry.apnsEnv || "unknown",
+    raw: entry.raw || null,
+  };
+  appendBoundedLogEntry(pushEventLog, normalizedEntry, MAX_PUSH_EVENT_LOG_ENTRIES);
+  appendDiagnosticJsonLine("push_event", normalizedEntry);
 }
 
 function recordBackgroundLocationEvent(entry) {
+  const normalizedEntry = {
+    receivedAt: new Date().toISOString(),
+    clientTimestamp:
+      typeof entry.clientTimestamp === "string" && entry.clientTimestamp.trim()
+        ? entry.clientTimestamp.trim()
+        : null,
+    deviceId: shortenIdentifier(entry.deviceId),
+    event: entry.event || "unknown",
+    appState: entry.appState || "unknown",
+    backgroundRefreshStatus: entry.backgroundRefreshStatus || "unknown",
+    dockId: entry.dockId || null,
+    dockName: entry.dockName || null,
+    distanceMeters:
+      typeof entry.distanceMeters === "number" && Number.isFinite(entry.distanceMeters)
+        ? entry.distanceMeters
+        : null,
+    horizontalAccuracyMeters:
+      typeof entry.horizontalAccuracyMeters === "number" &&
+      Number.isFinite(entry.horizontalAccuracyMeters)
+        ? entry.horizontalAccuracyMeters
+        : null,
+    arrivalThresholdMeters:
+      typeof entry.arrivalThresholdMeters === "number" &&
+      Number.isFinite(entry.arrivalThresholdMeters)
+        ? entry.arrivalThresholdMeters
+        : null,
+    authorizationStatus: entry.authorizationStatus || null,
+    message: entry.message || null,
+    raw: entry.raw || null,
+  };
   appendBoundedLogEntry(
     backgroundLocationEventLog,
-    {
-      receivedAt: new Date().toISOString(),
-      clientTimestamp:
-        typeof entry.clientTimestamp === "string" && entry.clientTimestamp.trim()
-          ? entry.clientTimestamp.trim()
-          : null,
-      deviceId: shortenIdentifier(entry.deviceId),
-      event: entry.event || "unknown",
-      appState: entry.appState || "unknown",
-      backgroundRefreshStatus: entry.backgroundRefreshStatus || "unknown",
-      dockId: entry.dockId || null,
-      dockName: entry.dockName || null,
-      distanceMeters:
-        typeof entry.distanceMeters === "number" && Number.isFinite(entry.distanceMeters)
-          ? entry.distanceMeters
-          : null,
-      horizontalAccuracyMeters:
-        typeof entry.horizontalAccuracyMeters === "number" &&
-        Number.isFinite(entry.horizontalAccuracyMeters)
-          ? entry.horizontalAccuracyMeters
-          : null,
-      arrivalThresholdMeters:
-        typeof entry.arrivalThresholdMeters === "number" &&
-        Number.isFinite(entry.arrivalThresholdMeters)
-          ? entry.arrivalThresholdMeters
-          : null,
-      authorizationStatus: entry.authorizationStatus || null,
-      message: entry.message || null,
-      raw: entry.raw || null,
-    },
+    normalizedEntry,
     MAX_BACKGROUND_LOCATION_EVENT_LOG_ENTRIES
   );
+  appendDiagnosticJsonLine("client_event", normalizedEntry);
 }
 
 function normalizeNonNegativeInteger(value) {
@@ -3449,6 +3484,14 @@ app.post("/scheduled-journeys/:id/phase", async (req, res) => {
     { returnDocument: "after" }
   );
 
+  appendDiagnosticJsonLine("scheduled_journey_phase_update", {
+    journeyId,
+    deviceId: shortenIdentifier(deviceId),
+    phase,
+    dockId: dock.id,
+    dockName: dock.name,
+  });
+
   res.json({ success: true, journey: serializeScheduledJourney(result) });
 });
 
@@ -3486,6 +3529,10 @@ app.post("/live-activity/start", (req, res) => {
     standardBikes,
     eBikes,
     emptySpaces,
+    activeDockId,
+    activeDockName,
+    activeDockAlias,
+    activeJourneyPhase,
   } = req.body;
   const normalizedPushToken = normalizeApnsDeviceToken(pushToken);
 
@@ -3619,7 +3666,35 @@ app.post("/live-activity/start", (req, res) => {
         ? scheduledJourneyId
         : null,
     scheduledJourneyPhase:
+      scheduledJourneyPhase === "end" ? "end" : scheduledJourneyPhase === "start" ? "start" :
+        activeJourneyPhase === "end" ? "end" : activeJourneyPhase === "start" ? "start" : null,
+    activeDockId:
+      typeof activeDockId === "string" && activeDockId.trim() ? activeDockId.trim() : dockId,
+    activeDockName:
+      typeof activeDockName === "string" && activeDockName.trim()
+        ? activeDockName.trim()
+        : normalizedDockName || dockId,
+    activeDockAlias:
+      typeof activeDockAlias === "string" && activeDockAlias.trim() ? activeDockAlias.trim() : null,
+  });
+
+  appendDiagnosticJsonLine("live_activity_session_registered", {
+    dockId,
+    dockName: normalizedDockName || dockId,
+    pushToken: shortenIdentifier(normalizedPushToken),
+    deviceToken: shortenIdentifier(deviceToken),
+    buildType,
+    primaryDisplay: normalizedPrimaryDisplay,
+    alternativesCount: normalizedAlternatives.length,
+    scheduledJourneyId:
+      typeof scheduledJourneyId === "string" && ObjectId.isValid(scheduledJourneyId)
+        ? scheduledJourneyId
+        : null,
+    scheduledJourneyPhase:
       scheduledJourneyPhase === "end" ? "end" : scheduledJourneyPhase === "start" ? "start" : null,
+    seededAvailability: hasSeededAvailability ? seededData : null,
+    activeTokenCountForDock: poller.tokens.size,
+    expiresAt: new Date(effectiveExpiresAtMs).toISOString(),
   });
 
   if (
@@ -3665,9 +3740,31 @@ app.post("/live-activity/start", (req, res) => {
   });
 });
 
-app.post("/live-activity/session/update", (req, res) => {
-  const { dockId, pushToken, dockName, primaryDisplay, minimumThresholds } = req.body;
+app.post("/live-activity/session/update", async (req, res) => {
+  const {
+    dockId,
+    targetDockId,
+    pushToken,
+    dockName,
+    primaryDisplay,
+    minimumThresholds,
+    alternatives,
+    scheduledJourneyPhase,
+    standardBikes,
+    eBikes,
+    emptySpaces,
+    activeDockId,
+    activeDockName,
+    activeDockAlias,
+    activeJourneyPhase,
+  } = req.body;
   const normalizedPushToken = normalizeApnsDeviceToken(pushToken);
+  const resolvedTargetDockId =
+    typeof targetDockId === "string" && targetDockId.trim()
+      ? targetDockId.trim()
+      : typeof activeDockId === "string" && activeDockId.trim()
+        ? activeDockId.trim()
+        : dockId;
 
   if (!dockId || !normalizedPushToken) {
     return res
@@ -3675,12 +3772,12 @@ app.post("/live-activity/session/update", (req, res) => {
       .json({ error: "Missing required fields: dockId, pushToken" });
   }
 
-  const poller = dockPollers.get(dockId);
-  if (!poller) {
+  const sourcePoller = dockPollers.get(dockId);
+  if (!sourcePoller) {
     return res.status(404).json({ error: "Live activity session not found for dock" });
   }
 
-  const session = poller.tokens.get(normalizedPushToken);
+  const session = sourcePoller.tokens.get(normalizedPushToken);
   if (!session) {
     return res.status(404).json({ error: "Live activity session token not found" });
   }
@@ -3693,9 +3790,29 @@ app.post("/live-activity/session/update", (req, res) => {
     session.minimumThresholds = sanitizeMinimumThresholds(minimumThresholds);
   }
 
+  if (alternatives !== undefined) {
+    session.alternatives = sanitizeAlternatives(alternatives);
+  }
+
   if (dockName !== undefined) {
     session.dockName = sanitizeDockName(dockName);
   }
+
+  if (scheduledJourneyPhase === "start" || scheduledJourneyPhase === "end") {
+    session.scheduledJourneyPhase = scheduledJourneyPhase;
+  } else if (activeJourneyPhase === "start" || activeJourneyPhase === "end") {
+    session.scheduledJourneyPhase = activeJourneyPhase;
+  }
+
+  session.activeDockId = resolvedTargetDockId;
+  session.activeDockName =
+    typeof activeDockName === "string" && activeDockName.trim()
+      ? activeDockName.trim()
+      : sanitizeDockName(dockName) || session.dockName || resolvedTargetDockId;
+  session.activeDockAlias =
+    typeof activeDockAlias === "string" && activeDockAlias.trim()
+      ? activeDockAlias.trim()
+      : null;
 
   const deviceToken = normalizeApnsDeviceToken(req.headers["x-device-token"]);
   if (deviceToken) {
@@ -3706,6 +3823,37 @@ app.post("/live-activity/session/update", (req, res) => {
     );
   }
 
+  const hasSeededAvailability =
+    standardBikes !== undefined || eBikes !== undefined || emptySpaces !== undefined;
+  const seededData = {
+    dockName: session.activeDockName || session.dockName || resolvedTargetDockId,
+    standardBikes: sanitizeThresholdValue(standardBikes),
+    eBikes: sanitizeThresholdValue(eBikes),
+    emptySpaces: sanitizeThresholdValue(emptySpaces),
+  };
+
+  let targetPoller = sourcePoller;
+  if (resolvedTargetDockId !== dockId) {
+    sourcePoller.tokens.delete(normalizedPushToken);
+    if (!dockPollers.has(resolvedTargetDockId)) {
+      dockPollers.set(resolvedTargetDockId, {
+        interval: null,
+        lastData: null,
+        tokens: new Map(),
+      });
+    }
+    targetPoller = dockPollers.get(resolvedTargetDockId);
+    targetPoller.tokens.set(normalizedPushToken, session);
+    if (sourcePoller.tokens.size === 0) {
+      stopPollingForDock(dockId);
+    }
+    startPollingForDock(resolvedTargetDockId);
+  }
+
+  if (hasSeededAvailability) {
+    targetPoller.lastData = seededData;
+  }
+
   const resolvedPrimaryDisplay = sanitizePrimaryDisplay(session.primaryDisplay);
   const resolvedMinimumThreshold = minimumThresholdForDisplay(
     session.minimumThresholds,
@@ -3713,20 +3861,55 @@ app.post("/live-activity/session/update", (req, res) => {
   );
 
   logger.info(
-    `Updated live activity session: dock=${dockId}, token=${normalizedPushToken.substring(0, 8)}..., primaryDisplay=${resolvedPrimaryDisplay}, minimumThreshold=${resolvedMinimumThreshold}`
+    `Updated live activity session: dock=${dockId}, targetDock=${resolvedTargetDockId}, token=${normalizedPushToken.substring(0, 8)}..., primaryDisplay=${resolvedPrimaryDisplay}, minimumThreshold=${resolvedMinimumThreshold}`
   );
+
+  appendDiagnosticJsonLine("live_activity_session_updated", {
+    dockId,
+    targetDockId: resolvedTargetDockId,
+    dockName: session.activeDockName || session.dockName || resolvedTargetDockId,
+    pushToken: shortenIdentifier(normalizedPushToken),
+    primaryDisplay: resolvedPrimaryDisplay,
+    scheduledJourneyPhase: session.scheduledJourneyPhase || null,
+    migrated: resolvedTargetDockId !== dockId,
+    seededAvailability: hasSeededAvailability ? seededData : null,
+  });
+
+  if (hasSeededAvailability) {
+    try {
+      const contentState = contentStateWithAlternatives(seededData, session);
+      const result = await sendApnsPush(
+        normalizedPushToken,
+        contentState,
+        "update",
+        session.buildType
+      );
+      if (result.buildType !== session.buildType) {
+        session.buildType = result.buildType;
+      }
+    } catch (err) {
+      logger.error(
+        `Failed to send immediate migrated live activity update to ${normalizedPushToken.substring(0, 8)}...:`,
+        err.message
+      );
+    }
+  }
+
+  updateLiveActivitiesActiveGauge();
 
   res.json({
     success: true,
-    dockId,
+    dockId: resolvedTargetDockId,
     dockName:
+      session.activeDockName ||
       session.dockName ||
-      (typeof poller.lastData?.dockName === "string" &&
-      poller.lastData.dockName.trim()
-        ? poller.lastData.dockName.trim()
-        : dockId),
+      (typeof targetPoller.lastData?.dockName === "string" &&
+      targetPoller.lastData.dockName.trim()
+        ? targetPoller.lastData.dockName.trim()
+        : resolvedTargetDockId),
     primaryDisplay: resolvedPrimaryDisplay,
     minimumThreshold: resolvedMinimumThreshold,
+    migrated: resolvedTargetDockId !== dockId,
   });
 });
 
@@ -3744,11 +3927,19 @@ app.post("/live-activity/end", async (req, res) => {
     `Ending live activity: dock=${dockId}, token=${normalizedPushToken.substring(0, 8)}...`
   );
 
-  await endTrackedSessionsForDock(
+  const { endedCount, remainingCount } = await endTrackedSessionsForDock(
     dockId,
     (trackedPushToken) => trackedPushToken === normalizedPushToken,
     "user"
   );
+
+  appendDiagnosticJsonLine("live_activity_session_end_requested", {
+    dockId,
+    pushToken: shortenIdentifier(normalizedPushToken),
+    reason: "user",
+    endedCount,
+    remainingCount,
+  });
 
   res.json({ success: true, dockId, message: "Live activity ended" });
 });
@@ -3841,6 +4032,18 @@ app.post("/live-activity/arrive", async (req, res) => {
           "arrival"
         )
       : { endedCount: 0, remainingCount: poller?.tokens.size ?? 0 };
+
+  appendDiagnosticJsonLine("live_activity_arrival_end_requested", {
+    dockId,
+    deviceToken: shortenIdentifier(deviceToken),
+    requestedBuildType,
+    matchingSessions: matchingSessions.length,
+    fallbackSessions: fallbackSessions.length,
+    effectiveSessions: effectiveSessions.length,
+    endedCount,
+    confirmationSent,
+    remainingCount,
+  });
 
   res.json({
     success: true,

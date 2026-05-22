@@ -90,6 +90,7 @@ final class DockArrivalMonitoringService: NSObject {
         let dock: MonitoredDock
         let scheduledJourneyId: String?
         let scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase?
+        let adHocJourneyId: String?
         let scheduledDestinationDock: ScheduledJourneyDock?
     }
 
@@ -104,6 +105,7 @@ final class DockArrivalMonitoringService: NSObject {
     private var hasRequestedTemporaryFullAccuracyThisSession = false
     private var scheduledJourneyId: String?
     private var scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase?
+    private var adHocJourneyId: String?
     private var scheduledDestinationDock: ScheduledJourneyDock?
 
     private override init() {
@@ -154,6 +156,7 @@ final class DockArrivalMonitoringService: NSObject {
         for bikePoint: BikePoint,
         scheduledJourneyId: String? = nil,
         phase: ScheduledJourney.ActiveRun.Phase? = nil,
+        adHocJourneyId: String? = nil,
         destinationDock: ScheduledJourneyDock? = nil
     ) {
         let dock = MonitoredDock(
@@ -165,6 +168,7 @@ final class DockArrivalMonitoringService: NSObject {
 
         self.scheduledJourneyId = scheduledJourneyId
         self.scheduledJourneyPhase = phase
+        self.adHocJourneyId = adHocJourneyId
         self.scheduledDestinationDock = destinationDock
         monitoredDock = dock
         persistMonitoringState(for: dock)
@@ -232,6 +236,7 @@ final class DockArrivalMonitoringService: NSObject {
             monitoredDock = nil
             scheduledJourneyId = nil
             scheduledJourneyPhase = nil
+            adHocJourneyId = nil
             scheduledDestinationDock = nil
             AppConstants.UserDefaults.sharedDefaults.removeObject(forKey: monitoredDockStorageKey)
         }
@@ -299,6 +304,7 @@ final class DockArrivalMonitoringService: NSObject {
             dock: dock,
             scheduledJourneyId: scheduledJourneyId,
             scheduledJourneyPhase: scheduledJourneyPhase,
+            adHocJourneyId: adHocJourneyId,
             scheduledDestinationDock: scheduledDestinationDock
         )
         guard let data = try? encoder.encode(state) else { return }
@@ -314,6 +320,7 @@ final class DockArrivalMonitoringService: NSObject {
         if let state = try? decoder.decode(PersistedMonitoringState.self, from: data) {
             scheduledJourneyId = state.scheduledJourneyId
             scheduledJourneyPhase = state.scheduledJourneyPhase
+            adHocJourneyId = state.adHocJourneyId
             scheduledDestinationDock = state.scheduledDestinationDock
             return state.dock
         }
@@ -571,8 +578,8 @@ final class DockArrivalMonitoringService: NSObject {
     @discardableResult
     private func notifyServerOfArrival(for dock: MonitoredDock) async -> Bool {
         if scheduledJourneyPhase == .start,
-           let scheduledJourneyId,
-           let scheduledDestinationDock {
+           let scheduledDestinationDock,
+           (scheduledJourneyId != nil || adHocJourneyId != nil) {
             logger.info("Scheduled journey start dock reached; transitioning to end dock")
             logLocationEvent(
                 "scheduled_start_arrival",
@@ -583,6 +590,7 @@ final class DockArrivalMonitoringService: NSObject {
             stopMonitoring(reason: "scheduled_start_arrival")
             await LiveActivityService.shared.transitionScheduledJourneyToEndDock(
                 journeyId: scheduledJourneyId,
+                adHocJourneyId: adHocJourneyId,
                 endDock: scheduledDestinationDock,
                 delaySeconds: 0
             )
@@ -681,6 +689,7 @@ final class DockArrivalMonitoringService: NSObject {
             )
 
             let completedScheduledJourneyId = scheduledJourneyPhase == .end ? scheduledJourneyId : nil
+            let completedAdHocJourneyId = scheduledJourneyPhase == .end ? adHocJourneyId : nil
             await MainActor.run {
                 LiveActivityService.shared.endLiveActivity(for: dock.dockId, skipServerUnregister: true)
             }
@@ -688,6 +697,9 @@ final class DockArrivalMonitoringService: NSObject {
             await LiveActivityService.shared.refreshNotificationStatusFromServer()
             if let completedScheduledJourneyId {
                 await ScheduledJourneyService.shared.complete(journeyId: completedScheduledJourneyId)
+            }
+            if let completedAdHocJourneyId {
+                await AdHocJourneyService.shared.complete(journeyId: completedAdHocJourneyId)
             }
             return true
         } catch {

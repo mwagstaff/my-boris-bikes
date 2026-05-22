@@ -18,6 +18,7 @@ struct ContentView: View {
     @StateObject private var bannerService = BannerService.shared
     @StateObject private var liveActivityService = LiveActivityService.shared
     @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
+    @StateObject private var adHocJourneyService = AdHocJourneyService.shared
     @State private var selectedTabIndex = 0
     @State private var selectedBikePointForMap: BikePoint?
     @State private var isServiceBannerDismissed = false
@@ -70,18 +71,26 @@ struct ContentView: View {
                 }
                 .tag(1)
 
+                JourneysView()
+                    .tabItem {
+                        Image(systemName: "figure.outdoor.cycle")
+                        Text("Journeys")
+                    }
+                    .tag(2)
+
                 ProfileView()
                     .tabItem {
                         Image(systemName: "person.crop.circle")
                         Text("Profile")
                     }
-                    .tag(2)
+                    .tag(3)
             }
             .environmentObject(locationService)
             .environmentObject(favoritesService)
             .environmentObject(bannerService)
             .environmentObject(liveActivityService)
             .environmentObject(scheduledJourneyService)
+            .environmentObject(adHocJourneyService)
             .sheet(isPresented: Binding(
                 get: { shouldShowServiceBanner },
                 set: { if !$0 { isServiceBannerDismissed = true } }
@@ -181,7 +190,7 @@ struct ContentView: View {
     private func handleNotificationBannerTap(_ session: LiveActivityService.ActiveNotificationSession) {
         Task {
             let didAdvance = session.scheduledJourneyPhase == .start
-                ? await liveActivityService.advanceScheduledJourneyFromStart(dockId: session.dockId)
+                ? await liveActivityService.advanceJourneyFromStart(dockId: session.dockId)
                 : false
             if didAdvance {
                 return
@@ -198,6 +207,9 @@ struct ContentView: View {
             )
             if session.scheduledJourneyPhase == .end, let scheduledJourneyId = session.scheduledJourneyId {
                 await scheduledJourneyService.complete(journeyId: scheduledJourneyId)
+            }
+            if session.scheduledJourneyPhase == .end, let adHocJourneyId = session.adHocJourneyId {
+                adHocJourneyService.complete(journeyId: adHocJourneyId)
             }
         }
     }
@@ -227,6 +239,8 @@ struct ContentView: View {
         case 1:
             return .map
         case 2:
+            return .journeys
+        case 3:
             return .profile
         default:
             return .unknown
