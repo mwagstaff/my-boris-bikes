@@ -171,7 +171,9 @@ struct LiveActivityArrivalSettings {
     }
 
     static let defaultEnabled = false
-    static let defaultArrivalDistanceMeters = 35
+    static let defaultArrivalDistanceMeters = 25
+    private static let legacyDefaultArrivalDistanceMeters = 35
+    private static let arrivalDistanceDefaultMigrationKey = "liveActivityArrivalDistanceDefaultMigratedTo25m"
     static let minimumArrivalDistanceMeters = 10
     static let maximumArrivalDistanceMeters = 75
     static let arrivalDistanceStepMeters = 5
@@ -205,9 +207,20 @@ struct LiveActivityArrivalSettings {
 
     static func configuredArrivalDistanceMeters() -> CLLocationDistance {
         let defaults = userDefaultsStore
+        migrateLegacyDefaultArrivalDistanceIfNeeded(defaults: defaults)
         let storedValue = defaults.object(forKey: distanceThresholdMetersKey) as? Int
             ?? defaultArrivalDistanceMeters
         return CLLocationDistance(sanitizedArrivalDistanceMeters(storedValue))
+    }
+
+    static func migrateLegacyDefaultArrivalDistanceIfNeeded(defaults: UserDefaults = userDefaultsStore) {
+        guard defaults.bool(forKey: arrivalDistanceDefaultMigrationKey) == false else { return }
+
+        let storedValue = defaults.object(forKey: distanceThresholdMetersKey) as? Int
+        if storedValue == legacyDefaultArrivalDistanceMeters {
+            defaults.set(defaultArrivalDistanceMeters, forKey: distanceThresholdMetersKey)
+        }
+        defaults.set(true, forKey: arrivalDistanceDefaultMigrationKey)
     }
 }
 

@@ -42,6 +42,10 @@ const COMPLICATION_REFRESH_INTERVAL_MS = parseInt(
   process.env.COMPLICATION_REFRESH_INTERVAL_MS || "60000",
   10
 );
+const START_ARRIVAL_DESTINATION_SPACE_ALERT_DELAY_MS = parseInt(
+  process.env.START_ARRIVAL_DESTINATION_SPACE_ALERT_DELAY_MS || "30000",
+  10
+);
 const DEFAULT_NOTIFICATION_WINDOW_MS = 2 * 60 * 60 * 1000;
 const HARD_NOTIFICATION_CUTOFF_MS = 2 * 60 * 60 * 1000;
 const EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS =
@@ -960,6 +964,84 @@ function effectiveDockDataForDock(dockId, bikePointData) {
   };
 }
 
+const scheduledStartArrivalDestinationAlerts = new Map();
+
+function startArrivalDestinationAlertKey(deviceToken, startDockId, endDockId) {
+  return `${deviceToken}:${startDockId}:${endDockId}`;
+}
+
+function scheduleStartArrivalDestinationSpaceAlert({
+  deviceToken,
+  buildType,
+  startDockId,
+  startDockName,
+  endDock,
+  minimumSpaces,
+  delayMs,
+  scheduledJourneyId,
+  adHocJourneyId,
+}) {
+  const key = startArrivalDestinationAlertKey(deviceToken, startDockId, endDock.id);
+  const existingTimeout = scheduledStartArrivalDestinationAlerts.get(key);
+  if (existingTimeout) {
+    clearTimeout(existingTimeout);
+  }
+
+  const timeout = setTimeout(async () => {
+    scheduledStartArrivalDestinationAlerts.delete(key);
+
+    try {
+      const endDockData = await fetchDockData(endDock.id);
+      const resolvedDockName = endDockData.dockName || endDock.name || endDock.id;
+      const alertBody = buildAvailabilitySnapshotMessage(
+        resolvedDockName,
+        "spaces",
+        endDockData.emptySpaces,
+        minimumSpaces
+      );
+
+      await sendAvailabilityAlertPush(
+        deviceToken,
+        buildType,
+        alertBody,
+        endDock.id,
+        resolvedDockName
+      );
+
+      appendDiagnosticJsonLine("scheduled_start_arrival_destination_space_alert_sent", {
+        startDockId,
+        startDockName,
+        endDockId: endDock.id,
+        endDockName: resolvedDockName,
+        deviceToken: shortenIdentifier(deviceToken),
+        buildType,
+        delayMs,
+        scheduledJourneyId: scheduledJourneyId || null,
+        adHocJourneyId: adHocJourneyId || null,
+        emptySpaces: endDockData.emptySpaces,
+        minimumSpaces,
+      });
+    } catch (err) {
+      logger.error(
+        `Failed to send delayed destination space alert for ${endDock.id}:`,
+        err.message
+      );
+      appendDiagnosticJsonLine("scheduled_start_arrival_destination_space_alert_failed", {
+        startDockId,
+        endDockId: endDock.id,
+        deviceToken: shortenIdentifier(deviceToken),
+        buildType,
+        delayMs,
+        scheduledJourneyId: scheduledJourneyId || null,
+        adHocJourneyId: adHocJourneyId || null,
+        error: err.message,
+      });
+    }
+  }, delayMs);
+
+  scheduledStartArrivalDestinationAlerts.set(key, timeout);
+}
+
 function setAdditionalPropertyValue(additionalProperties, key, value) {
   const next = Array.isArray(additionalProperties) ? [...additionalProperties] : [];
   const normalizedValue = String(Math.max(0, Math.trunc(Number(value) || 0)));
@@ -1235,6 +1317,29 @@ function buildAvailabilityAlertMessage(
   }
 
   return null;
+}
+
+function buildAvailabilitySnapshotMessage(
+  dockName,
+  primaryDisplay,
+  currentValue,
+  minimumThreshold = 0
+) {
+  const safeDockName =
+    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "This dock";
+  const sanitizedCurrentValue = sanitizeThresholdValue(currentValue);
+  const normalizedThreshold = sanitizeThresholdValue(minimumThreshold);
+
+  if (sanitizedCurrentValue === 0) {
+    return `‼️ ${safeDockName} now has no ${pluralMetricLabel(primaryDisplay)} available`;
+  }
+
+  const metricLabel = metricLabelForValue(primaryDisplay, sanitizedCurrentValue);
+  if (normalizedThreshold > 0 && sanitizedCurrentValue < normalizedThreshold) {
+    return `⚠️ ${safeDockName} only has ${sanitizedCurrentValue} ${metricLabel} available`;
+  }
+
+  return `✅ ${safeDockName} now has ${sanitizedCurrentValue} ${metricLabel} available`;
 }
 
 function sanitizeAlternatives(rawAlternatives) {
@@ -4055,6 +4160,111 @@ app.post("/live-activity/arrive", async (req, res) => {
       endedCount > 0
         ? "Live activity ended after dock arrival"
         : "No active live activity session matched this arrival update",
+  });
+});
+
+app.post("/live-activity/start-arrival", (req, res) => {
+  const startDockId =
+    typeof req.body?.startDockId === "string" && req.body.startDockId.trim()
+      ? req.body.startDockId.trim()
+      : typeof req.body?.dockId === "string" && req.body.dockId.trim()
+        ? req.body.dockId.trim()
+        : "";
+  const startDockName =
+    typeof req.body?.startDockName === "string" && req.body.startDockName.trim()
+      ? req.body.startDockName.trim()
+      : startDockId;
+  const endDock = sanitizeJourneyDock(req.body?.endDock);
+  const bodyDeviceToken = normalizeApnsDeviceToken(req.body?.deviceToken);
+  const headerDeviceToken = normalizeApnsDeviceToken(req.headers["x-device-token"]);
+  const deviceToken = bodyDeviceToken || headerDeviceToken;
+  const requestedBuildType =
+    req.body?.buildType === "development" || req.body?.buildType === "production"
+      ? req.body.buildType
+      : null;
+
+  if (!startDockId) {
+    return res.status(400).json({ error: "Missing required field: startDockId" });
+  }
+
+  if (!endDock) {
+    return res.status(400).json({ error: "Valid endDock is required" });
+  }
+
+  if (!deviceToken) {
+    return res.status(400).json({
+      error: "Missing or invalid deviceToken (body.deviceToken or X-Device-Token)",
+    });
+  }
+
+  if (req.body?.buildType !== undefined && !requestedBuildType) {
+    return res
+      .status(400)
+      .json({ error: 'buildType must be "development" or "production"' });
+  }
+
+  const poller = dockPollers.get(startDockId);
+  const matchingSessions = [];
+  const fallbackSessions = [];
+  if (poller) {
+    for (const [, session] of poller.tokens) {
+      if (session.deviceToken !== deviceToken) continue;
+      fallbackSessions.push(session);
+      if (requestedBuildType && session.buildType !== requestedBuildType) continue;
+      matchingSessions.push(session);
+    }
+  }
+
+  const effectiveSession =
+    matchingSessions[0] || (!requestedBuildType ? fallbackSessions[0] : null) || null;
+  const buildType =
+    effectiveSession?.buildType || requestedBuildType || "development";
+  const minimumSpaces = minimumThresholdForDisplay(
+    effectiveSession?.minimumThresholds,
+    "spaces"
+  );
+  const delayMs = Number.isFinite(START_ARRIVAL_DESTINATION_SPACE_ALERT_DELAY_MS)
+    ? Math.max(0, START_ARRIVAL_DESTINATION_SPACE_ALERT_DELAY_MS)
+    : 30000;
+
+  scheduleStartArrivalDestinationSpaceAlert({
+    deviceToken,
+    buildType,
+    startDockId,
+    startDockName,
+    endDock,
+    minimumSpaces,
+    delayMs,
+    scheduledJourneyId:
+      typeof req.body?.scheduledJourneyId === "string" ? req.body.scheduledJourneyId : null,
+    adHocJourneyId:
+      typeof req.body?.adHocJourneyId === "string" ? req.body.adHocJourneyId : null,
+  });
+
+  appendDiagnosticJsonLine("scheduled_start_arrival_destination_space_alert_scheduled", {
+    startDockId,
+    startDockName,
+    endDockId: endDock.id,
+    endDockName: endDock.name,
+    deviceToken: shortenIdentifier(deviceToken),
+    requestedBuildType,
+    buildType,
+    matchingSessions: matchingSessions.length,
+    fallbackSessions: fallbackSessions.length,
+    delayMs,
+    minimumSpaces,
+    scheduledJourneyId:
+      typeof req.body?.scheduledJourneyId === "string" ? req.body.scheduledJourneyId : null,
+    adHocJourneyId:
+      typeof req.body?.adHocJourneyId === "string" ? req.body.adHocJourneyId : null,
+  });
+
+  res.json({
+    success: true,
+    startDockId,
+    endDockId: endDock.id,
+    delayMs,
+    message: "Destination space availability notification scheduled",
   });
 });
 

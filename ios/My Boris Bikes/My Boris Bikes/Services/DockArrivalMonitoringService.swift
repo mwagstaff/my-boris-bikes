@@ -587,6 +587,10 @@ final class DockArrivalMonitoringService: NSObject {
                 message: "Start dock reached; transitioning scheduled journey to destination dock"
             )
             sendScheduledStartArrivalNotification(for: dock)
+            await scheduleDestinationSpaceAvailabilityNotification(
+                startDock: dock,
+                destinationDock: scheduledDestinationDock
+            )
             stopMonitoring(reason: "scheduled_start_arrival")
             await LiveActivityService.shared.transitionScheduledJourneyToEndDock(
                 journeyId: scheduledJourneyId,
@@ -729,6 +733,76 @@ final class DockArrivalMonitoringService: NSObject {
             if let error {
                 self?.logger.error("Failed to schedule start-dock arrival notification: \(error.localizedDescription)")
             }
+        }
+    }
+
+    private func scheduleDestinationSpaceAvailabilityNotification(
+        startDock: MonitoredDock,
+        destinationDock: ScheduledJourneyDock
+    ) async {
+        guard let deviceToken = DeviceTokenHelper.apnsDeviceToken else {
+            logger.warning("Cannot schedule destination space notification because APNs device token is unavailable")
+            logLocationEvent(
+                "scheduled_start_destination_space_alert_failed",
+                dock: startDock,
+                message: "APNs device token unavailable"
+            )
+            return
+        }
+
+        var body: [String: Any] = [
+            "startDockId": startDock.dockId,
+            "startDockName": startDock.dockName,
+            "endDock": [
+                "id": destinationDock.id,
+                "name": destinationDock.name,
+                "latitude": destinationDock.latitude,
+                "longitude": destinationDock.longitude,
+            ],
+            "deviceToken": deviceToken,
+            "buildType": PushEnvironment.buildType,
+        ]
+        if let scheduledJourneyId {
+            body["scheduledJourneyId"] = scheduledJourneyId
+        }
+        if let adHocJourneyId {
+            body["adHocJourneyId"] = adHocJourneyId
+        }
+
+        do {
+            let (_, httpResponse) = try await postJSON(
+                path: AppConstants.Server.liveActivityStartArrivalEndpoint,
+                body: body,
+                requestHeaderToken: deviceToken,
+                backgroundTaskName: "start-arrival-destination-space-alert"
+            )
+
+            guard (200...299).contains(httpResponse.statusCode) else {
+                logger.warning("Unexpected status \(httpResponse.statusCode) when scheduling destination space notification")
+                logLocationEvent(
+                    "scheduled_start_destination_space_alert_failed",
+                    dock: startDock,
+                    message: "Server returned HTTP \(httpResponse.statusCode)"
+                )
+                return
+            }
+
+            logLocationEvent(
+                "scheduled_start_destination_space_alert_scheduled",
+                dock: startDock,
+                message: "Destination dock space availability notification scheduled",
+                raw: [
+                    "destinationDockId": destinationDock.id,
+                    "destinationDockName": destinationDock.name,
+                ]
+            )
+        } catch {
+            logger.error("Failed to schedule destination space notification: \(error.localizedDescription)")
+            logLocationEvent(
+                "scheduled_start_destination_space_alert_failed",
+                dock: startDock,
+                message: "Network error: \(error.localizedDescription)"
+            )
         }
     }
 

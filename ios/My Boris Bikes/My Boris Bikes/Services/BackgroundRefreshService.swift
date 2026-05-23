@@ -141,6 +141,7 @@ final class BackgroundRefreshService {
                     userLocation: nil
                 )
             }
+            await LiveActivityService.shared.updateActiveActivitiesIfNeeded(using: bikePoints)
             // Push fresh data to watch complications via WatchConnectivity
             pushDataToWatchComplication(bikePoints: bikePoints, favorites: favorites)
             print("BackgroundRefresh: Async refresh completed successfully")
@@ -281,6 +282,7 @@ final class BackgroundRefreshService {
             guard !installedBikePoints.isEmpty else { return false }
 
             AllBikePointsCache.shared.save(installedBikePoints, savedAt: Date())
+            await LiveActivityService.shared.updateActiveActivitiesIfNeeded(using: installedBikePoints)
             return true
         } catch {
             print("BackgroundRefresh: All bike points prewarm failed: \(error)")
@@ -345,6 +347,9 @@ final class BackgroundRefreshService {
                             favorites: favorites,
                             sortMode: sortMode,
                             userLocation: nil
+                        )
+                        await LiveActivityService.shared.updateActiveActivitiesIfNeeded(
+                            using: installedBikePoints.isEmpty ? favoriteBikePoints : installedBikePoints
                         )
                         completion(true, "Widget data updated")
                     }

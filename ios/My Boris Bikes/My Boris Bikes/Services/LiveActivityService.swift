@@ -74,6 +74,10 @@ class LiveActivityService: ObservableObject {
     /// Track stale dates for active activities (keyed by dock ID)
     private var staleDates: [String: Date] = [:]
 
+    /// Track the newest TfL availability timestamp applied locally so older fetches cannot
+    /// overwrite fresher Live Activity content when `/Place/:id` and `/BikePoint` disagree.
+    private var localActivityAvailabilityModifiedAt: [String: Date] = [:]
+
     /// Track observation tasks to cancel them when activities end
     private var observationTasks: [String: [Task<Void, Never>]] = [:]
     private var activityUpdatesTask: Task<Void, Never>?
@@ -245,6 +249,7 @@ class LiveActivityService: ObservableObject {
         LiveActivityDockSettings.clearPrimaryDisplay(for: dockId)
         activeActivities.removeValue(forKey: dockId)
         staleDates.removeValue(forKey: dockId)
+        localActivityAvailabilityModifiedAt.removeValue(forKey: dockId)
         cancelObservationTasks(for: dockId)
         DockArrivalMonitoringService.shared.stopMonitoring(for: dockId, reason: "live_activity_cleared")
     }
@@ -517,6 +522,9 @@ class LiveActivityService: ObservableObject {
                             ]
                         )
                         await MainActor.run {
+                            if let adHocJourneyId = activity.attributes.adHocJourneyId {
+                                AdHocJourneyService.shared.complete(journeyId: adHocJourneyId)
+                            }
                             self.clearLocallyTrackedActivity(for: dockId)
                             self.notifyPrimaryDisplayChanged()
                         }
@@ -551,6 +559,7 @@ class LiveActivityService: ObservableObject {
         // Remove from active tracking synchronously to prevent double-end races
         activeActivities.removeValue(forKey: dockId)
         staleDates.removeValue(forKey: dockId)
+        localActivityAvailabilityModifiedAt.removeValue(forKey: dockId)
 
         // Cancel observation tasks before ending so state observer doesn't react to .ended.
         // Journey activities can be re-keyed from their immutable attribute dock to the current dock.
@@ -580,6 +589,88 @@ class LiveActivityService: ObservableObject {
 
     func isActivityActive(for dockId: String) -> Bool {
         activeActivities[dockId] != nil
+    }
+
+    func updateActiveActivitiesIfNeeded(using bikePoints: [BikePoint]) async {
+        guard !bikePoints.isEmpty else { return }
+
+        let bikePointsById = Dictionary(
+            bikePoints.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let bikePointsByName = Dictionary(
+            bikePoints.map { ($0.commonName, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        var activitiesById: [String: Activity<DockActivityAttributes>] = activeActivities
+        for activity in Activity<DockActivityAttributes>.activities where activity.activityState == .active {
+            let dockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
+            activitiesById[dockId] = activity
+        }
+
+        for (dockId, activity) in activitiesById {
+            let currentState = activity.content.state
+            let activeDockId = currentState.resolvedDockId ?? activity.attributes.dockId
+            guard let bikePoint = bikePointsById[activeDockId] else { continue }
+            if let incomingModifiedAt = bikePoint.availabilityDataModifiedAt,
+               let appliedModifiedAt = localActivityAvailabilityModifiedAt[activeDockId],
+               incomingModifiedAt < appliedModifiedAt {
+                logger.info(
+                    "Skipping older live activity refresh for dock \(activeDockId): incoming=\(incomingModifiedAt), applied=\(appliedModifiedAt)"
+                )
+                continue
+            }
+
+            let refreshedAlternatives = currentState.alternatives.map { alternative in
+                guard let refreshed = bikePointsByName[alternative.name] else {
+                    return alternative
+                }
+
+                return DockActivityAttributes.AlternativeDock(
+                    name: alternative.name,
+                    standardBikes: refreshed.standardBikes,
+                    eBikes: refreshed.eBikes,
+                    emptySpaces: refreshed.emptyDocks
+                )
+            }
+
+            let availabilityChanged =
+                currentState.standardBikes != bikePoint.standardBikes ||
+                currentState.eBikes != bikePoint.eBikes ||
+                currentState.emptySpaces != bikePoint.emptyDocks
+            let alternativesChanged = refreshedAlternatives != currentState.alternatives
+
+            guard availabilityChanged || alternativesChanged else { continue }
+
+            let updatedState = DockActivityAttributes.ContentState(
+                standardBikes: bikePoint.standardBikes,
+                eBikes: bikePoint.eBikes,
+                emptySpaces: bikePoint.emptyDocks,
+                alternatives: refreshedAlternatives,
+                activeDockId: currentState.activeDockId ?? activeDockId,
+                activeDockName: currentState.activeDockName ?? bikePoint.commonName,
+                activeDockAlias: currentState.activeDockAlias,
+                activeJourneyPhase: currentState.activeJourneyPhase,
+                primaryDisplay: currentState.primaryDisplay
+            )
+            let staleDate = staleDates[dockId] ?? activity.content.staleDate
+
+            await activity.update(ActivityContent(state: updatedState, staleDate: staleDate))
+            if dockId != activeDockId {
+                activeActivities.removeValue(forKey: dockId)
+                staleDates.removeValue(forKey: dockId)
+                localActivityAvailabilityModifiedAt.removeValue(forKey: dockId)
+            }
+            activeActivities[activeDockId] = activity
+            staleDates[activeDockId] = staleDate
+            if let incomingModifiedAt = bikePoint.availabilityDataModifiedAt {
+                localActivityAvailabilityModifiedAt[activeDockId] = incomingModifiedAt
+            }
+            logger.info(
+                "Locally refreshed live activity for dock \(activeDockId): bikes=\(bikePoint.standardBikes), eBikes=\(bikePoint.eBikes), spaces=\(bikePoint.emptyDocks)"
+            )
+        }
     }
 
     func endLiveActivityFromUserAction(dockId: String, dockName: String?, reason: String) async {
@@ -1320,6 +1411,9 @@ class LiveActivityService: ObservableObject {
                             break
                         } else if state == .dismissed || state == .ended {
                             await MainActor.run {
+                                if let adHocJourneyId = activity.attributes.adHocJourneyId {
+                                    AdHocJourneyService.shared.complete(journeyId: adHocJourneyId)
+                                }
                                 self.clearLocallyTrackedActivity(for: dockId)
                                 self.notifyPrimaryDisplayChanged()
                             }

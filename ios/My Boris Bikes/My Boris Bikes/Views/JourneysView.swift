@@ -63,7 +63,8 @@ struct JourneysView: View {
                         ForEach(adHocJourneyService.recentJourneys) { journey in
                             AdHocJourneyRow(
                                 journey: journey,
-                                onStart: { Task { await adHocJourneyService.start(journey) } }
+                                onStart: { Task { await adHocJourneyService.start(journey) } },
+                                onStop: { Task { await adHocJourneyService.stop(journey) } }
                             )
                         }
                     }
@@ -129,6 +130,7 @@ enum AdHocJourneyDraftPresentation: Identifiable {
 private struct AdHocJourneyRow: View {
     let journey: AdHocJourney
     let onStart: () -> Void
+    let onStop: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -153,9 +155,8 @@ private struct AdHocJourneyRow: View {
             }
 
             if journey.isActive {
-                Button("Active", action: {})
+                Button("Stop", role: .destructive, action: onStop)
                     .buttonStyle(.bordered)
-                    .disabled(true)
             } else {
                 Button("Start again", action: onStart)
                     .buttonStyle(.borderedProminent)
@@ -563,8 +564,9 @@ private struct TimePickerRow: View {
 private struct DockPickerView: View {
     enum Mode: String, CaseIterable, Identifiable {
         case favourites = "Favourites"
-        case search = "Search"
+        case recents = "Recents"
         case map = "Map"
+        case search = "Search"
 
         var id: String { rawValue }
     }
@@ -573,14 +575,19 @@ private struct DockPickerView: View {
     let onSelect: (ScheduledJourneyDock) -> Void
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var favoritesService: FavoritesService
+    @EnvironmentObject private var locationService: LocationService
+    @EnvironmentObject private var scheduledJourneyService: ScheduledJourneyService
+    @EnvironmentObject private var adHocJourneyService: AdHocJourneyService
     @State private var mode: Mode = .favourites
     @State private var searchText = ""
     @State private var allBikePoints: [BikePoint] = []
     @State private var cancellable: AnyCancellable?
+    @State private var hasCenteredOnInitialLocation = false
+    @State private var currentMapCenter = CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278)
     @State private var mapPosition: MapCameraPosition = .region(
         MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278),
-            span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
         )
     )
 
@@ -598,34 +605,79 @@ private struct DockPickerView: View {
                 switch mode {
                 case .favourites:
                     List(favouriteBikePoints) { bikePoint in
-                        DockPickerRow(bikePoint: bikePoint) {
+                        DockPickerRow(bikePoint: bikePoint, showsDistance: true) {
                             onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
                             dismiss()
                         }
                     }
+                case .recents:
+                    if recentBikePoints.isEmpty {
+                        ContentUnavailableView(
+                            "No recent docks",
+                            systemImage: "clock.arrow.circlepath",
+                            description: Text("Docks from journeys you start will appear here.")
+                        )
+                    } else {
+                        List(recentBikePoints) { recent in
+                            DockPickerRow(
+                                bikePoint: recent.bikePoint,
+                                detailText: "Last used \(recent.lastUsedAt.formatted(date: .abbreviated, time: .shortened))",
+                                showsDistance: true
+                            ) {
+                                onSelect(ScheduledJourneyDock(bikePoint: recent.bikePoint))
+                                dismiss()
+                            }
+                        }
+                    }
+                case .map:
+                    ZStack {
+                        Map(position: $mapPosition) {
+                            ForEach(mapBikePoints) { bikePoint in
+                                Annotation("", coordinate: bikePoint.coordinate) {
+                                    Button {
+                                        onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
+                                        dismiss()
+                                    } label: {
+                                        DockPickerMapMarker(bikePoint: bikePoint)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Select \(bikePoint.commonName)")
+                                }
+                            }
+
+                            if let userLocation = locationService.location {
+                                Annotation("", coordinate: userLocation.coordinate) {
+                                    UserLocationIndicator(heading: locationService.heading)
+                                }
+                            }
+                        }
+                        .onMapCameraChange(frequency: .onEnd) { context in
+                            currentMapCenter = context.region.center
+                        }
+
+                        VStack {
+                            Spacer()
+                            HStack {
+                                Spacer()
+                                DockPickerMapControls(
+                                    hasLocation: locationService.location != nil,
+                                    hasBikePoints: !allBikePoints.isEmpty,
+                                    onCenterNearestDock: centerOnNearestBikePoint,
+                                    onCenterUserLocation: centerOnUserLocation
+                                )
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 20)
+                        }
+                    }
                 case .search:
                     List(filteredBikePoints) { bikePoint in
-                        DockPickerRow(bikePoint: bikePoint) {
+                        DockPickerRow(bikePoint: bikePoint, showsDistance: true) {
                             onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
                             dismiss()
                         }
                     }
                     .searchable(text: $searchText, prompt: "Search dock name")
-                case .map:
-                    Map(position: $mapPosition) {
-                        ForEach(mapBikePoints) { bikePoint in
-                            Annotation("", coordinate: bikePoint.coordinate) {
-                                Button {
-                                    onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
-                                    dismiss()
-                                } label: {
-                                    DockAcronymMarker(name: bikePoint.commonName)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Select \(bikePoint.commonName)")
-                            }
-                        }
-                    }
                 }
             }
             .navigationTitle(title)
@@ -637,6 +689,19 @@ private struct DockPickerView: View {
             }
             .onAppear {
                 loadBikePoints()
+                startLocationServices()
+                if let location = locationService.location {
+                    centerMap(on: location.coordinate)
+                    hasCenteredOnInitialLocation = true
+                }
+            }
+            .onDisappear {
+                locationService.stopHeadingUpdates()
+            }
+            .onReceive(locationService.$location.compactMap { $0 }) { location in
+                guard !hasCenteredOnInitialLocation else { return }
+                centerMap(on: location.coordinate)
+                hasCenteredOnInitialLocation = true
             }
         }
     }
@@ -648,18 +713,126 @@ private struct DockPickerView: View {
         }
     }
 
-    private var filteredBikePoints: [BikePoint] {
-        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return allBikePoints.prefix(80).map { $0 }
+    private var recentBikePoints: [RecentDockUsage] {
+        let byId = Dictionary(uniqueKeysWithValues: allBikePoints.map { ($0.id, $0) })
+        var usagesByDockId: [String: RecentDockUsage] = [:]
+
+        func record(_ dock: ScheduledJourneyDock, lastUsedAt: Date) {
+            guard let bikePoint = byId[dock.id] else { return }
+            if let existing = usagesByDockId[dock.id],
+               existing.lastUsedAt >= lastUsedAt {
+                return
+            }
+
+            usagesByDockId[dock.id] = RecentDockUsage(
+                bikePoint: bikePoint,
+                lastUsedAt: lastUsedAt
+            )
         }
-        return allBikePoints
-            .filter { $0.commonName.localizedCaseInsensitiveContains(searchText) }
+
+        for journey in adHocJourneyService.recentJourneys {
+            let lastUsedAt = journey.lastStartedAt ?? journey.createdAt
+            record(journey.startDock, lastUsedAt: lastUsedAt)
+            record(journey.endDock, lastUsedAt: lastUsedAt)
+        }
+
+        for journey in scheduledJourneyService.journeys {
+            guard let activeRun = journey.activeRun,
+                  let startedAt = activeRun.startedAt else {
+                continue
+            }
+
+            record(journey.startDock, lastUsedAt: startedAt)
+            record(journey.endDock, lastUsedAt: startedAt)
+        }
+
+        return usagesByDockId.values.sorted { $0.lastUsedAt > $1.lastUsedAt }
+    }
+
+    private var filteredBikePoints: [BikePoint] {
+        let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matchingBikePoints: [BikePoint]
+
+        if trimmedSearchText.isEmpty {
+            matchingBikePoints = allBikePoints
+        } else {
+            matchingBikePoints = allBikePoints.filter {
+                $0.commonName.localizedCaseInsensitiveContains(trimmedSearchText)
+            }
+        }
+
+        return sortedByDistance(matchingBikePoints)
             .prefix(80)
             .map { $0 }
     }
 
     private var mapBikePoints: [BikePoint] {
-        allBikePoints.prefix(250).map { $0 }
+        return allBikePoints
+            .sorted {
+                squaredDistanceMeters(from: currentMapCenter, to: $0.coordinate)
+                    < squaredDistanceMeters(from: currentMapCenter, to: $1.coordinate)
+            }
+            .prefix(250)
+            .map { $0 }
+    }
+
+    private func startLocationServices() {
+        locationService.startLocationUpdates()
+        locationService.startHeadingUpdates()
+    }
+
+    private func centerOnUserLocation() {
+        guard let location = locationService.location else { return }
+        centerMap(on: location.coordinate)
+    }
+
+    private func centerOnNearestBikePoint() {
+        guard let userCoordinate = locationService.location?.coordinate,
+              let nearestBikePoint = allBikePoints.min(by: {
+                  squaredDistanceMeters(from: userCoordinate, to: $0.coordinate)
+                      < squaredDistanceMeters(from: userCoordinate, to: $1.coordinate)
+              }) else {
+            return
+        }
+
+        centerMap(on: nearestBikePoint.coordinate)
+    }
+
+    private func sortedByDistance(_ bikePoints: [BikePoint]) -> [BikePoint] {
+        guard let userCoordinate = locationService.location?.coordinate else {
+            return bikePoints
+        }
+
+        return bikePoints.sorted {
+            squaredDistanceMeters(from: userCoordinate, to: $0.coordinate)
+                < squaredDistanceMeters(from: userCoordinate, to: $1.coordinate)
+        }
+    }
+
+    private func centerMap(on coordinate: CLLocationCoordinate2D) {
+        currentMapCenter = coordinate
+
+        withAnimation(.easeInOut(duration: 1.0)) {
+            mapPosition = .region(
+                MKCoordinateRegion(
+                    center: coordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.008, longitudeDelta: 0.008)
+                )
+            )
+        }
+    }
+
+    private func squaredDistanceMeters(
+        from source: CLLocationCoordinate2D,
+        to destination: CLLocationCoordinate2D
+    ) -> Double {
+        let metersPerDegreeLatitude = 111_320.0
+        let averageLatitudeRadians = ((source.latitude + destination.latitude) * 0.5) * .pi / 180
+        let metersPerDegreeLongitude = max(1, cos(averageLatitudeRadians) * metersPerDegreeLatitude)
+
+        let deltaLatitudeMeters = (destination.latitude - source.latitude) * metersPerDegreeLatitude
+        let deltaLongitudeMeters = (destination.longitude - source.longitude) * metersPerDegreeLongitude
+        return (deltaLatitudeMeters * deltaLatitudeMeters) + (deltaLongitudeMeters * deltaLongitudeMeters)
     }
 
     private func loadBikePoints() {
@@ -679,55 +852,133 @@ private struct DockPickerView: View {
     }
 }
 
-private struct DockAcronymMarker: View {
-    let name: String
+private struct DockPickerMapMarker: View {
+    let bikePoint: BikePoint
 
     var body: some View {
-        Text(acronym)
-            .font(.system(size: 11, weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
-            .frame(width: 30, height: 30)
-            .background(AppConstants.Colors.standardBike, in: Circle())
-            .overlay {
-                Circle()
-                    .stroke(.white, lineWidth: 2)
+        VStack(spacing: 4) {
+            ZStack {
+                SimplifiedDonutChart(
+                    standardBikes: bikePoint.standardBikes,
+                    eBikes: bikePoint.eBikes,
+                    emptySpaces: bikePoint.emptyDocks,
+                    size: 40
+                )
+
+                if !bikePoint.isAvailable {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 15))
+                        .foregroundColor(.orange)
+                        .background(Color.black.opacity(0.0))
+                        .clipShape(Circle())
+                        .offset(x: -10, y: -10)
+                }
             }
-            .shadow(color: .black.opacity(0.25), radius: 3, x: 0, y: 1)
+            .contentShape(Circle())
+
+            Text(label)
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .frame(maxWidth: 128)
+                .background(Color(.systemBackground).opacity(0.95))
+                .clipShape(Capsule())
+                .shadow(color: .black.opacity(0.15), radius: 2, x: 0, y: 1)
+                .allowsHitTesting(false)
+        }
     }
 
-    private var acronym: String {
-        let primaryName = name
+    private var label: String {
+        bikePoint.commonName
             .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true)
             .first
-            .map(String.init) ?? name
-
-        let words = primaryName
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-
-        if words.count >= 2 {
-            return words.prefix(2)
-                .compactMap(\.first)
-                .map { String($0).uppercased() }
-                .joined()
-        }
-
-        return String((words.first ?? primaryName).prefix(2)).uppercased()
+            .map(String.init) ?? bikePoint.commonName
     }
+}
+
+private struct DockPickerMapControls: View {
+    let hasLocation: Bool
+    let hasBikePoints: Bool
+    let onCenterNearestDock: () -> Void
+    let onCenterUserLocation: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Button(action: onCenterNearestDock) {
+                Image(systemName: "bicycle")
+                    .font(.title2)
+                    .foregroundColor(.accentColor)
+                    .padding(12)
+                    .background(Color(.systemBackground))
+                    .clipShape(Circle())
+                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+            }
+            .disabled(!hasLocation || !hasBikePoints)
+            .opacity(hasLocation && hasBikePoints ? 1.0 : 0.5)
+            .accessibilityLabel("Center on nearest dock")
+
+            Button(action: onCenterUserLocation) {
+                Image(systemName: "location.fill")
+                    .font(.title2)
+                    .foregroundColor(.accentColor)
+                    .padding(12)
+                    .background(Color(.systemBackground))
+                    .clipShape(Circle())
+                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+            }
+            .disabled(!hasLocation)
+            .opacity(hasLocation ? 1.0 : 0.5)
+            .accessibilityLabel("Center on current location")
+        }
+    }
+}
+
+private struct RecentDockUsage: Identifiable {
+    let bikePoint: BikePoint
+    let lastUsedAt: Date
+
+    var id: String { bikePoint.id }
 }
 
 private struct DockPickerRow: View {
     let bikePoint: BikePoint
+    var detailText: String?
+    var showsDistance = false
     let action: () -> Void
+    @EnvironmentObject private var locationService: LocationService
+
+    private var numericDistance: CLLocationDistance? {
+        locationService.distance(to: bikePoint.coordinate)
+    }
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(bikePoint.commonName)
-                    .foregroundStyle(.primary)
-                Text("\(bikePoint.standardBikes) bikes • \(bikePoint.eBikes) e-bikes • \(bikePoint.emptyDocks) spaces")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(bikePoint.commonName)
+                        .foregroundStyle(.primary)
+                    Text("\(bikePoint.standardBikes) bikes • \(bikePoint.eBikes) e-bikes • \(bikePoint.emptyDocks) spaces")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let detailText {
+                        Text(detailText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if showsDistance {
+                    Spacer(minLength: 12)
+
+                    DistanceIndicator(
+                        distance: numericDistance,
+                        distanceString: locationService.distanceString(to: bikePoint.coordinate)
+                    )
+                }
             }
         }
     }

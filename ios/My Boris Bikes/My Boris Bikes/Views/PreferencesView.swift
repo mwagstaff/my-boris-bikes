@@ -160,6 +160,7 @@ struct PreferencesView: View {
                         trackPreferenceChange(key: LiveActivityArrivalSettings.distanceThresholdMetersKey, value: sanitizedValue)
                     }
                     .onAppear {
+                        LiveActivityArrivalSettings.migrateLegacyDefaultArrivalDistanceIfNeeded()
                         liveActivityArrivalDistanceMeters = sanitizedLiveActivityArrivalDistanceMeters
                     }
 

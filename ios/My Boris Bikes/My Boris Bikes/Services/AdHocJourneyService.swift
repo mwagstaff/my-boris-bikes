@@ -40,6 +40,24 @@ final class AdHocJourneyService: ObservableObject {
         await LiveActivityService.shared.startAdHocJourney(updated)
     }
 
+    func stop(_ journey: AdHocJourney) async {
+        let docks = [journey.startDock, journey.endDock]
+            .reduce(into: [ScheduledJourneyDock]()) { uniqueDocks, dock in
+                guard !uniqueDocks.contains(where: { $0.id == dock.id }) else { return }
+                uniqueDocks.append(dock)
+            }
+
+        for dock in docks {
+            await LiveActivityService.shared.endLiveActivityFromUserAction(
+                dockId: dock.id,
+                dockName: dock.name,
+                reason: "ad_hoc_journey_stop"
+            )
+        }
+
+        complete(journeyId: journey.id)
+    }
+
     func markPhase(journeyId: String, phase: ScheduledJourney.ActiveRun.Phase) {
         guard let index = recentJourneys.firstIndex(where: { $0.id == journeyId }) else { return }
         recentJourneys[index].activePhase = phase

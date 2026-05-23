@@ -187,6 +187,9 @@ class HomeViewModel: BaseViewModel {
                             self?.bikePointCache[bikePoint.id] = bikePoint
                             DockArrivalMonitoringService.shared.updateMonitoredDockIfNeeded(using: bikePoint)
                         }
+                        Task {
+                            await LiveActivityService.shared.updateActiveActivitiesIfNeeded(using: newBikePoints)
+                        }
                         
                         // Combine cached and new data
                         let allBikePoints = favoriteIds.compactMap { self?.bikePointCache[$0] }
@@ -316,6 +319,9 @@ class HomeViewModel: BaseViewModel {
                     self?.lastAllBikePointsRefreshTime = fetchedAt
                     self?.updateTflDataStaleWarning(from: installedBikePoints, fetchedAt: fetchedAt)
                     AllBikePointsCache.shared.save(installedBikePoints, savedAt: fetchedAt)
+                    Task {
+                        await LiveActivityService.shared.updateActiveActivitiesIfNeeded(using: installedBikePoints)
+                    }
                     if let favoriteBikePoints = self?.favoriteBikePoints {
                         self?.updateWidgetData(favoriteBikePoints)
                     }

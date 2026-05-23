@@ -388,6 +388,11 @@ class MapViewModel {
         if let monitoredDock = processed.monitoredDock {
             DockArrivalMonitoringService.shared.updateMonitoredDockIfNeeded(using: monitoredDock)
         }
+        Task {
+            await LiveActivityService.shared.updateActiveActivitiesIfNeeded(
+                using: Array(processed.bikePointsByID.values)
+            )
+        }
 
         if let dockId = pendingDockId, let bikePoint = processed.bikePointsByID[dockId] {
             pendingDockId = nil
