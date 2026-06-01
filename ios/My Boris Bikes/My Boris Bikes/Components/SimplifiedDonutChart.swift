@@ -1,10 +1,17 @@
 import SwiftUI
 
 struct SimplifiedDonutChart: View {
+    enum DisplayMode {
+        case all
+        case bikes
+        case spaces
+    }
+
     let standardBikes: Int
     let eBikes: Int
     let emptySpaces: Int
     let size: CGFloat
+    var displayMode: DisplayMode = .all
 
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
@@ -136,14 +143,22 @@ struct SimplifiedDonutChart: View {
                         .frame(width: circleSize, height: circleSize)
                 }
                 
-                // Center indicator showing total bikes
-                Text("\(filteredCounts.totalBikes)")
+                Text("\(centerCount)")
                     .font(.system(size: circleSize * 0.32, weight: .bold))
                     .foregroundColor(.black)
                     .minimumScaleFactor(0.5)
             }
         }
         .frame(width: size, height: size)
+    }
+
+    private var centerCount: Int {
+        switch displayMode {
+        case .all, .bikes:
+            return filteredCounts.totalBikes
+        case .spaces:
+            return filteredCounts.emptySpaces
+        }
     }
 }
 

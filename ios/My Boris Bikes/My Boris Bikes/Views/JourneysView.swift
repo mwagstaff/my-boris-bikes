@@ -100,7 +100,7 @@ struct JourneysView: View {
                 AddJourneyView(presentation: presentation)
             }
             .sheet(item: $adHocDraftPresentation) { _ in
-                AdHocJourneySetupView()
+                AdHocJourneyStartFlowView()
             }
             .alert("Delete scheduled journey?", isPresented: Binding(
                 get: { journeyToDelete != nil },
@@ -125,6 +125,25 @@ struct JourneysView: View {
 enum AdHocJourneyDraftPresentation: Identifiable {
     case new
     var id: String { "new" }
+}
+
+private struct AdHocJourneyStartFlowView: View {
+    @State private var startDock: ScheduledJourneyDock?
+    @State private var endDock: ScheduledJourneyDock?
+
+    var body: some View {
+        if let startDock, let endDock {
+            AdHocJourneySetupView(initialStartDock: startDock, initialEndDock: endDock)
+        } else if let startDock {
+            DockPickerView(title: "End Dock", availabilityMode: .end, dismissOnSelect: false) { dock in
+                endDock = dock
+            }
+        } else {
+            DockPickerView(title: "Start Dock", availabilityMode: .start, dismissOnSelect: false) { dock in
+                startDock = dock
+            }
+        }
+    }
 }
 
 private struct AdHocJourneyRow: View {
@@ -174,6 +193,11 @@ struct AdHocJourneySetupView: View {
     @State private var selectedDockField: AddJourneyView.DockField?
     @State private var isStarting = false
 
+    init(initialStartDock: ScheduledJourneyDock? = nil, initialEndDock: ScheduledJourneyDock? = nil) {
+        _startDock = State(initialValue: initialStartDock)
+        _endDock = State(initialValue: initialEndDock)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -196,7 +220,10 @@ struct AdHocJourneySetupView: View {
                 }
             }
             .sheet(item: $selectedDockField) { field in
-                DockPickerView(title: field == .start ? "Start Dock" : "End Dock") { dock in
+                DockPickerView(
+                    title: field == .start ? "Start Dock" : "End Dock",
+                    availabilityMode: field == .start ? .start : .end
+                ) { dock in
                     switch field {
                     case .start: startDock = dock
                     case .end: endDock = dock
@@ -425,7 +452,10 @@ struct AddJourneyView: View {
                 }
             }
             .sheet(item: $selectedDockField) { field in
-                DockPickerView(title: field == .start ? "Start Dock" : "End Dock") { dock in
+                DockPickerView(
+                    title: field == .start ? "Start Dock" : "End Dock",
+                    availabilityMode: field == .start ? .start : .end
+                ) { dock in
                     switch field {
                     case .start:
                         draft.startDock = dock
@@ -562,6 +592,11 @@ private struct TimePickerRow: View {
 }
 
 private struct DockPickerView: View {
+    enum AvailabilityMode {
+        case start
+        case end
+    }
+
     enum Mode: String, CaseIterable, Identifiable {
         case favourites = "Favourites"
         case recents = "Recents"
@@ -572,6 +607,8 @@ private struct DockPickerView: View {
     }
 
     let title: String
+    var availabilityMode: AvailabilityMode
+    var dismissOnSelect = true
     let onSelect: (ScheduledJourneyDock) -> Void
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var favoritesService: FavoritesService
@@ -607,11 +644,17 @@ private struct DockPickerView: View {
                     List {
                         Section {
                             ForEach(favouriteBikePoints) { bikePoint in
-                                DockPickerRow(bikePoint: bikePoint, showsDistance: true) {
+                                DockPickerRow(
+                                    bikePoint: bikePoint,
+                                    availabilityMode: availabilityMode,
+                                    showsDistance: true
+                                ) {
                                     onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
-                                    dismiss()
+                                    dismissIfNeeded()
                                 }
                             }
+                        } header: {
+                            Text("Favourite docks")
                         }
 
                         Section {
@@ -626,9 +669,13 @@ private struct DockPickerView: View {
                                     .foregroundStyle(.secondary)
                             } else {
                                 ForEach(nearbyBikePoints) { bikePoint in
-                                    DockPickerRow(bikePoint: bikePoint, showsDistance: true) {
+                                    DockPickerRow(
+                                        bikePoint: bikePoint,
+                                        availabilityMode: availabilityMode,
+                                        showsDistance: true
+                                    ) {
                                         onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
-                                        dismiss()
+                                        dismissIfNeeded()
                                     }
                                 }
                             }
@@ -647,11 +694,12 @@ private struct DockPickerView: View {
                         List(recentBikePoints) { recent in
                             DockPickerRow(
                                 bikePoint: recent.bikePoint,
+                                availabilityMode: availabilityMode,
                                 detailText: "Last used \(recent.lastUsedAt.formatted(date: .abbreviated, time: .shortened))",
                                 showsDistance: true
                             ) {
                                 onSelect(ScheduledJourneyDock(bikePoint: recent.bikePoint))
-                                dismiss()
+                                dismissIfNeeded()
                             }
                         }
                     }
@@ -662,7 +710,7 @@ private struct DockPickerView: View {
                                 Annotation("", coordinate: bikePoint.coordinate) {
                                     Button {
                                         onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
-                                        dismiss()
+                                        dismissIfNeeded()
                                     } label: {
                                         DockPickerMapMarker(bikePoint: bikePoint)
                                     }
@@ -698,9 +746,13 @@ private struct DockPickerView: View {
                     }
                 case .search:
                     List(filteredBikePoints) { bikePoint in
-                        DockPickerRow(bikePoint: bikePoint, showsDistance: true) {
+                        DockPickerRow(
+                            bikePoint: bikePoint,
+                            availabilityMode: availabilityMode,
+                            showsDistance: true
+                        ) {
                             onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
-                            dismiss()
+                            dismissIfNeeded()
                         }
                     }
                     .searchable(text: $searchText, prompt: "Search dock name")
@@ -730,6 +782,11 @@ private struct DockPickerView: View {
                 hasCenteredOnInitialLocation = true
             }
         }
+    }
+
+    private func dismissIfNeeded() {
+        guard dismissOnSelect else { return }
+        dismiss()
     }
 
     private var favouriteBikePoints: [BikePoint] {
@@ -979,10 +1036,13 @@ private struct RecentDockUsage: Identifiable {
 
 private struct DockPickerRow: View {
     let bikePoint: BikePoint
+    let availabilityMode: DockPickerView.AvailabilityMode
     var detailText: String?
     var showsDistance = false
     let action: () -> Void
     @EnvironmentObject private var locationService: LocationService
+    @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
+    private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
 
     private var numericDistance: CLLocationDistance? {
         locationService.distance(to: bikePoint.coordinate)
@@ -991,10 +1051,18 @@ private struct DockPickerRow: View {
     var body: some View {
         Button(action: action) {
             HStack(alignment: .center, spacing: 12) {
+                SimplifiedDonutChart(
+                    standardBikes: bikePoint.standardBikes,
+                    eBikes: bikePoint.eBikes,
+                    emptySpaces: bikePoint.emptyDocks,
+                    size: 38,
+                    displayMode: availabilityMode == .start ? .bikes : .spaces
+                )
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text(bikePoint.commonName)
                         .foregroundStyle(.primary)
-                    Text("\(bikePoint.standardBikes) bikes • \(bikePoint.eBikes) e-bikes • \(bikePoint.emptyDocks) spaces")
+                    Text(availabilityText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if let detailText {
@@ -1014,6 +1082,35 @@ private struct DockPickerRow: View {
                 }
             }
         }
+    }
+
+    private var availabilityText: String {
+        switch availabilityMode {
+        case .start:
+            return bikeAvailabilityText
+        case .end:
+            return "\(bikePoint.emptyDocks) \(bikePoint.emptyDocks == 1 ? "space" : "spaces")"
+        }
+    }
+
+    private var bikeAvailabilityText: String {
+        let filter = BikeDataFilter(rawValue: bikeDataFilterRawValue) ?? .both
+        let counts = filter.filteredCounts(
+            standardBikes: bikePoint.standardBikes,
+            eBikes: bikePoint.eBikes,
+            emptySpaces: bikePoint.emptyDocks
+        )
+        var parts: [String] = []
+
+        if filter.showsStandardBikes {
+            parts.append("\(counts.standardBikes) \(counts.standardBikes == 1 ? "bike" : "bikes")")
+        }
+
+        if filter.showsEBikes {
+            parts.append("\(counts.eBikes) \(counts.eBikes == 1 ? "e-bike" : "e-bikes")")
+        }
+
+        return parts.joined(separator: " • ")
     }
 }
 
