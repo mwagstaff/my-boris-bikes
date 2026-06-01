@@ -604,10 +604,36 @@ private struct DockPickerView: View {
 
                 switch mode {
                 case .favourites:
-                    List(favouriteBikePoints) { bikePoint in
-                        DockPickerRow(bikePoint: bikePoint, showsDistance: true) {
-                            onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
-                            dismiss()
+                    List {
+                        Section {
+                            ForEach(favouriteBikePoints) { bikePoint in
+                                DockPickerRow(bikePoint: bikePoint, showsDistance: true) {
+                                    onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
+                                    dismiss()
+                                }
+                            }
+                        }
+
+                        Section {
+                            if locationService.location == nil {
+                                Label("Current location unavailable", systemImage: "location.slash")
+                                    .foregroundStyle(.secondary)
+                            } else if allBikePoints.isEmpty {
+                                Label("Loading nearby docks...", systemImage: "location")
+                                    .foregroundStyle(.secondary)
+                            } else if nearbyBikePoints.isEmpty {
+                                Label("No nearby docks found", systemImage: "bicycle")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(nearbyBikePoints) { bikePoint in
+                                    DockPickerRow(bikePoint: bikePoint, showsDistance: true) {
+                                        onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
+                                        dismiss()
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("Nearby docks")
                         }
                     }
                 case .recents:
@@ -711,6 +737,13 @@ private struct DockPickerView: View {
         return favoritesService.favorites.compactMap { favorite in
             byId[favorite.id]
         }
+    }
+
+    private var nearbyBikePoints: [BikePoint] {
+        let favouriteIds = Set(favoritesService.favorites.map(\.id))
+        return sortedByDistance(allBikePoints.filter { !favouriteIds.contains($0.id) })
+            .prefix(5)
+            .map { $0 }
     }
 
     private var recentBikePoints: [RecentDockUsage] {
