@@ -1749,6 +1749,104 @@ async function sendScheduledJourneyInitialAvailabilityPush(journey) {
   );
 }
 
+
+function scheduledJourneyDockArrivalBody(dockName) {
+  const resolvedDockName =
+    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "your dock";
+  return `Welcome to ${resolvedDockName}!`;
+}
+
+function scheduledJourneyWatchingDestinationBody(dockName) {
+  const resolvedDockName =
+    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "your destination dock";
+  return `Now watching spaces at ${resolvedDockName}`;
+}
+
+function scheduledJourneyDestinationAvailabilityBody(dockName, dockData) {
+  const resolvedDockName =
+    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "Destination dock";
+  const spaces = sanitizeThresholdValue(dockData?.emptySpaces);
+  return `${resolvedDockName}: ${spaces} ${spaces === 1 ? "space" : "spaces"} available`;
+}
+
+async function sendScheduledJourneyTransitionPushes(journey, destinationDock) {
+  const deviceToken = normalizeApnsDeviceToken(journey.deviceToken);
+  if (!deviceToken) return null;
+
+  const buildType = journey.buildType === "production" ? "production" : "development";
+  const startDock = journey.startDock || journey.activeRun;
+  const arrivalDockName = startDock?.name || startDock?.dockName;
+  const destinationDockName = destinationDock?.name || destinationDock?.dockName;
+  const results = [];
+
+  try {
+    results.push(
+      await sendAlertPush(
+        deviceToken,
+        buildType,
+        "Dock arrival",
+        scheduledJourneyDockArrivalBody(arrivalDockName),
+        "scheduled_journey_start_arrival",
+        "scheduled journey start arrival",
+        {
+          customPayload: {
+            journeyId: journey._id?.toString?.() || null,
+            dockId: startDock?.id || startDock?.dockId || null,
+            dockName: arrivalDockName || null,
+          },
+        }
+      )
+    );
+  } catch (err) {
+    logger.warn(`Failed to send scheduled journey start-arrival push: ${err.message}`);
+  }
+
+  try {
+    results.push(
+      await sendAlertPush(
+        deviceToken,
+        buildType,
+        "Scheduled journey",
+        scheduledJourneyWatchingDestinationBody(destinationDockName),
+        "scheduled_journey_destination_watch",
+        "scheduled journey destination watch",
+        {
+          customPayload: {
+            journeyId: journey._id?.toString?.() || null,
+            dockId: destinationDock?.id || destinationDock?.dockId || null,
+            dockName: destinationDockName || null,
+          },
+        }
+      )
+    );
+  } catch (err) {
+    logger.warn(`Failed to send scheduled journey destination-watch push: ${err.message}`);
+  }
+
+  return results;
+}
+
+async function sendScheduledJourneyDestinationAvailabilityPushForSession(session, dockId, dockName, dockData) {
+  const deviceToken = normalizeApnsDeviceToken(session?.deviceToken);
+  if (!deviceToken) return null;
+
+  return sendAlertPush(
+    deviceToken,
+    session.buildType === "production" ? "production" : "development",
+    "Scheduled journey",
+    scheduledJourneyDestinationAvailabilityBody(dockName, dockData),
+    "scheduled_journey_destination_availability",
+    "scheduled journey destination availability",
+    {
+      customPayload: {
+        journeyId: session.scheduledJourneyId || null,
+        dockId,
+        dockName,
+      },
+    }
+  );
+}
+
 async function sendAlertPush(
   deviceToken,
   buildType,
@@ -3597,6 +3695,10 @@ app.post("/scheduled-journeys/:id/phase", async (req, res) => {
     dockName: dock.name,
   });
 
+  if (phase === "end") {
+    await sendScheduledJourneyTransitionPushes(journey, dock);
+  }
+
   res.json({ success: true, journey: serializeScheduledJourney(result) });
 });
 
@@ -3996,6 +4098,27 @@ app.post("/live-activity/session/update", async (req, res) => {
       logger.error(
         `Failed to send immediate migrated live activity update to ${normalizedPushToken.substring(0, 8)}...:`,
         err.message
+      );
+    }
+  }
+
+  if (
+    resolvedTargetDockId !== dockId &&
+    session.scheduledJourneyPhase === "end" &&
+    hasSeededAvailability &&
+    !session.destinationAvailabilitySentAt
+  ) {
+    try {
+      await sendScheduledJourneyDestinationAvailabilityPushForSession(
+        session,
+        resolvedTargetDockId,
+        session.activeDockName || session.dockName || resolvedTargetDockId,
+        seededData
+      );
+      session.destinationAvailabilitySentAt = Date.now();
+    } catch (err) {
+      logger.warn(
+        `Failed to send scheduled journey destination availability push: ${err.message}`
       );
     }
   }

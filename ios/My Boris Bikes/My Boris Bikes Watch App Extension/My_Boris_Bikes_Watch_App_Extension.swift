@@ -1531,9 +1531,6 @@ struct RectangularLegendItem: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            Circle()
-                .fill(color)
-                .frame(width: 5, height: 5)
             Text("\(count) \(label)")
                 .font(.system(size: 8, weight: .medium))
                 .foregroundColor(.secondary)

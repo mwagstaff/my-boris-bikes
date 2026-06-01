@@ -18,6 +18,7 @@ struct WatchLoadingIndicator: Hashable {
 // Wrapper to navigate to WatchWidgetDetailView from a deep link tap
 struct WidgetTapDestination: Hashable {
     let dockId: String
+    let journeyMetricRawValue: String?
 }
 
 struct ContentView: View {
@@ -26,6 +27,7 @@ struct ContentView: View {
   @StateObject private var locationService = WatchLocationService.shared
   @Binding var selectedDockId: String?
   @Binding var customWidgetContext: String?
+  @Binding var journeyMetricRawValue: String?
   @State private var navigationPath = NavigationPath()
   @State private var showingDockSelection = false
   @State private var navigationId = UUID()
@@ -50,7 +52,10 @@ struct ContentView: View {
           buildDetailView(for: bikePoint)
         }
         .navigationDestination(for: WidgetTapDestination.self) { destination in
-          WatchWidgetDetailView(primaryDockId: destination.dockId)
+          WatchWidgetDetailView(
+            primaryDockId: destination.dockId,
+            journeyMetricRawValue: destination.journeyMetricRawValue
+          )
         }
         .navigationDestination(for: WatchLoadingIndicator.self) { loadingIndicator in
           WatchLoadingView(dockName: loadingIndicator.dockName)
@@ -115,7 +120,8 @@ struct ContentView: View {
       // Show the richer WatchWidgetDetailView with nearby alternatives
       navigationPath = NavigationPath()
       navigationId = UUID()
-      navigationPath.append(WidgetTapDestination(dockId: dockId))
+      navigationPath.append(WidgetTapDestination(dockId: dockId, journeyMetricRawValue: journeyMetricRawValue))
+      journeyMetricRawValue = nil
       selectedDockId = nil
     } else if let selectedBikePoint = viewModel.favoriteBikePoints.first(where: { $0.id == dockId }) {
       // Came from a custom dock widget (myborisbikes://custom-dock/{widgetId}/{dockId})
@@ -447,5 +453,9 @@ struct WatchSortButton: View {
 }
 
 #Preview {
-  ContentView(selectedDockId: .constant(nil), customWidgetContext: .constant(nil))
+  ContentView(
+    selectedDockId: .constant(nil),
+    customWidgetContext: .constant(nil),
+    journeyMetricRawValue: .constant(nil)
+  )
 }

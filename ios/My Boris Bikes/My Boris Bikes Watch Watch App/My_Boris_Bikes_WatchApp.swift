@@ -19,6 +19,7 @@ private enum WatchDeepLinkPreferenceKeys {
 struct My_Boris_Bikes_Watch_Watch_AppApp: App {
     @State private var selectedDockId: String?
     @State private var customWidgetContext: String?
+    @State private var journeyMetricRawValue: String?
 
     private static let backgroundRefreshTaskIdentifier = "dev.skynolimit.myborisbikes.watch-complication-refresh"
 
@@ -33,7 +34,11 @@ struct My_Boris_Bikes_Watch_Watch_AppApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(selectedDockId: $selectedDockId, customWidgetContext: $customWidgetContext)
+            ContentView(
+                selectedDockId: $selectedDockId,
+                customWidgetContext: $customWidgetContext,
+                journeyMetricRawValue: $journeyMetricRawValue
+            )
                 .environmentObject(WatchFavoritesService.shared)
                 .environmentObject(WatchLocationService.shared)
                 .onAppear {
@@ -116,6 +121,7 @@ struct My_Boris_Bikes_Watch_Watch_AppApp: App {
            url.pathComponents.count > 1 {
             let dockId = url.pathComponents[1]
             customWidgetContext = nil // Clear widget context for regular dock navigation
+            journeyMetricRawValue = journeyMetric(from: url)
             selectedDockId = dockId
             
             // Force immediate widget data updates after regular dock navigation
@@ -135,6 +141,7 @@ struct My_Boris_Bikes_Watch_Watch_AppApp: App {
             InteractiveDockWidgetManager.shared.setPendingConfiguration(for: widgetId)
             
             // Set a special flag to show dock selection mode
+            journeyMetricRawValue = nil
             selectedDockId = "SELECT_DOCK_MODE"
         }
         // Handle myborisbikes://custom-dock/{widgetId}/{dockId} (for configured widget tap)
@@ -146,6 +153,7 @@ struct My_Boris_Bikes_Watch_Watch_AppApp: App {
             
             // Store widget context for custom detail view
             customWidgetContext = widgetId
+            journeyMetricRawValue = nil
             selectedDockId = dockId
             
             
@@ -170,6 +178,7 @@ struct My_Boris_Bikes_Watch_Watch_AppApp: App {
             }
             
             // Set a special flag to show dock selection mode
+            journeyMetricRawValue = nil
             selectedDockId = "SELECT_DOCK_MODE"
         }
     }
@@ -217,6 +226,13 @@ struct My_Boris_Bikes_Watch_Watch_AppApp: App {
         if didUpdate {
             defaults.synchronize()
         }
+    }
+
+    private func journeyMetric(from url: URL) -> String? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        return components.queryItems?.first(where: { $0.name == "journeyMetric" })?.value
     }
     
     /// Triggers immediate widget data update for the specified dock to prevent exclamation triangles

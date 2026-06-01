@@ -22,8 +22,22 @@ private func widgetHaversineDistance(lat1: Double, lon1: Double, lat2: Double, l
     return R * 2 * atan2(sqrt(a), sqrt(1 - a))
 }
 
+private enum WatchJourneyAlternativePurpose: String {
+    case bikes
+    case eBikes
+    case allBikes
+    case spaces
+}
+
 struct WatchWidgetDetailView: View {
     let primaryDockId: String
+    let journeyMetricRawValue: String?
+
+    init(primaryDockId: String, journeyMetricRawValue: String? = nil) {
+        self.primaryDockId = primaryDockId
+        self.journeyMetricRawValue = journeyMetricRawValue
+    }
+
     @StateObject private var viewModel = WatchFavoritesViewModel()
     @StateObject private var locationService = WatchLocationService.shared
 
@@ -34,6 +48,23 @@ struct WatchWidgetDetailView: View {
     @State private var hasLoadedAlternatives = false
     @State private var alternativesLoadFailed = false
     @State private var hasLoadedInitialData = false
+
+    @AppStorage(WatchThresholdSettings.minBikesKey, store: BikeDataFilter.userDefaultsStore)
+    private var minBikes: Int = WatchThresholdSettings.defaultMinBikes
+
+    @AppStorage(WatchThresholdSettings.minEBikesKey, store: BikeDataFilter.userDefaultsStore)
+    private var minEBikes: Int = WatchThresholdSettings.defaultMinEBikes
+
+    @AppStorage(WatchThresholdSettings.minSpacesKey, store: BikeDataFilter.userDefaultsStore)
+    private var minSpaces: Int = WatchThresholdSettings.defaultMinSpaces
+
+    @AppStorage(WatchThresholdSettings.useMinimumThresholdsKey, store: BikeDataFilter.userDefaultsStore)
+    private var useMinimumThresholds: Bool = WatchThresholdSettings.defaultUseMinimumThresholds
+
+    private var journeyPurpose: WatchJourneyAlternativePurpose? {
+        guard let journeyMetricRawValue else { return nil }
+        return WatchJourneyAlternativePurpose(rawValue: journeyMetricRawValue)
+    }
 
     var body: some View {
         ScrollView {
@@ -78,7 +109,7 @@ struct WatchWidgetDetailView: View {
             HStack(spacing: 6) {
                 ProgressView()
                     .scaleEffect(0.8)
-                Text("Loading alternatives…")
+                Text("Loading alternatives...")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -190,12 +221,7 @@ struct WatchWidgetDetailView: View {
                 lon: primary.lon,
                 radiusMeters: 500
             )
-            var sortedAlternatives = nearby
-                .filter { $0.id != primary.id && $0.isAvailable }
-                .sorted {
-                    widgetHaversineDistance(lat1: primary.lat, lon1: primary.lon, lat2: $0.lat, lon2: $0.lon) <
-                    widgetHaversineDistance(lat1: primary.lat, lon1: primary.lon, lat2: $1.lat, lon2: $1.lon)
-                }
+            var sortedAlternatives = sortedAlternativeCandidates(from: nearby, primary: primary)
 
             // If the immediate area has no suitable alternatives, widen the radius once.
             if sortedAlternatives.isEmpty {
@@ -204,16 +230,11 @@ struct WatchWidgetDetailView: View {
                     lon: primary.lon,
                     radiusMeters: 1000
                 )
-                sortedAlternatives = expandedNearby
-                    .filter { $0.id != primary.id && $0.isAvailable }
-                    .sorted {
-                        widgetHaversineDistance(lat1: primary.lat, lon1: primary.lon, lat2: $0.lat, lon2: $0.lon) <
-                        widgetHaversineDistance(lat1: primary.lat, lon1: primary.lon, lat2: $1.lat, lon2: $1.lon)
-                    }
+                sortedAlternatives = sortedAlternativeCandidates(from: expandedNearby, primary: primary)
             }
 
             let displayedAlternatives = sortedAlternatives
-                .prefix(5)
+                .prefix(journeyPurpose == nil ? 5 : 3)
                 .map { dock in
                     var updated = dock
                     if updated.alias == nil {
@@ -235,6 +256,52 @@ struct WatchWidgetDetailView: View {
                 alternativesLoadFailed = true
                 isLoadingAlternatives = false
             }
+        }
+    }
+
+    private func sortedAlternativeCandidates(
+        from nearby: [WatchBikePoint],
+        primary: WatchBikePoint
+    ) -> [WatchBikePoint] {
+        nearby
+            .filter { candidate in
+                candidate.id != primary.id &&
+                    candidate.isAvailable &&
+                    meetsJourneyRequirement(candidate)
+            }
+            .sorted {
+                widgetHaversineDistance(lat1: primary.lat, lon1: primary.lon, lat2: $0.lat, lon2: $0.lon) <
+                    widgetHaversineDistance(lat1: primary.lat, lon1: primary.lon, lat2: $1.lat, lon2: $1.lon)
+            }
+    }
+
+    private func meetsJourneyRequirement(_ bikePoint: WatchBikePoint) -> Bool {
+        guard let journeyPurpose else {
+            return bikePoint.isAvailable
+        }
+
+        if useMinimumThresholds {
+            switch journeyPurpose {
+            case .bikes:
+                return bikePoint.standardBikes >= minBikes
+            case .eBikes:
+                return bikePoint.eBikes >= minEBikes
+            case .allBikes:
+                return bikePoint.standardBikes >= minBikes && bikePoint.eBikes >= minEBikes
+            case .spaces:
+                return bikePoint.emptyDocks >= minSpaces
+            }
+        }
+
+        switch journeyPurpose {
+        case .bikes:
+            return bikePoint.standardBikes > 0
+        case .eBikes:
+            return bikePoint.eBikes > 0
+        case .allBikes:
+            return bikePoint.totalBikes > 0
+        case .spaces:
+            return bikePoint.emptyDocks > 0
         }
     }
 }
@@ -299,10 +366,12 @@ private enum WatchThresholdSettings {
     static let minSpacesKey = "alternativeDocksMinSpaces"
     static let minBikesKey = "alternativeDocksMinBikes"
     static let minEBikesKey = "alternativeDocksMinEBikes"
+    static let useMinimumThresholdsKey = "alternativeDocksUseMinimumThresholds"
 
     static let defaultMinSpaces = 3
     static let defaultMinBikes = 3
     static let defaultMinEBikes = 3
+    static let defaultUseMinimumThresholds = false
 }
 
 private struct WatchThresholdLegend: View {

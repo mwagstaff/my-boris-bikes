@@ -47,6 +47,185 @@ private func displayTitle(attributes: DockActivityAttributes, state: DockActivit
     displayAlias(attributes: attributes, state: state) ?? displayDockName(attributes: attributes, state: state)
 }
 
+private func activeJourneyPhase(attributes: DockActivityAttributes, state: DockActivityAttributes.ContentState) -> String? {
+    if let phase = state.activeJourneyPhase?.trimmingCharacters(in: .whitespacesAndNewlines), !phase.isEmpty {
+        return phase
+    }
+    if let phase = attributes.scheduledJourneyPhase?.trimmingCharacters(in: .whitespacesAndNewlines), !phase.isEmpty {
+        return phase
+    }
+    return nil
+}
+
+private enum JourneyAvailabilityMetric {
+    case standardBikes
+    case eBikes
+    case allBikes
+    case spaces
+
+    static func journeyMetric(
+        attributes: DockActivityAttributes,
+        state: DockActivityAttributes.ContentState,
+        bikeDataFilter: BikeDataFilter
+    ) -> JourneyAvailabilityMetric? {
+        guard let phase = activeJourneyPhase(attributes: attributes, state: state) else {
+            return nil
+        }
+
+        if phase == "end" {
+            return .spaces
+        }
+
+        guard phase == "start" else {
+            return nil
+        }
+
+        switch state.primaryDisplay {
+        case LiveActivityPrimaryDisplay.bikes.rawValue:
+            return .standardBikes
+        case LiveActivityPrimaryDisplay.eBikes.rawValue:
+            return .eBikes
+        case "allBikes":
+            return .allBikes
+        default:
+            switch bikeDataFilter {
+            case .bikesOnly:
+                return .standardBikes
+            case .eBikesOnly:
+                return .eBikes
+            case .both:
+                return .allBikes
+            }
+        }
+    }
+
+    var queryValue: String {
+        switch self {
+        case .standardBikes:
+            return "bikes"
+        case .eBikes:
+            return "eBikes"
+        case .allBikes:
+            return "allBikes"
+        case .spaces:
+            return "spaces"
+        }
+    }
+}
+
+private struct JourneyAvailabilitySummary {
+    let count: Int
+    let label: String
+    let threshold: Int
+
+    init(
+        metric: JourneyAvailabilityMetric,
+        counts: BikeAvailabilityCounts,
+        minBikes: Int,
+        minEBikes: Int,
+        minSpaces: Int
+    ) {
+        switch metric {
+        case .standardBikes:
+            count = counts.standardBikes
+            label = counts.standardBikes == 1 ? "bike" : "bikes"
+            threshold = minBikes
+        case .eBikes:
+            count = counts.eBikes
+            label = counts.eBikes == 1 ? "e-bike" : "e-bikes"
+            threshold = minEBikes
+        case .allBikes:
+            count = counts.totalBikes
+            label = counts.totalBikes == 1 ? "bike" : "bikes"
+            threshold = minBikes + minEBikes
+        case .spaces:
+            count = counts.emptySpaces
+            label = counts.emptySpaces == 1 ? "space" : "spaces"
+            threshold = minSpaces
+        }
+    }
+
+    var color: Color {
+        if count == 0 { return .red }
+        if threshold > 0 && count < threshold { return .orange }
+        return .green
+    }
+
+    var text: String {
+        "\(count) \(label)"
+    }
+}
+
+private struct AlternativeJourneyDockRow: View {
+    let alternative: DockActivityAttributes.AlternativeDock
+    let summary: JourneyAvailabilitySummary
+
+    var body: some View {
+        HStack(spacing: 6) {
+            WidgetDonutChart(
+                standardBikes: alternative.standardBikes,
+                eBikes: alternative.eBikes,
+                emptySpaces: alternative.emptySpaces,
+                size: 30,
+                strokeWidth: 5,
+                centerText: extractInitials(from: alternative.name)
+            )
+            .fixedSize()
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(alternative.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                Text(summary.text)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(summary.color)
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
+private struct JourneyDockAvailabilityRow: View {
+    let attributes: DockActivityAttributes
+    let state: DockActivityAttributes.ContentState
+    let summary: JourneyAvailabilitySummary
+    let donutSize: CGFloat
+    let strokeWidth: CGFloat
+    let labelFontSize: CGFloat
+    let dockFontSize: CGFloat
+    let spacing: CGFloat
+
+    var body: some View {
+        HStack(spacing: spacing) {
+            WidgetDonutChart(
+                standardBikes: state.standardBikes,
+                eBikes: state.eBikes,
+                emptySpaces: state.emptySpaces,
+                size: donutSize,
+                strokeWidth: strokeWidth,
+                centerText: extractInitials(from: displayTitle(attributes: attributes, state: state))
+            )
+            .fixedSize()
+
+            Text(summary.text)
+                .font(.system(size: labelFontSize, weight: .semibold))
+                .foregroundColor(summary.color)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            Text(displayDockName(attributes: attributes, state: state))
+                .font(.system(size: dockFontSize, weight: .semibold))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .minimumScaleFactor(0.85)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 // MARK: - Live Activity Legend Item (local to this file)
 
 private struct LiveActivityLegendItem: View {
@@ -67,9 +246,6 @@ private struct LiveActivityLegendItem: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
             Text("\(count) \(label)")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(textColor)
@@ -116,6 +292,31 @@ private struct WatchLiveActivityView: View {
         Array(state.alternatives.prefix(3))
     }
 
+    private var journeySummary: JourneyAvailabilitySummary? {
+        guard let metric = JourneyAvailabilityMetric.journeyMetric(
+            attributes: attributes,
+            state: state,
+            bikeDataFilter: bikeDataFilter
+        ) else {
+            return nil
+        }
+        return JourneyAvailabilitySummary(
+            metric: metric,
+            counts: filteredCounts,
+            minBikes: minBikes,
+            minEBikes: minEBikes,
+            minSpaces: minSpaces
+        )
+    }
+
+    private var journeyMetric: JourneyAvailabilityMetric? {
+        JourneyAvailabilityMetric.journeyMetric(
+            attributes: attributes,
+            state: state,
+            bikeDataFilter: bikeDataFilter
+        )
+    }
+
     private var watchDetailURL: URL? {
         var components = URLComponents()
         components.scheme = "myborisbikes"
@@ -127,6 +328,9 @@ private struct WatchLiveActivityView: View {
             URLQueryItem(name: "minEBikes", value: String(minEBikes)),
             URLQueryItem(name: "minSpaces", value: String(minSpaces))
         ]
+        if let journeyMetric {
+            components.queryItems?.append(URLQueryItem(name: "journeyMetric", value: journeyMetric.queryValue))
+        }
         return components.url
     }
 
@@ -134,61 +338,74 @@ private struct WatchLiveActivityView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             // Primary dock row: donut left, name + legend right
-            HStack(spacing: 10) {
-                WidgetDonutChart(
-                    standardBikes: state.standardBikes,
-                    eBikes: state.eBikes,
-                    emptySpaces: state.emptySpaces,
-                    size: 36,
+            if let journeySummary {
+                JourneyDockAvailabilityRow(
+                    attributes: attributes,
+                    state: state,
+                    summary: journeySummary,
+                    donutSize: 36,
                     strokeWidth: 7,
-                    centerText: extractInitials(from: displayTitle(attributes: attributes, state: state))
+                    labelFontSize: 13,
+                    dockFontSize: 13,
+                    spacing: 8
                 )
-                .fixedSize()
+            } else {
+                HStack(spacing: 10) {
+                    WidgetDonutChart(
+                        standardBikes: state.standardBikes,
+                        eBikes: state.eBikes,
+                        emptySpaces: state.emptySpaces,
+                        size: 36,
+                        strokeWidth: 7,
+                        centerText: extractInitials(from: displayTitle(attributes: attributes, state: state))
+                    )
+                    .fixedSize()
 
-                VStack(alignment: .leading, spacing: 2) {
-                    // Alias (or dock name if no alias)
-                    Text(displayTitle(attributes: attributes, state: state))
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-
-                    // Full dock name shown in caption when alias is set
-                    if let alias = displayAlias(attributes: attributes, state: state), alias != displayDockName(attributes: attributes, state: state) {
-                        Text(displayDockName(attributes: attributes, state: state))
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        // Alias (or dock name if no alias)
+                        Text(displayTitle(attributes: attributes, state: state))
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
+
+                        // Full dock name shown in caption when alias is set
+                        if let alias = displayAlias(attributes: attributes, state: state), alias != displayDockName(attributes: attributes, state: state) {
+                            Text(displayDockName(attributes: attributes, state: state))
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
+
+                        HStack(spacing: 8) {
+                            if bikeDataFilter.showsStandardBikes {
+                                SmallLegendItem(
+                                    color: standardBikeColor,
+                                    count: filteredCounts.standardBikes,
+                                    label: filteredCounts.standardBikes == 1 ? "bike" : "bikes",
+                                    threshold: minBikes
+                                )
+                            }
+                            if bikeDataFilter.showsEBikes {
+                                SmallLegendItem(
+                                    color: eBikeColor,
+                                    count: filteredCounts.eBikes,
+                                    label: filteredCounts.eBikes == 1 ? "e-bike" : "e-bikes",
+                                    threshold: minEBikes
+                                )
+                            }
+                            SmallLegendItem(
+                                color: emptySpaceColor,
+                                count: filteredCounts.emptySpaces,
+                                label: filteredCounts.emptySpaces == 1 ? "space" : "spaces",
+                                threshold: minSpaces
+                            )
+                        }
                     }
 
-                    HStack(spacing: 8) {
-                        if bikeDataFilter.showsStandardBikes {
-                            SmallLegendItem(
-                                color: standardBikeColor,
-                                count: filteredCounts.standardBikes,
-                                label: filteredCounts.standardBikes == 1 ? "bike" : "bikes",
-                                threshold: minBikes
-                            )
-                        }
-                        if bikeDataFilter.showsEBikes {
-                            SmallLegendItem(
-                                color: eBikeColor,
-                                count: filteredCounts.eBikes,
-                                label: filteredCounts.eBikes == 1 ? "e-bike" : "e-bikes",
-                                threshold: minEBikes
-                            )
-                        }
-                        SmallLegendItem(
-                            color: emptySpaceColor,
-                            count: filteredCounts.emptySpaces,
-                            label: filteredCounts.emptySpaces == 1 ? "space" : "spaces",
-                            threshold: minSpaces
-                        )
-                    }
+                    Spacer(minLength: 0)
                 }
-
-                Spacer(minLength: 0)
             }
 
             // Nearby alternatives: up to 3 donut charts centered horizontally
@@ -237,7 +454,6 @@ private struct SmallLegendItem: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            Circle().fill(color).frame(width: 6, height: 6)
             Text(label.isEmpty ? "\(count)" : "\(count) \(label)")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(textColor)
@@ -291,6 +507,7 @@ private struct DockLiveActivityView: View {
         } else {
             lockScreenContent
                 .activityBackgroundTint(Color(.systemBackground))
+                .widgetURL(lockScreenDetailURL)
         }
     }
 
@@ -298,66 +515,137 @@ private struct DockLiveActivityView: View {
         Array(state.alternatives.prefix(3))
     }
 
+    private var journeySummary: JourneyAvailabilitySummary? {
+        guard let metric = JourneyAvailabilityMetric.journeyMetric(
+            attributes: attributes,
+            state: state,
+            bikeDataFilter: bikeDataFilter
+        ) else {
+            return nil
+        }
+        return JourneyAvailabilitySummary(
+            metric: metric,
+            counts: filteredCounts,
+            minBikes: minBikes,
+            minEBikes: minEBikes,
+            minSpaces: minSpaces
+        )
+    }
+
+    private var journeyMetric: JourneyAvailabilityMetric? {
+        JourneyAvailabilityMetric.journeyMetric(
+            attributes: attributes,
+            state: state,
+            bikeDataFilter: bikeDataFilter
+        )
+    }
+
+    private var lockScreenDetailURL: URL? {
+        var components = URLComponents()
+        components.scheme = "myborisbikes"
+        components.host = "dock"
+        components.path = "/\(displayDockId(attributes: attributes, state: state))"
+        components.queryItems = [
+            URLQueryItem(name: "bikeFilter", value: bikeDataFilter.rawValue),
+            URLQueryItem(name: "minBikes", value: String(minBikes)),
+            URLQueryItem(name: "minEBikes", value: String(minEBikes)),
+            URLQueryItem(name: "minSpaces", value: String(minSpaces))
+        ]
+        if let journeyMetric {
+            components.queryItems?.append(URLQueryItem(name: "journeyMetric", value: journeyMetric.queryValue))
+        }
+        return components.url
+    }
+
+    private func journeySummary(for alternative: DockActivityAttributes.AlternativeDock) -> JourneyAvailabilitySummary? {
+        guard let journeyMetric else { return nil }
+        let counts = bikeDataFilter.filteredCounts(
+            standardBikes: alternative.standardBikes,
+            eBikes: alternative.eBikes,
+            emptySpaces: alternative.emptySpaces
+        )
+        return JourneyAvailabilitySummary(
+            metric: journeyMetric,
+            counts: counts,
+            minBikes: minBikes,
+            minEBikes: minEBikes,
+            minSpaces: minSpaces
+        )
+    }
+
     @ViewBuilder
     private var lockScreenContent: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 // Primary dock row
-                HStack(spacing: 14) {
-                    WidgetDonutChart(
-                        standardBikes: state.standardBikes,
-                        eBikes: state.eBikes,
-                        emptySpaces: state.emptySpaces,
-                        size: 42,
+                if let journeySummary {
+                    JourneyDockAvailabilityRow(
+                        attributes: attributes,
+                        state: state,
+                        summary: journeySummary,
+                        donutSize: 42,
                         strokeWidth: 10,
-                        centerText: extractInitials(from: displayTitle(attributes: attributes, state: state))
+                        labelFontSize: 16,
+                        dockFontSize: 16,
+                        spacing: 10
                     )
-                    .fixedSize()
+                } else {
+                    HStack(spacing: 14) {
+                        WidgetDonutChart(
+                            standardBikes: state.standardBikes,
+                            eBikes: state.eBikes,
+                            emptySpaces: state.emptySpaces,
+                            size: 42,
+                            strokeWidth: 10,
+                            centerText: extractInitials(from: displayTitle(attributes: attributes, state: state))
+                        )
+                        .fixedSize()
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        if let alias = displayAlias(attributes: attributes, state: state) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(alias)
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 4) {
+                            if let alias = displayAlias(attributes: attributes, state: state) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(alias)
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .lineLimit(1)
+                                    Text(displayDockName(attributes: attributes, state: state))
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
+                            } else {
                                 Text(displayDockName(attributes: attributes, state: state))
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .lineLimit(2)
                             }
-                        } else {
-                            Text(displayDockName(attributes: attributes, state: state))
-                                .font(.system(size: 14, weight: .semibold))
-                                .lineLimit(2)
+
+                            HStack(spacing: 10) {
+                                if bikeDataFilter.showsStandardBikes {
+                                    LiveActivityLegendItem(
+                                        color: standardBikeColor,
+                                        count: filteredCounts.standardBikes,
+                                        label: filteredCounts.standardBikes == 1 ? "bike" : "bikes",
+                                        threshold: minBikes
+                                    )
+                                }
+                                if bikeDataFilter.showsEBikes {
+                                    LiveActivityLegendItem(
+                                        color: eBikeColor,
+                                        count: filteredCounts.eBikes,
+                                        label: filteredCounts.eBikes == 1 ? "e-bike" : "e-bikes",
+                                        threshold: minEBikes
+                                    )
+                                }
+                                LiveActivityLegendItem(
+                                    color: emptySpaceColor,
+                                    count: filteredCounts.emptySpaces,
+                                    label: filteredCounts.emptySpaces == 1 ? "space" : "spaces",
+                                    threshold: minSpaces
+                                )
+                            }
                         }
 
-                        HStack(spacing: 10) {
-                            if bikeDataFilter.showsStandardBikes {
-                                LiveActivityLegendItem(
-                                    color: standardBikeColor,
-                                    count: filteredCounts.standardBikes,
-                                    label: filteredCounts.standardBikes == 1 ? "bike" : "bikes",
-                                    threshold: minBikes
-                                )
-                            }
-                            if bikeDataFilter.showsEBikes {
-                                LiveActivityLegendItem(
-                                    color: eBikeColor,
-                                    count: filteredCounts.eBikes,
-                                    label: filteredCounts.eBikes == 1 ? "e-bike" : "e-bikes",
-                                    threshold: minEBikes
-                                )
-                            }
-                            LiveActivityLegendItem(
-                                color: emptySpaceColor,
-                                count: filteredCounts.emptySpaces,
-                                label: filteredCounts.emptySpaces == 1 ? "space" : "spaces",
-                                threshold: minSpaces
-                            )
-                        }
+                        Spacer()
                     }
-
-                    Spacer()
                 }
 
                 // Nearby alternatives: donut + name + vertical counts
@@ -370,16 +658,23 @@ private struct DockLiveActivityView: View {
                                 eBikes: alt.eBikes,
                                 emptySpaces: alt.emptySpaces
                             )
-                            HStack(spacing: 6) {
-                                WidgetDonutChart(
-                                    standardBikes: alt.standardBikes,
-                                    eBikes: alt.eBikes,
-                                    emptySpaces: alt.emptySpaces,
-                                    size: 30,
-                                    strokeWidth: 5,
-                                    centerText: extractInitials(from: alt.name)
+                            if let summary = journeySummary(for: alt) {
+                                AlternativeJourneyDockRow(
+                                    alternative: alt,
+                                    summary: summary
                                 )
-                                .fixedSize()
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                HStack(spacing: 6) {
+                                    WidgetDonutChart(
+                                        standardBikes: alt.standardBikes,
+                                        eBikes: alt.eBikes,
+                                        emptySpaces: alt.emptySpaces,
+                                        size: 30,
+                                        strokeWidth: 5,
+                                        centerText: extractInitials(from: alt.name)
+                                    )
+                                    .fixedSize()
 
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(alt.name)
@@ -409,8 +704,9 @@ private struct DockLiveActivityView: View {
                                         threshold: minSpaces
                                     )
                                 }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                 }
@@ -465,14 +761,23 @@ private struct PrimaryDisplayText: View {
     }
 
     private var currentValue: Int {
-        primaryDisplay.primaryValue(standardBikes: state.standardBikes, eBikes: state.eBikes, emptySpaces: state.emptySpaces)
+        if state.primaryDisplay == "allBikes" {
+            return state.standardBikes + state.eBikes
+        }
+        return primaryDisplay.primaryValue(standardBikes: state.standardBikes, eBikes: state.eBikes, emptySpaces: state.emptySpaces)
     }
 
     private var threshold: Int {
+        if state.primaryDisplay == "allBikes" {
+            return minBikes + minEBikes
+        }
         switch primaryDisplay {
-        case .bikes: return minBikes
-        case .eBikes: return minEBikes
-        case .spaces: return minSpaces
+        case .bikes:
+            return minBikes
+        case .eBikes:
+            return minEBikes
+        case .spaces:
+            return minSpaces
         }
     }
 
@@ -608,7 +913,6 @@ struct My_Boris_Bikes_WidgetLiveActivity: Widget {
                 state: context.state
             )
             .activitySystemActionForegroundColor(Color.primary)
-            .widgetURL(appLaunchURL)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
