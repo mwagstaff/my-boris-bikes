@@ -709,6 +709,36 @@ class LiveActivityService: ObservableObject {
         )
     }
 
+    func performWatchJourneyAction(action: String, dockId: String) async -> Bool {
+        let trimmedAction = action.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDockId = dockId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAction.isEmpty, !trimmedDockId.isEmpty else { return false }
+
+        switch trimmedAction {
+        case "advance":
+            return await advanceJourneyFromStart(dockId: trimmedDockId)
+        case "end":
+            if currentNotificationSession == nil {
+                await refreshNotificationStatusFromServer()
+            }
+            guard let session = currentNotificationSession else { return false }
+            await endLiveActivityFromUserAction(
+                dockId: session.dockId,
+                dockName: session.dockName,
+                reason: "watch_journey_end"
+            )
+            if let scheduledJourneyId = session.scheduledJourneyId {
+                await ScheduledJourneyService.shared.complete(journeyId: scheduledJourneyId)
+            }
+            if let adHocJourneyId = session.adHocJourneyId {
+                AdHocJourneyService.shared.complete(journeyId: adHocJourneyId)
+            }
+            return true
+        default:
+            return false
+        }
+    }
+
     func refreshNotificationStatusFromServer() async {
         guard let deviceToken = DeviceTokenHelper.apnsDeviceToken else {
             activeNotificationSession = nil

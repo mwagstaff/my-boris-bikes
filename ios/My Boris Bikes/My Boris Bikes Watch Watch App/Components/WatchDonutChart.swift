@@ -5,6 +5,7 @@ struct WatchDonutChart: View {
     let eBikes: Int
     let emptySpaces: Int
     let size: CGFloat
+    var centerValue: Int? = nil
 
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
@@ -79,8 +80,7 @@ struct WatchDonutChart: View {
                         .frame(width: size, height: size)
                 }
                 
-                // Center text showing total bikes
-                Text("\(filteredCounts.totalBikes)")
+                Text("\(centerValue ?? filteredCounts.totalBikes)")
                     .font(.system(size: size * 0.3, weight: .bold))
                     .foregroundColor(.primary)
             }

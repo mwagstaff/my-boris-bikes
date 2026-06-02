@@ -3,6 +3,12 @@ import Combine
 import WatchConnectivity
 import WidgetKit
 
+struct WatchJourneyActionResult {
+    let success: Bool
+    let dockId: String?
+    let journeyMetricRawValue: String?
+}
+
 // MARK: - Notification Names
 extension Notification.Name {
     static let favoritesDidChange = Notification.Name("favoritesDidChange")
@@ -168,6 +174,39 @@ class WatchFavoritesService: NSObject, ObservableObject {
         
         lastSyncAttempt = Date()
         requestFavoritesFromPhone()
+    }
+
+    func performJourneyAction(action: String, dockId: String) async -> WatchJourneyActionResult {
+        guard WCSession.default.activationState == .activated,
+              WCSession.default.isReachable else {
+            return WatchJourneyActionResult(success: false, dockId: nil, journeyMetricRawValue: nil)
+        }
+
+        let message: [String: Any] = [
+            "request": "journeyAction",
+            "action": action,
+            "dockId": dockId,
+            "timestamp": Date().timeIntervalSince1970
+        ]
+
+        return await withCheckedContinuation { continuation in
+            WCSession.default.sendMessage(message, replyHandler: { reply in
+                let success = reply["success"] as? Bool ?? false
+                let dockId = reply["dockId"] as? String
+                let journeyMetricRawValue = reply["journeyMetric"] as? String
+                continuation.resume(returning: WatchJourneyActionResult(
+                    success: success,
+                    dockId: dockId,
+                    journeyMetricRawValue: journeyMetricRawValue
+                ))
+            }, errorHandler: { _ in
+                continuation.resume(returning: WatchJourneyActionResult(
+                    success: false,
+                    dockId: nil,
+                    journeyMetricRawValue: nil
+                ))
+            })
+        }
     }
     
     private func requestFavoritesFromPhone() {

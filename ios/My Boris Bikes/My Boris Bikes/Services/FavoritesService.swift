@@ -295,6 +295,29 @@ extension FavoritesService: WCSessionDelegate {
                     "timestamp": Date().timeIntervalSince1970
                 ])
             }
+        } else if let request = message["request"] as? String, request == "journeyAction" {
+            let action = message["action"] as? String ?? ""
+            let dockId = message["dockId"] as? String ?? ""
+
+            Task { @MainActor in
+                let success = await LiveActivityService.shared.performWatchJourneyAction(
+                    action: action,
+                    dockId: dockId
+                )
+                let session = LiveActivityService.shared.currentNotificationSession
+                var response: [String: Any] = [
+                    "status": success ? "success" : "error",
+                    "success": success,
+                    "timestamp": Date().timeIntervalSince1970
+                ]
+                if let session {
+                    response["dockId"] = session.dockId
+                    if let phase = session.scheduledJourneyPhase {
+                        response["journeyMetric"] = phase == .end ? "spaces" : "allBikes"
+                    }
+                }
+                replyHandler(response)
+            }
         } else {
             // Unknown request
             replyHandler([

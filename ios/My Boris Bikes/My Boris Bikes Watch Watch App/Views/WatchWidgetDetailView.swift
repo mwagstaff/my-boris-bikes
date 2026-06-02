@@ -36,10 +36,13 @@ struct WatchWidgetDetailView: View {
     init(primaryDockId: String, journeyMetricRawValue: String? = nil) {
         self.primaryDockId = primaryDockId
         self.journeyMetricRawValue = journeyMetricRawValue
+        _displayedDockId = State(initialValue: primaryDockId)
+        _displayedJourneyMetricRawValue = State(initialValue: journeyMetricRawValue)
     }
 
     @StateObject private var viewModel = WatchFavoritesViewModel()
     @StateObject private var locationService = WatchLocationService.shared
+    @ObservedObject private var favoritesService = WatchFavoritesService.shared
 
     @State private var primaryBikePoint: WatchBikePoint?
     @State private var alternatives: [WatchBikePoint] = []
@@ -48,6 +51,10 @@ struct WatchWidgetDetailView: View {
     @State private var hasLoadedAlternatives = false
     @State private var alternativesLoadFailed = false
     @State private var hasLoadedInitialData = false
+    @State private var isPerformingJourneyAction = false
+    @State private var journeyActionMessage: String?
+    @State private var displayedDockId: String
+    @State private var displayedJourneyMetricRawValue: String?
 
     @AppStorage(WatchThresholdSettings.minBikesKey, store: BikeDataFilter.userDefaultsStore)
     private var minBikes: Int = WatchThresholdSettings.defaultMinBikes
@@ -62,24 +69,36 @@ struct WatchWidgetDetailView: View {
     private var useMinimumThresholds: Bool = WatchThresholdSettings.defaultUseMinimumThresholds
 
     private var journeyPurpose: WatchJourneyAlternativePurpose? {
-        guard let journeyMetricRawValue else { return nil }
-        return WatchJourneyAlternativePurpose(rawValue: journeyMetricRawValue)
+        guard let displayedJourneyMetricRawValue else { return nil }
+        return WatchJourneyAlternativePurpose(rawValue: displayedJourneyMetricRawValue)
+    }
+
+    private var journeyAction: WatchJourneyAction? {
+        guard let journeyPurpose else { return nil }
+        return journeyPurpose == .spaces ? .end : .advance
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                if isLoadingPrimary {
-                    loadingStateView
-                } else if let station = primaryBikePoint {
-                    primarySection(station)
-                    alternativesSection
-                } else {
-                    unavailableStateView
+        ScrollViewReader { scrollProxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Color.clear
+                        .frame(height: 0)
+                        .id("top")
+
+                    if isLoadingPrimary {
+                        loadingStateView
+                    } else if let station = primaryBikePoint {
+                        primarySection(station)
+                        alternativesSection
+                        journeyActionSection(scrollProxy: scrollProxy)
+                    } else {
+                        unavailableStateView
+                    }
                 }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
             }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 8)
         }
         .navigationTitle("Dock Info")
         .navigationBarTitleDisplayMode(.inline)
@@ -97,7 +116,8 @@ struct WatchWidgetDetailView: View {
         DockAvailabilityCard(
             bikePoint: station,
             distanceString: distanceString(for: station),
-            chartSize: 64
+            chartSize: 64,
+            journeyPurpose: journeyPurpose
         )
     }
 
@@ -124,7 +144,8 @@ struct WatchWidgetDetailView: View {
                     DockAvailabilityCard(
                         bikePoint: alt,
                         distanceString: distanceString(for: alt),
-                        chartSize: 52
+                        chartSize: 52,
+                        journeyPurpose: journeyPurpose
                     )
                 }
             }
@@ -133,6 +154,42 @@ struct WatchWidgetDetailView: View {
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func journeyActionSection(scrollProxy: ScrollViewProxy) -> some View {
+        if let journeyAction {
+            VStack(alignment: .leading, spacing: 6) {
+                Button {
+                    Task { await performJourneyAction(journeyAction, scrollProxy: scrollProxy) }
+                } label: {
+                    HStack {
+                        if isPerformingJourneyAction {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        }
+                        Text(journeyAction.title)
+                            .font(.system(.caption, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isPerformingJourneyAction)
+
+                if let journeyActionMessage {
+                    Text(journeyActionMessage)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                } else if !favoritesService.isConnectedToPhone {
+                    Text("Requires iPhone connection.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
+            .padding(.top, 4)
         }
     }
 
@@ -177,15 +234,15 @@ struct WatchWidgetDetailView: View {
         }
 
         // Use existing in-memory favorites first for fast first paint.
-        var primary = viewModel.favoriteBikePoints.first(where: { $0.id == primaryDockId })
+        var primary = viewModel.favoriteBikePoints.first(where: { $0.id == displayedDockId })
         if primary == nil {
             primary = try? await WatchTfLAPIService.shared
-                .fetchBikePoint(id: primaryDockId)
+                .fetchBikePoint(id: displayedDockId)
                 .async()
         }
         if primary == nil {
             primary = try? await WatchTfLAPIService.shared
-                .fetchBikePoint(id: primaryDockId, cacheBusting: true)
+                .fetchBikePoint(id: displayedDockId, cacheBusting: true)
                 .async()
         }
 
@@ -304,12 +361,67 @@ struct WatchWidgetDetailView: View {
             return bikePoint.emptyDocks > 0
         }
     }
+
+    private func performJourneyAction(_ action: WatchJourneyAction, scrollProxy: ScrollViewProxy) async {
+        await MainActor.run {
+            isPerformingJourneyAction = true
+            journeyActionMessage = nil
+        }
+
+        let result = await WatchFavoritesService.shared.performJourneyAction(
+            action: action.rawValue,
+            dockId: displayedDockId
+        )
+
+        await MainActor.run {
+            isPerformingJourneyAction = false
+            journeyActionMessage = result.success ? action.successMessage : "Couldn’t update journey."
+        }
+
+        guard result.success else { return }
+
+        if action == .advance, let nextDockId = result.dockId {
+            await MainActor.run {
+                displayedDockId = nextDockId
+                displayedJourneyMetricRawValue = result.journeyMetricRawValue ?? WatchJourneyAlternativePurpose.spaces.rawValue
+                journeyActionMessage = nil
+                withAnimation {
+                    scrollProxy.scrollTo("top", anchor: .top)
+                }
+            }
+            await loadDockDetails()
+        }
+    }
+}
+
+private enum WatchJourneyAction: String {
+    case advance
+    case end
+
+    var title: String {
+        switch self {
+        case .advance:
+            return "Next leg"
+        case .end:
+            return "End journey"
+        }
+    }
+
+    var successMessage: String {
+        switch self {
+        case .advance:
+            return "Journey advanced."
+        case .end:
+            return "Journey ended."
+        }
+    }
 }
 
 private struct DockAvailabilityCard: View {
     let bikePoint: WatchBikePoint
     let distanceString: String
     let chartSize: CGFloat
+    let journeyPurpose: WatchJourneyAlternativePurpose?
 
     var body: some View {
         VStack(alignment: .center, spacing: 8) {
@@ -342,14 +454,16 @@ private struct DockAvailabilityCard: View {
                 standardBikes: bikePoint.standardBikes,
                 eBikes: bikePoint.eBikes,
                 emptySpaces: bikePoint.emptyDocks,
-                size: chartSize
+                size: chartSize,
+                centerValue: centerValue
             )
             .frame(maxWidth: .infinity, alignment: .center)
 
             WatchThresholdLegend(
                 standardBikes: bikePoint.standardBikes,
                 eBikes: bikePoint.eBikes,
-                emptySpaces: bikePoint.emptyDocks
+                emptySpaces: bikePoint.emptyDocks,
+                journeyPurpose: journeyPurpose
             )
         }
         .padding(.vertical, 10)
@@ -359,6 +473,39 @@ private struct DockAvailabilityCard: View {
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color.white.opacity(0.08))
         )
+    }
+
+    private var displayedStandardBikes: Int {
+        switch journeyPurpose {
+        case .spaces:
+            return 0
+        case .eBikes:
+            return 0
+        case .bikes, .allBikes, .none:
+            return bikePoint.standardBikes
+        }
+    }
+
+    private var displayedEBikes: Int {
+        switch journeyPurpose {
+        case .spaces:
+            return 0
+        case .bikes:
+            return 0
+        case .eBikes, .allBikes, .none:
+            return bikePoint.eBikes
+        }
+    }
+
+    private var displayedEmptySpaces: Int {
+        journeyPurpose == nil || journeyPurpose == .spaces ? bikePoint.emptyDocks : 0
+    }
+
+    private var centerValue: Int {
+        if journeyPurpose == .spaces {
+            return bikePoint.emptyDocks
+        }
+        return displayedStandardBikes + displayedEBikes
     }
 }
 
@@ -378,6 +525,7 @@ private struct WatchThresholdLegend: View {
     let standardBikes: Int
     let eBikes: Int
     let emptySpaces: Int
+    let journeyPurpose: WatchJourneyAlternativePurpose?
 
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
@@ -405,7 +553,7 @@ private struct WatchThresholdLegend: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            if bikeDataFilter.showsStandardBikes {
+            if showsStandardBikes {
                 WatchThresholdLegendItem(
                     color: .red,
                     count: filteredCounts.standardBikes,
@@ -413,7 +561,7 @@ private struct WatchThresholdLegend: View {
                     threshold: minBikes
                 )
             }
-            if bikeDataFilter.showsEBikes {
+            if showsEBikes {
                 WatchThresholdLegendItem(
                     color: .blue,
                     count: filteredCounts.eBikes,
@@ -421,13 +569,41 @@ private struct WatchThresholdLegend: View {
                     threshold: minEBikes
                 )
             }
-            WatchThresholdLegendItem(
-                color: .gray.opacity(0.6),
-                count: filteredCounts.emptySpaces,
-                label: filteredCounts.emptySpaces == 1 ? "space" : "spaces",
-                threshold: minSpaces
-            )
+            if showsSpaces {
+                WatchThresholdLegendItem(
+                    color: .gray.opacity(0.6),
+                    count: filteredCounts.emptySpaces,
+                    label: filteredCounts.emptySpaces == 1 ? "space" : "spaces",
+                    threshold: minSpaces
+                )
+            }
         }
+    }
+
+    private var showsStandardBikes: Bool {
+        switch journeyPurpose {
+        case .spaces, .eBikes:
+            return false
+        case .bikes, .allBikes:
+            return bikeDataFilter.showsStandardBikes
+        case .none:
+            return bikeDataFilter.showsStandardBikes
+        }
+    }
+
+    private var showsEBikes: Bool {
+        switch journeyPurpose {
+        case .spaces, .bikes:
+            return false
+        case .eBikes, .allBikes:
+            return bikeDataFilter.showsEBikes
+        case .none:
+            return bikeDataFilter.showsEBikes
+        }
+    }
+
+    private var showsSpaces: Bool {
+        journeyPurpose == nil || journeyPurpose == .spaces
     }
 }
 
