@@ -671,20 +671,45 @@ function scheduledRunKey(journey, date = new Date()) {
 
 function shouldStartScheduledJourney(journey, date = new Date()) {
   if (journey.enabled === false || journey.deletedAt) return false;
-  if (journey.activeRun?.phase) return false;
 
   const parts = localDateParts(date, journey.timezone || "Europe/London");
   if (!journey.weekdays?.includes(parts.weekday)) return false;
   if (parts.time !== journey.startTime) return false;
 
   const runKey = `${parts.dateKey}:${journey.startTime}`;
+  if (journey.activeRun?.phase) {
+    if (journey.activeRun.runKey === runKey) return false;
+    const activeStartedAt = journey.activeRun.startedAt
+      ? new Date(journey.activeRun.startedAt)
+      : null;
+    if (activeStartedAt && !Number.isNaN(activeStartedAt.getTime())) {
+      const activeParts = localDateParts(
+        activeStartedAt,
+        journey.timezone || "Europe/London"
+      );
+      if (activeParts.dateKey === parts.dateKey) return false;
+    }
+  }
+
   return !Array.isArray(journey.pausedRunKeys) || !journey.pausedRunKeys.includes(runKey);
 }
 
 function shouldEndScheduledJourneyWindow(journey, date = new Date()) {
   if (!journey.activeRun?.phase) return false;
   const parts = localDateParts(date, journey.timezone || "Europe/London");
-  return parts.time === journey.endTime;
+  if (parts.time === journey.endTime) return true;
+
+  const activeStartedAt = journey.activeRun.startedAt
+    ? new Date(journey.activeRun.startedAt)
+    : null;
+  if (!activeStartedAt || Number.isNaN(activeStartedAt.getTime())) return false;
+
+  const windowMinutes = scheduledWindowMinutes(journey.startTime, journey.endTime);
+  if (windowMinutes === null) {
+    return false;
+  }
+
+  return date.getTime() - activeStartedAt.getTime() >= windowMinutes * 60 * 1000;
 }
 
 // ── Dock Value Overrides ─────────────────────────────────────────────
@@ -1711,6 +1736,81 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
     status: "success",
   });
   return result;
+}
+
+function journeySessionPhase(session) {
+  return session?.scheduledJourneyPhase === "end" || session?.activeJourneyPhase === "end"
+    ? "end"
+    : session?.scheduledJourneyPhase === "start" || session?.activeJourneyPhase === "start"
+      ? "start"
+      : null;
+}
+
+function isPreStartAdHocJourneySession(session) {
+  return (
+    journeySessionPhase(session) === "start" &&
+    !session?.scheduledJourneyId
+  );
+}
+
+function isInProgressJourneySession(session) {
+  return journeySessionPhase(session) === "end";
+}
+
+async function prepareScheduledJourneyStart(journey, reason) {
+  const deviceToken = normalizeApnsDeviceToken(journey.deviceToken);
+  if (!deviceToken) {
+    return { canStart: true, endedPreStartAdHocCount: 0, inProgressCount: 0 };
+  }
+
+  let inProgressCount = 0;
+  for (const poller of dockPollers.values()) {
+    for (const session of poller.tokens.values()) {
+      if (session.deviceToken !== deviceToken) continue;
+      if (isInProgressJourneySession(session)) {
+        inProgressCount += 1;
+      }
+    }
+  }
+
+  if (inProgressCount > 0) {
+    appendDiagnosticJsonLine("scheduled_journey_start_not_overriding_in_progress", {
+      journeyId: journey._id?.toString?.() || null,
+      deviceToken: shortenIdentifier(deviceToken),
+      reason,
+      inProgressCount,
+    });
+    logger.info(
+      `Skipped scheduled journey ${journey._id} start because ${inProgressCount} journey session(s) are already in progress`
+    );
+    return { canStart: false, endedPreStartAdHocCount: 0, inProgressCount };
+  }
+
+  let endedPreStartAdHocCount = 0;
+  for (const dockId of Array.from(dockPollers.keys())) {
+    const result = await endTrackedSessionsForDock(
+      dockId,
+      (_pushToken, session) =>
+        session.deviceToken === deviceToken &&
+        isPreStartAdHocJourneySession(session),
+      "scheduled_start_override_ad_hoc"
+    );
+    endedPreStartAdHocCount += result.endedCount;
+  }
+
+  if (endedPreStartAdHocCount > 0) {
+    appendDiagnosticJsonLine("scheduled_journey_start_overrode_pre_start_ad_hoc", {
+      journeyId: journey._id?.toString?.() || null,
+      deviceToken: shortenIdentifier(deviceToken),
+      reason,
+      endedCount: endedPreStartAdHocCount,
+    });
+    logger.info(
+      `Ended ${endedPreStartAdHocCount} pre-start ad-hoc journey session(s) before starting scheduled journey ${journey._id}`
+    );
+  }
+
+  return { canStart: true, endedPreStartAdHocCount, inProgressCount: 0 };
 }
 
 function scheduledJourneyStartAlertBody(dockName, dockData, bikeDataFilter) {
@@ -3581,6 +3681,21 @@ app.post("/scheduled-journeys/:id/activate", async (req, res) => {
   if (!journey) return res.status(404).json({ error: "Scheduled journey not found" });
 
   const runKey = scheduledRunKey(journey);
+  if (req.body?.remoteStart !== false) {
+    try {
+      const arbitration = await prepareScheduledJourneyStart(journey, "manual");
+      if (!arbitration.canStart) {
+        return res.status(409).json({
+          success: false,
+          error: "A journey is already in progress",
+          journey: serializeScheduledJourney(journey),
+        });
+      }
+    } catch (err) {
+      logger.warn(`Manual scheduled journey arbitration failed: ${err.message}`);
+    }
+  }
+
   await collection.updateOne(
     { _id: journey._id },
     {
@@ -3733,6 +3848,7 @@ app.post("/live-activity/start", (req, res) => {
     minimumThresholds,
     scheduledJourneyId,
     scheduledJourneyPhase,
+    adHocJourneyId,
     standardBikes,
     eBikes,
     emptySpaces,
@@ -3875,6 +3991,10 @@ app.post("/live-activity/start", (req, res) => {
     scheduledJourneyPhase:
       scheduledJourneyPhase === "end" ? "end" : scheduledJourneyPhase === "start" ? "start" :
         activeJourneyPhase === "end" ? "end" : activeJourneyPhase === "start" ? "start" : null,
+    adHocJourneyId:
+      typeof adHocJourneyId === "string" && adHocJourneyId.trim()
+        ? adHocJourneyId.trim().slice(0, 128)
+        : null,
     activeDockId:
       typeof activeDockId === "string" && activeDockId.trim() ? activeDockId.trim() : dockId,
     activeDockName:
@@ -3899,6 +4019,10 @@ app.post("/live-activity/start", (req, res) => {
         : null,
     scheduledJourneyPhase:
       scheduledJourneyPhase === "end" ? "end" : scheduledJourneyPhase === "start" ? "start" : null,
+    adHocJourneyId:
+      typeof adHocJourneyId === "string" && adHocJourneyId.trim()
+        ? adHocJourneyId.trim().slice(0, 128)
+        : null,
     seededAvailability: hasSeededAvailability ? seededData : null,
     activeTokenCountForDock: poller.tokens.size,
     expiresAt: new Date(effectiveExpiresAtMs).toISOString(),
@@ -4656,6 +4780,9 @@ app.get("/live-activity/status", (req, res) => {
         alternativesCount: Array.isArray(session.alternatives)
           ? session.alternatives.length
           : 0,
+        scheduledJourneyId: session.scheduledJourneyId || null,
+        scheduledJourneyPhase: session.scheduledJourneyPhase || null,
+        adHocJourneyId: session.adHocJourneyId || null,
         dockName:
           session.dockName ||
           (typeof poller.lastData?.dockName === "string" &&
@@ -4856,8 +4983,6 @@ async function processScheduledJourneyStarts() {
     .find({
       enabled: { $ne: false },
       deletedAt: { $exists: false },
-      pushToStartToken: { $type: "string" },
-      $or: [{ activeRun: null }, { activeRun: { $exists: false } }],
     })
     .toArray();
 
@@ -4865,7 +4990,23 @@ async function processScheduledJourneyStarts() {
     if (!shouldStartScheduledJourney(journey)) continue;
 
     const runKey = scheduledRunKey(journey);
+    if (!normalizeApnsDeviceToken(journey.pushToStartToken)) {
+      appendDiagnosticJsonLine("scheduled_journey_start_missing_push_to_start_token", {
+        journeyId: journey._id?.toString?.() || null,
+        deviceId: shortenIdentifier(journey.deviceId),
+        runKey,
+      });
+      logger.warn(
+        `Scheduled journey ${journey._id} was eligible for ${runKey} but has no push-to-start token`
+      );
+      continue;
+    }
+
     try {
+      const arbitration = await prepareScheduledJourneyStart(journey, "schedule");
+      if (!arbitration.canStart) {
+        continue;
+      }
       await sendScheduledJourneyStartPush(journey, "schedule");
       try {
         await sendScheduledJourneyInitialAvailabilityPush(journey);

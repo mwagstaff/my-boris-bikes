@@ -462,7 +462,8 @@ class LiveActivityService: ObservableObject {
                         alternatives: activity.content.state.alternatives,
                         currentState: initialState,
                         scheduledJourneyId: scheduledJourneyId,
-                        scheduledJourneyPhase: scheduledJourneyPhase
+                        scheduledJourneyPhase: scheduledJourneyPhase,
+                        adHocJourneyId: adHocJourneyId
                     )
                 }
             }
@@ -492,7 +493,8 @@ class LiveActivityService: ObservableObject {
                         alternatives: activity.content.state.alternatives,
                         currentState: activity.content.state,
                         scheduledJourneyId: scheduledJourneyId,
-                        scheduledJourneyPhase: scheduledJourneyPhase
+                        scheduledJourneyPhase: scheduledJourneyPhase,
+                        adHocJourneyId: adHocJourneyId
                     )
                 }
             }
@@ -1058,7 +1060,8 @@ class LiveActivityService: ObservableObject {
                 alternatives: alternatives,
                 currentState: activity.content.state,
                 scheduledJourneyId: activity.attributes.scheduledJourneyId,
-                scheduledJourneyPhase: scheduledJourneyPhase
+                scheduledJourneyPhase: scheduledJourneyPhase,
+                adHocJourneyId: activity.attributes.adHocJourneyId
             )
         }
 
@@ -1249,7 +1252,8 @@ class LiveActivityService: ObservableObject {
                 alternatives: alternatives,
                 currentState: activity.content.state,
                 scheduledJourneyId: activity.attributes.scheduledJourneyId,
-                scheduledJourneyPhase: scheduledJourneyPhase
+                scheduledJourneyPhase: scheduledJourneyPhase,
+                adHocJourneyId: activity.attributes.adHocJourneyId
             )
         }
 
@@ -1402,7 +1406,8 @@ class LiveActivityService: ObservableObject {
                             alternatives: alternatives,
                             currentState: activity.content.state,
                             scheduledJourneyId: activity.attributes.scheduledJourneyId,
-                            scheduledJourneyPhase: scheduledJourneyPhase
+                            scheduledJourneyPhase: scheduledJourneyPhase,
+                            adHocJourneyId: activity.attributes.adHocJourneyId
                         )
                     }
                 }
@@ -1426,7 +1431,8 @@ class LiveActivityService: ObservableObject {
                             alternatives: alternatives,
                             currentState: activity.content.state,
                             scheduledJourneyId: activity.attributes.scheduledJourneyId,
-                            scheduledJourneyPhase: scheduledJourneyPhase
+                            scheduledJourneyPhase: scheduledJourneyPhase,
+                            adHocJourneyId: activity.attributes.adHocJourneyId
                         )
                     }
                 }
@@ -1527,7 +1533,8 @@ class LiveActivityService: ObservableObject {
         alternatives: [DockActivityAttributes.AlternativeDock],
         currentState: DockActivityAttributes.ContentState? = nil,
         scheduledJourneyId: String? = nil,
-        scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase? = nil
+        scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase? = nil,
+        adHocJourneyId: String? = nil
     ) async {
         let urlString = "\(serverBaseURL)/live-activity/start"
         guard let url = URL(string: urlString) else {
@@ -1589,6 +1596,9 @@ class LiveActivityService: ObservableObject {
         }
         if let scheduledJourneyPhase {
             body["scheduledJourneyPhase"] = scheduledJourneyPhase.rawValue
+        }
+        if let adHocJourneyId {
+            body["adHocJourneyId"] = adHocJourneyId
         }
 
         do {
