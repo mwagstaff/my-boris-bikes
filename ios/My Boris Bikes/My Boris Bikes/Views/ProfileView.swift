@@ -1,27 +1,51 @@
 import SwiftUI
 
 struct ProfileView: View {
+    @State private var isShowingPreferences = false
+    @State private var isShowingAbout = false
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    ProfileNavigationCard()
+                    ProfileNavigationCard { route in
+                        switch route {
+                        case .preferences:
+                            isShowingAbout = false
+                            isShowingPreferences = true
+                        case .about:
+                            isShowingPreferences = false
+                            isShowingAbout = true
+                        }
+                    }
                         .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
             }
             .navigationTitle("Profile")
+            .navigationDestination(isPresented: $isShowingPreferences) {
+                PreferencesView()
+            }
+            .navigationDestination(isPresented: $isShowingAbout) {
+                AboutView()
+            }
         }
     }
 }
 
+private enum ProfileRoute {
+    case preferences
+    case about
+}
+
 private struct ProfileNavigationCard: View {
+    let navigate: (ProfileRoute) -> Void
+
     var body: some View {
         VStack(spacing: 0) {
-            NavigationLink {
-                PreferencesView()
+            Button {
+                navigate(.preferences)
             } label: {
                 ProfileNavigationRow(
                     title: "Preferences",
@@ -34,8 +58,8 @@ private struct ProfileNavigationCard: View {
             Divider()
                 .padding(.leading, 88)
 
-            NavigationLink {
-                AboutView()
+            Button {
+                navigate(.about)
             } label: {
                 ProfileNavigationRow(
                     title: "About",
@@ -72,6 +96,11 @@ private struct ProfileNavigationRow: View {
             }
 
             Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .padding(.trailing, 6)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 20)

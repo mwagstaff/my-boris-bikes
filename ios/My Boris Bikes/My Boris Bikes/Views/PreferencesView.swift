@@ -97,32 +97,31 @@ struct PreferencesView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Bike Types") {
-                    Picker("Show availability for", selection: bikeDataFilterBinding) {
-                        ForEach(BikeDataFilter.allCases) { filter in
-                            Text(filter.title)
-                                .tag(filter)
-                        }
+        Form {
+            Section("Bike Types") {
+                Picker("Show availability for", selection: bikeDataFilterBinding) {
+                    ForEach(BikeDataFilter.allCases) { filter in
+                        Text(filter.title)
+                            .tag(filter)
                     }
-                    .pickerStyle(.segmented)
-                    .onChange(of: bikeDataFilterRawValue) { _, _ in
-                        // Reset primary display if current selection is no longer valid
-                        let validCases = LiveActivityPrimaryDisplay.availableCases(for: bikeDataFilter)
-                        if !validCases.contains(liveActivityPrimaryDisplay) {
-                            liveActivityPrimaryDisplayRawValue = validCases.first?.rawValue ?? LiveActivityPrimaryDisplay.bikes.rawValue
-                        }
-                        trackPreferenceChange(key: BikeDataFilter.userDefaultsKey, value: bikeDataFilterRawValue)
-                        Task {
-                            await ScheduledJourneyService.shared.registerDevice()
-                        }
-                    }
-
-                    Text("Show information on standard bikes, e-bikes, or both.")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
                 }
+                .pickerStyle(.segmented)
+                .onChange(of: bikeDataFilterRawValue) { _, _ in
+                    // Reset primary display if current selection is no longer valid
+                    let validCases = LiveActivityPrimaryDisplay.availableCases(for: bikeDataFilter)
+                    if !validCases.contains(liveActivityPrimaryDisplay) {
+                        liveActivityPrimaryDisplayRawValue = validCases.first?.rawValue ?? LiveActivityPrimaryDisplay.bikes.rawValue
+                    }
+                    trackPreferenceChange(key: BikeDataFilter.userDefaultsKey, value: bikeDataFilterRawValue)
+                    Task {
+                        await ScheduledJourneyService.shared.registerDevice()
+                    }
+                }
+
+                Text("Show information on standard bikes, e-bikes, or both.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
 
                 Section("Live Activity") {
                     Picker("Primary number", selection: liveActivityPrimaryDisplayBinding) {
@@ -409,7 +408,6 @@ struct PreferencesView: View {
             }
             .navigationTitle("Preferences")
         }
-    }
 
     private func distanceLabel(_ distance: Double) -> String {
         if distance == 1.0 {
@@ -446,5 +444,7 @@ struct PreferencesView: View {
 }
 
 #Preview {
-    PreferencesView()
+    NavigationStack {
+        PreferencesView()
+    }
 }
