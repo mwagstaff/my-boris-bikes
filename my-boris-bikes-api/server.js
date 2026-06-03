@@ -536,6 +536,41 @@ function deviceIdFromRequest(req) {
   );
 }
 
+async function completeScheduledJourneyFromArrivalSession(session, dockId) {
+  if (
+    !session ||
+    session.scheduledJourneyPhase !== "end" ||
+    typeof session.scheduledJourneyId !== "string" ||
+    !ObjectId.isValid(session.scheduledJourneyId)
+  ) {
+    return false;
+  }
+
+  if (!scheduledJourneysCollection) {
+    await connectMongoIfConfigured();
+  }
+  if (!scheduledJourneysCollection) return false;
+
+  const journeyId = session.scheduledJourneyId;
+  const result = await scheduledJourneysCollection.updateOne(
+    {
+      _id: new ObjectId(journeyId),
+      deletedAt: { $exists: false },
+      "activeRun.phase": { $in: ["start", "end"] },
+    },
+    { $set: { activeRun: null, updatedAt: new Date() } }
+  );
+
+  const completed = result.modifiedCount > 0;
+  appendDiagnosticJsonLine("scheduled_journey_completed_from_arrival", {
+    journeyId,
+    dockId,
+    completed,
+    matchedCount: result.matchedCount,
+  });
+  return completed;
+}
+
 function sanitizeJourneyDock(rawDock) {
   if (!rawDock || typeof rawDock !== "object") return null;
   const id = typeof rawDock.id === "string" ? rawDock.id.trim() : "";
@@ -636,6 +671,13 @@ function serializeScheduledJourney(doc) {
     createdAt: doc.createdAt?.toISOString?.() || doc.createdAt,
     updatedAt: doc.updatedAt?.toISOString?.() || doc.updatedAt,
   };
+}
+
+function scheduledJourneyPhaseFromValues(...values) {
+  for (const value of values) {
+    if (value === "end" || value === "start") return value;
+  }
+  return null;
 }
 
 function sanitizeBikeDataFilter(rawValue) {
@@ -3985,6 +4027,10 @@ app.post("/live-activity/start", (req, res) => {
     `Starting live activity: dock=${dockId}, build=${buildType}, primaryDisplay=${normalizedPrimaryDisplay}, minimumThreshold=${activeMinimumThreshold}, expires in ${effectiveRemainingSeconds}s`
   );
   logger.info(`  pushToken: ${normalizedPushToken} (alternatives: ${normalizedAlternatives.length})`);
+  const normalizedScheduledJourneyPhase = scheduledJourneyPhaseFromValues(
+    scheduledJourneyPhase,
+    activeJourneyPhase
+  );
 
   poller.tokens.set(normalizedPushToken, {
     buildType,
@@ -4000,9 +4046,7 @@ app.post("/live-activity/start", (req, res) => {
       typeof scheduledJourneyId === "string" && ObjectId.isValid(scheduledJourneyId)
         ? scheduledJourneyId
         : null,
-    scheduledJourneyPhase:
-      scheduledJourneyPhase === "end" ? "end" : scheduledJourneyPhase === "start" ? "start" :
-        activeJourneyPhase === "end" ? "end" : activeJourneyPhase === "start" ? "start" : null,
+    scheduledJourneyPhase: normalizedScheduledJourneyPhase,
     adHocJourneyId:
       typeof adHocJourneyId === "string" && adHocJourneyId.trim()
         ? adHocJourneyId.trim().slice(0, 128)
@@ -4029,8 +4073,7 @@ app.post("/live-activity/start", (req, res) => {
       typeof scheduledJourneyId === "string" && ObjectId.isValid(scheduledJourneyId)
         ? scheduledJourneyId
         : null,
-    scheduledJourneyPhase:
-      scheduledJourneyPhase === "end" ? "end" : scheduledJourneyPhase === "start" ? "start" : null,
+    scheduledJourneyPhase: normalizedScheduledJourneyPhase,
     adHocJourneyId:
       typeof adHocJourneyId === "string" && adHocJourneyId.trim()
         ? adHocJourneyId.trim().slice(0, 128)
@@ -4043,25 +4086,54 @@ app.post("/live-activity/start", (req, res) => {
   if (
     scheduledJourneysCollection &&
     typeof scheduledJourneyId === "string" &&
-    ObjectId.isValid(scheduledJourneyId)
+    ObjectId.isValid(scheduledJourneyId) &&
+    normalizedScheduledJourneyPhase
   ) {
-    scheduledJourneysCollection.updateOne(
-      { _id: new ObjectId(scheduledJourneyId), deletedAt: { $exists: false } },
-      {
-        $set: {
-          activeRun: {
-            phase: scheduledJourneyPhase === "end" ? "end" : "start",
-            dockId,
-            dockName: normalizedDockName || dockId,
-            startedAt: new Date(),
-            runKey: req.body?.scheduledRunKey || null,
-          },
-          updatedAt: new Date(),
-        },
+    const scheduledJourneyObjectId = new ObjectId(scheduledJourneyId);
+    scheduledJourneysCollection.findOne(
+      { _id: scheduledJourneyObjectId, deletedAt: { $exists: false } },
+      { projection: { startDock: 1, endDock: 1, activeRun: 1, timezone: 1, startTime: 1 } }
+    ).then((journey) => {
+      if (!journey) return null;
+      if (normalizedScheduledJourneyPhase === "start" && journey.activeRun?.phase === "end") {
+        logger.warn(
+          `Skipping stale start-phase registration for scheduled journey ${scheduledJourneyId} because it is already watching the destination dock`
+        );
+        return null;
       }
-    ).catch((err) => {
+      if (normalizedScheduledJourneyPhase === "end" && !journey.activeRun?.phase) {
+        logger.warn(
+          `Skipping stale end-phase registration for scheduled journey ${scheduledJourneyId} because it is already complete`
+        );
+        return null;
+      }
+      const dock = normalizedScheduledJourneyPhase === "end" ? journey.endDock : journey.startDock;
+      return scheduledJourneysCollection.updateOne(
+        { _id: scheduledJourneyObjectId, deletedAt: { $exists: false } },
+        {
+          $set: {
+            activeRun: {
+              phase: normalizedScheduledJourneyPhase,
+              dockId: dock?.id || dockId,
+              dockName: dock?.name || normalizedDockName || dockId,
+              startedAt: journey.activeRun?.startedAt || new Date(),
+              runKey: journey.activeRun?.runKey || req.body?.scheduledRunKey || scheduledRunKey(journey),
+            },
+            updatedAt: new Date(),
+          },
+        }
+      );
+    }).catch((err) => {
       logger.warn(`Failed to mark scheduled journey active: ${err.message}`);
     });
+  } else if (
+    scheduledJourneysCollection &&
+    typeof scheduledJourneyId === "string" &&
+    ObjectId.isValid(scheduledJourneyId)
+  ) {
+    logger.warn(
+      `Skipping scheduled journey active-run update for ${scheduledJourneyId} because live activity registration did not include a journey phase`
+    );
   }
 
   // Start polling if not already
@@ -4141,10 +4213,12 @@ app.post("/live-activity/session/update", async (req, res) => {
     session.dockName = sanitizeDockName(dockName);
   }
 
-  if (scheduledJourneyPhase === "start" || scheduledJourneyPhase === "end") {
-    session.scheduledJourneyPhase = scheduledJourneyPhase;
-  } else if (activeJourneyPhase === "start" || activeJourneyPhase === "end") {
-    session.scheduledJourneyPhase = activeJourneyPhase;
+  const normalizedScheduledJourneyPhase = scheduledJourneyPhaseFromValues(
+    scheduledJourneyPhase,
+    activeJourneyPhase
+  );
+  if (normalizedScheduledJourneyPhase) {
+    session.scheduledJourneyPhase = normalizedScheduledJourneyPhase;
   }
 
   session.activeDockId = resolvedTargetDockId;
@@ -4388,6 +4462,23 @@ app.post("/live-activity/arrive", async (req, res) => {
   }
 
   const matchedPushTokens = new Set(effectiveSessions.map(([pushToken]) => pushToken));
+  let completedScheduledJourneyCount = 0;
+  const completedScheduledJourneyIds = new Set();
+  for (const [, session] of effectiveSessions) {
+    const journeyId = session.scheduledJourneyId;
+    if (!journeyId || completedScheduledJourneyIds.has(journeyId)) continue;
+    try {
+      if (await completeScheduledJourneyFromArrivalSession(session, dockId)) {
+        completedScheduledJourneyCount += 1;
+      }
+      completedScheduledJourneyIds.add(journeyId);
+    } catch (err) {
+      logger.warn(
+        `Failed to complete scheduled journey ${journeyId} after arrival at ${dockId}: ${err.message}`
+      );
+    }
+  }
+
   const { endedCount, remainingCount } =
     matchedPushTokens.size > 0
       ? await endTrackedSessionsForDock(
@@ -4405,6 +4496,7 @@ app.post("/live-activity/arrive", async (req, res) => {
     fallbackSessions: fallbackSessions.length,
     effectiveSessions: effectiveSessions.length,
     endedCount,
+    completedScheduledJourneyCount,
     confirmationSent,
     remainingCount,
   });
@@ -4413,6 +4505,7 @@ app.post("/live-activity/arrive", async (req, res) => {
     success: true,
     dockId,
     endedCount,
+    completedScheduledJourneyCount,
     confirmationSent,
     remainingCount,
     message:

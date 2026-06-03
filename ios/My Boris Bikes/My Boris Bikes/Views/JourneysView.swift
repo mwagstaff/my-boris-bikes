@@ -5,9 +5,18 @@ import SwiftUI
 struct JourneysView: View {
     @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
     @StateObject private var adHocJourneyService = AdHocJourneyService.shared
+    @EnvironmentObject private var locationService: LocationService
     @State private var journeyEditorPresentation: JourneyEditorPresentation?
     @State private var adHocDraftPresentation: AdHocJourneyDraftPresentation?
     @State private var journeyToDelete: ScheduledJourney?
+
+    private var scheduledJourneysByStartDistance: [ScheduledJourney] {
+        journeysByStartDistance(scheduledJourneyService.journeys) { $0.startDock }
+    }
+
+    private var adHocJourneysByStartDistance: [AdHocJourney] {
+        journeysByStartDistance(adHocJourneyService.recentJourneys) { $0.startDock }
+    }
 
     var body: some View {
         NavigationStack {
@@ -24,16 +33,17 @@ struct JourneysView: View {
                 }
 
                 Section {
-                    if scheduledJourneyService.journeys.isEmpty {
+                    if scheduledJourneysByStartDistance.isEmpty {
                         ContentUnavailableView(
                             "No scheduled journeys",
                             systemImage: "calendar.badge.clock",
                             description: Text("Add your regular routes here.")
                         )
                     } else {
-                        ForEach(scheduledJourneyService.journeys) { journey in
+                        ForEach(scheduledJourneysByStartDistance) { journey in
                             ScheduledJourneyRow(
                                 journey: journey,
+                                distanceString: locationService.distanceString(to: journey.startDock.coordinate),
                                 canCreateReturn: scheduledJourneyService.journeys.count < 5,
                                 onStop: { Task { await scheduledJourneyService.stop(journey) } },
                                 onActivate: { Task { await scheduledJourneyService.activate(journey) } },
@@ -53,16 +63,17 @@ struct JourneysView: View {
                 }
 
                 Section {
-                    if adHocJourneyService.recentJourneys.isEmpty {
+                    if adHocJourneysByStartDistance.isEmpty {
                         ContentUnavailableView(
                             "No ad-hoc journeys",
                             systemImage: "clock.arrow.circlepath",
                             description: Text("Start a one-off journey and the latest 10 will appear here.")
                         )
                     } else {
-                        ForEach(adHocJourneyService.recentJourneys) { journey in
+                        ForEach(adHocJourneysByStartDistance) { journey in
                             AdHocJourneyRow(
                                 journey: journey,
+                                distanceString: locationService.distanceString(to: journey.startDock.coordinate),
                                 onStart: { Task { await adHocJourneyService.start(journey) } },
                                 onStop: { Task { await adHocJourneyService.stop(journey) } }
                             )
@@ -91,6 +102,7 @@ struct JourneysView: View {
                 }
             }
             .task {
+                locationService.startLocationUpdates()
                 await scheduledJourneyService.refresh()
             }
             .refreshable {
@@ -120,6 +132,36 @@ struct JourneysView: View {
             }
         }
     }
+
+    private func journeysByStartDistance<T>(
+        _ journeys: [T],
+        startDock: (T) -> ScheduledJourneyDock
+    ) -> [T] {
+        guard let userLocation = locationService.location else { return journeys }
+
+        return journeys.sorted { first, second in
+            let firstDock = startDock(first)
+            let secondDock = startDock(second)
+            let firstDistance = userLocation.distance(from: firstDock.location)
+            let secondDistance = userLocation.distance(from: secondDock.location)
+
+            if firstDistance == secondDistance {
+                return firstDock.name.localizedCaseInsensitiveCompare(secondDock.name) == .orderedAscending
+            }
+
+            return firstDistance < secondDistance
+        }
+    }
+}
+
+private extension ScheduledJourneyDock {
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    var location: CLLocation {
+        CLLocation(latitude: latitude, longitude: longitude)
+    }
 }
 
 enum AdHocJourneyDraftPresentation: Identifiable {
@@ -148,9 +190,15 @@ private struct AdHocJourneyStartFlowView: View {
 
 private struct AdHocJourneyRow: View {
     let journey: AdHocJourney
+    let distanceString: String
     let onStart: () -> Void
     let onStop: () -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
+    @EnvironmentObject private var locationService: LocationService
+
+    private var numericDistance: CLLocationDistance? {
+        locationService.distance(to: journey.startDock.coordinate)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -162,6 +210,7 @@ private struct AdHocJourneyRow: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService))")
                         .font(.headline)
+                        .lineLimit(2)
                     if journey.isActive {
                         Text(journey.activePhase == .start ? "Watching start dock" : "Watching destination dock")
                             .font(.caption.weight(.semibold))
@@ -172,6 +221,13 @@ private struct AdHocJourneyRow: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+
+                Spacer(minLength: 8)
+
+                DistanceIndicator(
+                    distance: numericDistance,
+                    distanceString: distanceString
+                )
             }
 
             if journey.isActive {
@@ -298,6 +354,7 @@ enum JourneyEditorPresentation: Identifiable {
 
 private struct ScheduledJourneyRow: View {
     let journey: ScheduledJourney
+    let distanceString: String
     let canCreateReturn: Bool
     let onStop: () -> Void
     let onActivate: () -> Void
@@ -305,6 +362,11 @@ private struct ScheduledJourneyRow: View {
     let onDelete: () -> Void
     let onCreateReturn: () -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
+    @EnvironmentObject private var locationService: LocationService
+
+    private var numericDistance: CLLocationDistance? {
+        locationService.distance(to: journey.startDock.coordinate)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -316,6 +378,7 @@ private struct ScheduledJourneyRow: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService))")
                         .font(.headline)
+                        .lineLimit(2)
                     Text("\(weekdaySummary(journey.weekdays)) • \(journey.startTime)-\(journey.endTime)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -325,6 +388,13 @@ private struct ScheduledJourneyRow: View {
                             .foregroundStyle(.green)
                     }
                 }
+
+                Spacer(minLength: 8)
+
+                DistanceIndicator(
+                    distance: numericDistance,
+                    distanceString: distanceString
+                )
             }
 
             ViewThatFits(in: .horizontal) {
