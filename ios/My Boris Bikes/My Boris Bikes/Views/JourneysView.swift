@@ -44,6 +44,7 @@ struct JourneysView: View {
                             ScheduledJourneyRow(
                                 journey: journey,
                                 distanceString: locationService.distanceString(to: journey.startDock.coordinate),
+                                showsCreateReturn: !hasReturnJourney(for: journey),
                                 canCreateReturn: scheduledJourneyService.journeys.count < 5,
                                 onStop: { Task { await scheduledJourneyService.stop(journey) } },
                                 onActivate: { Task { await scheduledJourneyService.activate(journey) } },
@@ -75,6 +76,7 @@ struct JourneysView: View {
                                 journey: journey,
                                 distanceString: locationService.distanceString(to: journey.startDock.coordinate),
                                 onStart: { Task { await adHocJourneyService.start(journey) } },
+                                onStartReturn: { Task { await adHocJourneyService.startReturn(journey) } },
                                 onStop: { Task { await adHocJourneyService.stop(journey) } }
                             )
                         }
@@ -152,6 +154,14 @@ struct JourneysView: View {
             return firstDistance < secondDistance
         }
     }
+
+    private func hasReturnJourney(for journey: ScheduledJourney) -> Bool {
+        scheduledJourneyService.journeys.contains { candidate in
+            candidate.id != journey.id &&
+                candidate.startDock.id == journey.endDock.id &&
+                candidate.endDock.id == journey.startDock.id
+        }
+    }
 }
 
 private extension ScheduledJourneyDock {
@@ -192,6 +202,7 @@ private struct AdHocJourneyRow: View {
     let journey: AdHocJourney
     let distanceString: String
     let onStart: () -> Void
+    let onStartReturn: () -> Void
     let onStop: () -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
     @EnvironmentObject private var locationService: LocationService
@@ -234,11 +245,28 @@ private struct AdHocJourneyRow: View {
                 Button("Stop", role: .destructive, action: onStop)
                     .buttonStyle(.bordered)
             } else {
-                Button("Start again", action: onStart)
-                    .buttonStyle(.borderedProminent)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        adHocStartActions
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        adHocStartActions
+                    }
+                }
             }
         }
         .padding(.vertical, 6)
+    }
+
+    private var adHocStartActions: some View {
+        Group {
+            Button("Start again", action: onStart)
+                .buttonStyle(.borderedProminent)
+
+            Button("Start return journey", action: onStartReturn)
+                .buttonStyle(.bordered)
+        }
     }
 }
 
@@ -355,6 +383,7 @@ enum JourneyEditorPresentation: Identifiable {
 private struct ScheduledJourneyRow: View {
     let journey: ScheduledJourney
     let distanceString: String
+    let showsCreateReturn: Bool
     let canCreateReturn: Bool
     let onStop: () -> Void
     let onActivate: () -> Void
@@ -429,9 +458,11 @@ private struct ScheduledJourneyRow: View {
 
     private var secondaryActions: some View {
         HStack(spacing: 8) {
-            Button("+ Add return journey", action: onCreateReturn)
-                .buttonStyle(.bordered)
-                .disabled(!canCreateReturn)
+            if showsCreateReturn {
+                Button("+ Add return journey", action: onCreateReturn)
+                    .buttonStyle(.bordered)
+                    .disabled(!canCreateReturn)
+            }
 
             Spacer(minLength: 0)
 

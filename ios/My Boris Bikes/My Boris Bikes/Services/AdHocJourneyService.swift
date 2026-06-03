@@ -40,6 +40,17 @@ final class AdHocJourneyService: ObservableObject {
         await LiveActivityService.shared.startAdHocJourney(updated)
     }
 
+    func startReturn(_ journey: AdHocJourney) async {
+        let returnJourney = AdHocJourney(
+            startDock: journey.endDock,
+            endDock: journey.startDock,
+            lastStartedAt: Date(),
+            activePhase: .start
+        )
+        upsert(returnJourney)
+        await LiveActivityService.shared.startAdHocJourney(returnJourney)
+    }
+
     func stop(_ journey: AdHocJourney) async {
         let docks = [journey.startDock, journey.endDock]
             .reduce(into: [ScheduledJourneyDock]()) { uniqueDocks, dock in
