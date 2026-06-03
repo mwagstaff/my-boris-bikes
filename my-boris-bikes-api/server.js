@@ -712,15 +712,31 @@ function scheduledRunKey(journey, date = new Date()) {
 }
 
 function shouldStartScheduledJourney(journey, date = new Date()) {
-  if (journey.enabled === false || journey.deletedAt) return false;
+  return scheduledJourneyStartDecision(journey, date).canStart;
+}
+
+function scheduledJourneyStartDecision(journey, date = new Date()) {
+  if (journey.enabled === false) {
+    return { canStart: false, reason: "disabled" };
+  }
+  if (journey.deletedAt) {
+    return { canStart: false, reason: "deleted" };
+  }
 
   const parts = localDateParts(date, journey.timezone || "Europe/London");
-  if (!journey.weekdays?.includes(parts.weekday)) return false;
-  if (parts.time !== journey.startTime) return false;
-
   const runKey = `${parts.dateKey}:${journey.startTime}`;
+  const base = { parts, runKey };
+  if (!journey.weekdays?.includes(parts.weekday)) {
+    return { canStart: false, reason: "weekday_mismatch", ...base };
+  }
+  if (parts.time !== journey.startTime) {
+    return { canStart: false, reason: "time_mismatch", ...base };
+  }
+
   if (journey.activeRun?.phase) {
-    if (journey.activeRun.runKey === runKey) return false;
+    if (journey.activeRun.runKey === runKey) {
+      return { canStart: false, reason: "already_active_for_run", ...base };
+    }
     const activeStartedAt = journey.activeRun.startedAt
       ? new Date(journey.activeRun.startedAt)
       : null;
@@ -729,11 +745,43 @@ function shouldStartScheduledJourney(journey, date = new Date()) {
         activeStartedAt,
         journey.timezone || "Europe/London"
       );
-      if (activeParts.dateKey === parts.dateKey) return false;
+      if (activeParts.dateKey === parts.dateKey) {
+        return { canStart: false, reason: "already_active_today", activeParts, ...base };
+      }
     }
   }
 
-  return !Array.isArray(journey.pausedRunKeys) || !journey.pausedRunKeys.includes(runKey);
+  if (Array.isArray(journey.pausedRunKeys) && journey.pausedRunKeys.includes(runKey)) {
+    return { canStart: false, reason: "run_paused", ...base };
+  }
+
+  return { canStart: true, reason: "eligible", ...base };
+}
+
+function appendScheduledJourneyCheckDiagnostic(kind, journey, decision, extra = {}) {
+  appendDiagnosticJsonLine(kind, {
+    journeyId: journey._id?.toString?.() || null,
+    deviceId: shortenIdentifier(journey.deviceId),
+    startDockId: journey.startDock?.id || null,
+    startDockName: journey.startDock?.name || null,
+    endDockId: journey.endDock?.id || null,
+    endDockName: journey.endDock?.name || null,
+    startTime: journey.startTime || null,
+    endTime: journey.endTime || null,
+    timezone: journey.timezone || "Europe/London",
+    weekdays: journey.weekdays || [],
+    runKey: decision?.runKey || null,
+    localDateKey: decision?.parts?.dateKey || null,
+    localTime: decision?.parts?.time || null,
+    localWeekday: decision?.parts?.weekday || null,
+    reason: decision?.reason || null,
+    enabled: journey.enabled !== false,
+    hasDeviceToken: !!normalizeApnsDeviceToken(journey.deviceToken),
+    hasPushToStartToken: !!normalizeApnsDeviceToken(journey.pushToStartToken),
+    activeRun: journey.activeRun || null,
+    pausedRunKeys: journey.pausedRunKeys || [],
+    ...extra,
+  });
 }
 
 function shouldEndScheduledJourneyWindow(journey, date = new Date()) {
@@ -5092,15 +5140,30 @@ async function processScheduledJourneyStarts() {
     .toArray();
 
   for (const journey of candidates) {
-    if (!shouldStartScheduledJourney(journey)) continue;
+    const decision = scheduledJourneyStartDecision(journey);
+    if (!decision.canStart) {
+      if (decision.reason !== "time_mismatch" && decision.reason !== "weekday_mismatch") {
+        appendScheduledJourneyCheckDiagnostic(
+          "scheduled_journey_start_skipped",
+          journey,
+          decision
+        );
+      }
+      continue;
+    }
 
-    const runKey = scheduledRunKey(journey);
+    const runKey = decision.runKey || scheduledRunKey(journey);
+    appendScheduledJourneyCheckDiagnostic(
+      "scheduled_journey_start_eligible",
+      journey,
+      decision
+    );
     if (!normalizeApnsDeviceToken(journey.pushToStartToken)) {
-      appendDiagnosticJsonLine("scheduled_journey_start_missing_push_to_start_token", {
-        journeyId: journey._id?.toString?.() || null,
-        deviceId: shortenIdentifier(journey.deviceId),
-        runKey,
-      });
+      appendScheduledJourneyCheckDiagnostic(
+        "scheduled_journey_start_missing_push_to_start_token",
+        journey,
+        decision
+      );
       logger.warn(
         `Scheduled journey ${journey._id} was eligible for ${runKey} but has no push-to-start token`
       );
@@ -5113,6 +5176,12 @@ async function processScheduledJourneyStarts() {
         continue;
       }
       await sendScheduledJourneyStartPush(journey, "schedule");
+      appendScheduledJourneyCheckDiagnostic(
+        "scheduled_journey_start_push_sent",
+        journey,
+        decision,
+        { source: "schedule" }
+      );
       try {
         await sendScheduledJourneyInitialAvailabilityPush(journey);
       } catch (err) {
@@ -5135,9 +5204,21 @@ async function processScheduledJourneyStarts() {
           },
         }
       );
+      appendScheduledJourneyCheckDiagnostic(
+        "scheduled_journey_active_run_marked",
+        journey,
+        decision,
+        { activeDockId: journey.startDock.id, activeDockName: journey.startDock.name }
+      );
       logger.info(`Started scheduled journey ${journey._id} for ${journey.deviceId}`);
     } catch (err) {
       logger.error(`Failed to start scheduled journey ${journey._id}: ${err.message}`);
+      appendScheduledJourneyCheckDiagnostic(
+        "scheduled_journey_start_failed",
+        journey,
+        decision,
+        { error: err.message }
+      );
       if (isApnsTokenInvalidError(err)) {
         await scheduledJourneysCollection.updateOne(
           { _id: journey._id },

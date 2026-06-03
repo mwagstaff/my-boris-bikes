@@ -387,6 +387,22 @@ class LiveActivityService: ObservableObject {
         let content = ActivityContent(state: initialState, staleDate: staleDate)
 
         do {
+            TroubleshootingLogStore.shared.record(
+                category: "live_activity",
+                event: "start_requesting",
+                message: "Requesting ActivityKit Live Activity.",
+                metadata: [
+                    "dockId": dockId,
+                    "dockName": bikePoint.commonName,
+                    "scheduledJourneyId": scheduledJourneyId,
+                    "scheduledJourneyPhase": scheduledJourneyPhase?.rawValue,
+                    "standardBikes": bikePoint.standardBikes,
+                    "eBikes": bikePoint.eBikes,
+                    "emptySpaces": bikePoint.emptyDocks,
+                    "alternativesCount": alternativeDocks.count,
+                    "expirySeconds": Int(finalExpirySeconds),
+                ]
+            )
             logLiveActivityDiagnosticEvent(
                 "live_activity_start_requesting",
                 dockId: dockId,
@@ -410,6 +426,18 @@ class LiveActivityService: ObservableObject {
             activeActivities[dockId] = activity
             staleDates[dockId] = staleDate
             logger.info("Started live activity for dock \(dockId) with stale date: \(staleDate)")
+            TroubleshootingLogStore.shared.record(
+                category: "live_activity",
+                event: "start_succeeded",
+                message: "ActivityKit Live Activity request succeeded.",
+                metadata: [
+                    "dockId": dockId,
+                    "dockName": bikePoint.commonName,
+                    "activityId": activity.id,
+                    "scheduledJourneyId": scheduledJourneyId,
+                    "scheduledJourneyPhase": scheduledJourneyPhase?.rawValue,
+                ]
+            )
             logLiveActivityDiagnosticEvent(
                 "live_activity_start_succeeded",
                 dockId: dockId,
@@ -544,6 +572,17 @@ class LiveActivityService: ObservableObject {
             observationTasks[dockId] = [pushTokenTask, stateTask]
         } catch {
             logger.error("Failed to start live activity: \(error.localizedDescription)")
+            TroubleshootingLogStore.shared.record(
+                category: "live_activity",
+                event: "start_failed",
+                message: "ActivityKit Live Activity request failed: \(error.localizedDescription)",
+                metadata: [
+                    "dockId": dockId,
+                    "dockName": bikePoint.commonName,
+                    "scheduledJourneyId": scheduledJourneyId,
+                    "scheduledJourneyPhase": scheduledJourneyPhase?.rawValue,
+                ]
+            )
             logLiveActivityDiagnosticEvent(
                 "live_activity_start_failed",
                 dockId: dockId,
@@ -827,6 +866,20 @@ class LiveActivityService: ObservableObject {
     ) async {
         let dock = phase == .start ? journey.startDock : journey.endDock
         let destination = phase == .start ? journey.endDock : nil
+        TroubleshootingLogStore.shared.record(
+            category: "scheduled_journey",
+            event: manuallyActivated ? "manual_start_live_activity" : "remote_start_live_activity",
+            message: "Starting Live Activity for scheduled journey.",
+            metadata: [
+                "journeyId": journey.id,
+                "phase": phase.rawValue,
+                "dockId": dock.id,
+                "dockName": dock.name,
+                "startTime": journey.startTime,
+                "endTime": journey.endTime,
+                "timezone": journey.timezone,
+            ]
+        )
 
         let bikePoint = await fetchBikePointIfPossible(dock: dock)
         let alternatives = await scheduledJourneyAlternatives(for: bikePoint, phase: phase)
@@ -1656,6 +1709,21 @@ class LiveActivityService: ObservableObject {
                     ? (minimumThresholds[LiveActivityPrimaryDisplay.bikes.rawValue] ?? 0) + (minimumThresholds[LiveActivityPrimaryDisplay.eBikes.rawValue] ?? 0)
                     : minimumThresholds[primaryDisplayRawValue] ?? 0
                 logger.info("Registered live activity with server for dock \(dockId) (expires in \(Int(finalExpirySeconds))s, alternatives: \(serializedAlternatives.count), primaryDisplay: \(primaryDisplayRawValue), minimumThreshold: \(activeThreshold))")
+                TroubleshootingLogStore.shared.record(
+                    category: "live_activity",
+                    event: "server_registration_succeeded",
+                    message: "Registered Live Activity push token with server.",
+                    metadata: [
+                        "dockId": dockId,
+                        "dockName": dockName,
+                        "pushTokenPrefix": String(pushToken.prefix(8)),
+                        "primaryDisplay": primaryDisplayRawValue,
+                        "scheduledJourneyId": scheduledJourneyId,
+                        "scheduledJourneyPhase": scheduledJourneyPhase?.rawValue,
+                        "alternativesCount": serializedAlternatives.count,
+                        "expirySeconds": Int(finalExpirySeconds),
+                    ]
+                )
                 logLiveActivityDiagnosticEvent(
                     "live_activity_server_registration_succeeded",
                     dockId: dockId,
@@ -1673,6 +1741,19 @@ class LiveActivityService: ObservableObject {
             } else {
                 logger.warning("Server returned unexpected response for dock \(dockId)")
                 let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                TroubleshootingLogStore.shared.record(
+                    category: "live_activity",
+                    event: "server_registration_failed_status",
+                    message: "Server returned unexpected response while registering Live Activity.",
+                    metadata: [
+                        "dockId": dockId,
+                        "dockName": dockName,
+                        "pushTokenPrefix": String(pushToken.prefix(8)),
+                        "statusCode": statusCode,
+                        "scheduledJourneyId": scheduledJourneyId,
+                        "scheduledJourneyPhase": scheduledJourneyPhase?.rawValue,
+                    ]
+                )
                 logLiveActivityDiagnosticEvent(
                     "live_activity_server_registration_failed_status",
                     dockId: dockId,
@@ -1688,6 +1769,18 @@ class LiveActivityService: ObservableObject {
             }
         } catch {
             logger.error("Failed to register with server: \(error.localizedDescription)")
+            TroubleshootingLogStore.shared.record(
+                category: "live_activity",
+                event: "server_registration_failed_network",
+                message: "Failed to register Live Activity with server: \(error.localizedDescription)",
+                metadata: [
+                    "dockId": dockId,
+                    "dockName": dockName,
+                    "pushTokenPrefix": String(pushToken.prefix(8)),
+                    "scheduledJourneyId": scheduledJourneyId,
+                    "scheduledJourneyPhase": scheduledJourneyPhase?.rawValue,
+                ]
+            )
             logLiveActivityDiagnosticEvent(
                 "live_activity_server_registration_failed_network",
                 dockId: dockId,

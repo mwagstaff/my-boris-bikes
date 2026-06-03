@@ -65,6 +65,8 @@ final class ScheduledJourneyService: ObservableObject {
     }
 
     func registerDevice(pushToStartToken: String? = nil) async {
+        let effectivePushToStartToken = pushToStartToken
+            ?? UserDefaults.standard.string(forKey: pushToStartTokenStorageKey)
         var body: [String: Any] = [
             "deviceId": deviceId,
             "buildType": PushEnvironment.buildType,
@@ -76,7 +78,7 @@ final class ScheduledJourneyService: ObservableObject {
         }
         if let pushToStartToken {
             body["pushToStartToken"] = pushToStartToken
-        } else if let storedToken = UserDefaults.standard.string(forKey: pushToStartTokenStorageKey) {
+        } else if let storedToken = effectivePushToStartToken {
             body["pushToStartToken"] = storedToken
         }
 
@@ -87,8 +89,31 @@ final class ScheduledJourneyService: ObservableObject {
                 body: body,
                 responseType: EmptyResponse.self
             )
+            TroubleshootingLogStore.shared.record(
+                category: "scheduled_journey",
+                event: "device_registered",
+                message: "Registered device for scheduled journeys.",
+                metadata: [
+                    "deviceId": deviceId,
+                    "buildType": PushEnvironment.buildType,
+                    "hasApnsDeviceToken": DeviceTokenHelper.apnsDeviceToken != nil,
+                    "hasPushToStartToken": effectivePushToStartToken != nil,
+                    "pushToStartTokenPrefix": effectivePushToStartToken.map { String($0.prefix(8)) },
+                ]
+            )
         } catch {
             logger.error("Failed to register scheduled journey device: \(error.localizedDescription)")
+            TroubleshootingLogStore.shared.record(
+                category: "scheduled_journey",
+                event: "device_registration_failed",
+                message: "Failed to register device for scheduled journeys: \(error.localizedDescription)",
+                metadata: [
+                    "deviceId": deviceId,
+                    "buildType": PushEnvironment.buildType,
+                    "hasApnsDeviceToken": DeviceTokenHelper.apnsDeviceToken != nil,
+                    "hasPushToStartToken": effectivePushToStartToken != nil,
+                ]
+            )
         }
     }
 
@@ -216,6 +241,19 @@ final class ScheduledJourneyService: ObservableObject {
     }
 
     func activate(_ journey: ScheduledJourney) async {
+        TroubleshootingLogStore.shared.record(
+            category: "scheduled_journey",
+            event: "manual_activation_started",
+            message: "Manual activation started for scheduled journey.",
+            metadata: [
+                "journeyId": journey.id,
+                "startDock": journey.startDock.name,
+                "endDock": journey.endDock.name,
+                "startTime": journey.startTime,
+                "endTime": journey.endTime,
+                "timezone": journey.timezone,
+            ]
+        )
         await LiveActivityService.shared.startScheduledJourney(journey, phase: .start, manuallyActivated: true)
         do {
             _ = try await request(
@@ -224,9 +262,21 @@ final class ScheduledJourneyService: ObservableObject {
                 body: baseDeviceBody(merging: ["remoteStart": false]),
                 responseType: JourneyResponse.self
             )
+            TroubleshootingLogStore.shared.record(
+                category: "scheduled_journey",
+                event: "manual_activation_server_updated",
+                message: "Server active-run state updated after manual activation.",
+                metadata: ["journeyId": journey.id]
+            )
             await refresh()
         } catch {
             logger.warning("Server manual activation update failed: \(error.localizedDescription)")
+            TroubleshootingLogStore.shared.record(
+                category: "scheduled_journey",
+                event: "manual_activation_server_update_failed",
+                message: "Server manual activation update failed: \(error.localizedDescription)",
+                metadata: ["journeyId": journey.id]
+            )
         }
     }
 

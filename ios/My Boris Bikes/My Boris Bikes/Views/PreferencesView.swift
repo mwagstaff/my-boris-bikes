@@ -3,6 +3,9 @@ import UIKit
 
 struct PreferencesView: View {
     @StateObject private var locationService = LocationService.shared
+    @StateObject private var troubleshootingLogStore = TroubleshootingLogStore.shared
+    @State private var troubleshootingExportURL: URL?
+    @State private var troubleshootingExportError: String?
 
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
@@ -297,6 +300,60 @@ struct PreferencesView: View {
                     .disabled(!alternativeDocksEnabled)
                 }
 
+                Section("Troubleshooting") {
+                    if troubleshootingLogStore.entries.isEmpty {
+                        Text("No troubleshooting entries yet.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(troubleshootingLogStore.entries.suffix(12).reversed()) { entry in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(entry.category).\(entry.event)")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                Text(entry.message)
+                                    .font(.footnote)
+                                    .foregroundColor(.secondary)
+                                Text(Self.troubleshootingDateFormatter.string(from: entry.timestamp))
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+
+                    Button {
+                        do {
+                            troubleshootingExportURL = try troubleshootingLogStore.exportFileURL()
+                            troubleshootingExportError = nil
+                        } catch {
+                            troubleshootingExportError = error.localizedDescription
+                        }
+                    } label: {
+                        Label("Prepare Share File", systemImage: "doc.text")
+                    }
+
+                    if let troubleshootingExportURL {
+                        ShareLink(item: troubleshootingExportURL) {
+                            Label("Share Troubleshooting Log", systemImage: "square.and.arrow.up")
+                        }
+                    }
+
+                    if let troubleshootingExportError {
+                        Text(troubleshootingExportError)
+                            .font(.footnote)
+                            .foregroundColor(.red)
+                    }
+
+                    Button(role: .destructive) {
+                        troubleshootingLogStore.clear()
+                        troubleshootingExportURL = nil
+                        troubleshootingExportError = nil
+                    } label: {
+                        Label("Clear Troubleshooting Log", systemImage: "trash")
+                    }
+                    .disabled(troubleshootingLogStore.entries.isEmpty)
+                }
+
 #if DEBUG
                 Section("Debug") {
                     Button(isDebugRefreshing ? "Refreshing…" : "Run Background Refresh") {
@@ -379,6 +436,13 @@ struct PreferencesView: View {
         }
         UIApplication.shared.open(settingsUrl)
     }
+
+    private static let troubleshootingDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .medium
+        return formatter
+    }()
 }
 
 #Preview {
