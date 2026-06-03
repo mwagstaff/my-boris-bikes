@@ -150,6 +150,7 @@ private struct AdHocJourneyRow: View {
     let journey: AdHocJourney
     let onStart: () -> Void
     let onStop: () -> Void
+    @EnvironmentObject private var favoritesService: FavoritesService
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -159,7 +160,7 @@ private struct AdHocJourneyRow: View {
                     .frame(width: 24)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(journey.startDock.name) → \(journey.endDock.name)")
+                    Text("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService))")
                         .font(.headline)
                     if journey.isActive {
                         Text(journey.activePhase == .start ? "Watching start dock" : "Watching destination dock")
@@ -303,6 +304,7 @@ private struct ScheduledJourneyRow: View {
     let onEdit: () -> Void
     let onDelete: () -> Void
     let onCreateReturn: () -> Void
+    @EnvironmentObject private var favoritesService: FavoritesService
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -312,7 +314,7 @@ private struct ScheduledJourneyRow: View {
                     .frame(width: 24)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(journey.startDock.name) → \(journey.endDock.name)")
+                    Text("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService))")
                         .font(.headline)
                     Text("\(weekdaySummary(journey.weekdays)) • \(journey.startTime)-\(journey.endTime)")
                         .font(.subheadline)
@@ -513,6 +515,7 @@ private struct DockSelectionButton: View {
     let title: String
     let dock: ScheduledJourneyDock?
     let action: () -> Void
+    @EnvironmentObject private var favoritesService: FavoritesService
 
     var body: some View {
         Button(action: action) {
@@ -520,7 +523,7 @@ private struct DockSelectionButton: View {
                 Text(title)
                     .foregroundStyle(.primary)
                 Spacer()
-                Text(dock?.name ?? "Choose")
+                Text(dock?.displayName(using: favoritesService) ?? "Choose")
                     .foregroundStyle(dock == nil ? .secondary : .primary)
                     .multilineTextAlignment(.trailing)
                 Image(systemName: "chevron.right")
@@ -847,7 +850,8 @@ private struct DockPickerView: View {
             matchingBikePoints = allBikePoints
         } else {
             matchingBikePoints = allBikePoints.filter {
-                $0.commonName.localizedCaseInsensitiveContains(trimmedSearchText)
+                $0.commonName.localizedCaseInsensitiveContains(trimmedSearchText) ||
+                    ($0.alias(using: favoritesService)?.localizedCaseInsensitiveContains(trimmedSearchText) == true)
             }
         }
 
@@ -1040,6 +1044,7 @@ private struct DockPickerRow: View {
     var detailText: String?
     var showsDistance = false
     let action: () -> Void
+    @EnvironmentObject private var favoritesService: FavoritesService
     @EnvironmentObject private var locationService: LocationService
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
@@ -1060,8 +1065,16 @@ private struct DockPickerRow: View {
                 )
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(bikePoint.commonName)
-                        .foregroundStyle(.primary)
+                    if let alias = bikePoint.alias(using: favoritesService) {
+                        Text(alias)
+                            .foregroundStyle(.primary)
+                        Text(bikePoint.commonName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(bikePoint.commonName)
+                            .foregroundStyle(.primary)
+                    }
                     Text(availabilityText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1111,6 +1124,18 @@ private struct DockPickerRow: View {
         }
 
         return parts.joined(separator: " • ")
+    }
+}
+
+private extension ScheduledJourneyDock {
+    func displayName(using favoritesService: FavoritesService) -> String {
+        favoritesService.alias(for: id) ?? name
+    }
+}
+
+private extension BikePoint {
+    func alias(using favoritesService: FavoritesService) -> String? {
+        favoritesService.alias(for: id)
     }
 }
 

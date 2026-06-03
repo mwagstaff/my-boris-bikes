@@ -1869,7 +1869,11 @@ function scheduledJourneyDestinationAvailabilityBody(dockName, dockData) {
   return `${resolvedDockName}: ${spaces} ${spaces === 1 ? "space" : "spaces"} available`;
 }
 
-async function sendScheduledJourneyTransitionPushes(journey, destinationDock) {
+async function sendScheduledJourneyTransitionPushes(
+  journey,
+  destinationDock,
+  options = {}
+) {
   const deviceToken = normalizeApnsDeviceToken(journey.deviceToken);
   if (!deviceToken) return null;
 
@@ -1879,26 +1883,28 @@ async function sendScheduledJourneyTransitionPushes(journey, destinationDock) {
   const destinationDockName = destinationDock?.name || destinationDock?.dockName;
   const results = [];
 
-  try {
-    results.push(
-      await sendAlertPush(
-        deviceToken,
-        buildType,
-        "Dock arrival",
-        scheduledJourneyDockArrivalBody(arrivalDockName),
-        "scheduled_journey_start_arrival",
-        "scheduled journey start arrival",
-        {
-          customPayload: {
-            journeyId: journey._id?.toString?.() || null,
-            dockId: startDock?.id || startDock?.dockId || null,
-            dockName: arrivalDockName || null,
-          },
-        }
-      )
-    );
-  } catch (err) {
-    logger.warn(`Failed to send scheduled journey start-arrival push: ${err.message}`);
+  if (options.includeStartArrivalNotification !== false) {
+    try {
+      results.push(
+        await sendAlertPush(
+          deviceToken,
+          buildType,
+          "Dock arrival",
+          scheduledJourneyDockArrivalBody(arrivalDockName),
+          "scheduled_journey_start_arrival",
+          "scheduled journey start arrival",
+          {
+            customPayload: {
+              journeyId: journey._id?.toString?.() || null,
+              dockId: startDock?.id || startDock?.dockId || null,
+              dockName: arrivalDockName || null,
+            },
+          }
+        )
+      );
+    } catch (err) {
+      logger.warn(`Failed to send scheduled journey start-arrival push: ${err.message}`);
+    }
   }
 
   try {
@@ -3773,6 +3779,9 @@ app.post("/scheduled-journeys/:id/phase", async (req, res) => {
   const deviceId = deviceIdFromRequest(req);
   const journeyId = req.params.id;
   const phase = req.body?.phase === "end" ? "end" : req.body?.phase === "start" ? "start" : null;
+  const transitionSource =
+    req.body?.transitionSource === "arrival" ? "arrival" :
+      req.body?.transitionSource === "manual" ? "manual" : null;
   if (!deviceId || !ObjectId.isValid(journeyId) || !phase) {
     return res.status(400).json({ error: "Missing deviceId, phase, or invalid journey id" });
   }
@@ -3806,12 +3815,15 @@ app.post("/scheduled-journeys/:id/phase", async (req, res) => {
     journeyId,
     deviceId: shortenIdentifier(deviceId),
     phase,
+    transitionSource,
     dockId: dock.id,
     dockName: dock.name,
   });
 
   if (phase === "end") {
-    await sendScheduledJourneyTransitionPushes(journey, dock);
+    await sendScheduledJourneyTransitionPushes(journey, dock, {
+      includeStartArrivalNotification: transitionSource !== "manual",
+    });
   }
 
   res.json({ success: true, journey: serializeScheduledJourney(result) });

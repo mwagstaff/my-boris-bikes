@@ -596,7 +596,8 @@ final class DockArrivalMonitoringService: NSObject {
                 journeyId: scheduledJourneyId,
                 adHocJourneyId: adHocJourneyId,
                 endDock: scheduledDestinationDock,
-                delaySeconds: 0
+                delaySeconds: 0,
+                transitionSource: "arrival"
             )
             return true
         }

@@ -176,8 +176,7 @@ struct FavoritesListView: View {
     }
 
     private func effectivePrimaryDisplay(for dockId: String) -> LiveActivityPrimaryDisplay {
-        let savedDisplay = LiveActivityDockSettings.getPrimaryDisplay(for: dockId)
-        let preferredDisplay = savedDisplay ?? globalPrimaryDisplay
+        let preferredDisplay = liveActivityService.getPrimaryDisplay(for: dockId)
         let availableDisplays = LiveActivityPrimaryDisplay.availableCases(for: bikeDataFilter)
         return availableDisplays.contains(preferredDisplay) ? preferredDisplay : globalPrimaryDisplay
     }

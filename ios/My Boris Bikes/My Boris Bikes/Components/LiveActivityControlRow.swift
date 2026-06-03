@@ -19,7 +19,15 @@ struct LiveActivityControlRow: View {
     }
 
     private var availableDisplays: [LiveActivityPrimaryDisplay] {
-        LiveActivityPrimaryDisplay.availableCases(for: bikeDataFilter)
+        switch liveActivityService.activeJourneyPhase(for: bikePoint.id) {
+        case .start:
+            return LiveActivityPrimaryDisplay.availableCases(for: bikeDataFilter)
+                .filter { $0 != .spaces }
+        case .end:
+            return [.spaces]
+        case nil:
+            return LiveActivityPrimaryDisplay.availableCases(for: bikeDataFilter)
+        }
     }
 
     private var settingsURL: URL? {
@@ -105,6 +113,9 @@ struct LiveActivityControlRow: View {
         }
         .background(Color(.secondarySystemGroupedBackground))
         .onAppear {
+            currentDisplay = liveActivityService.getPrimaryDisplay(for: bikePoint.id)
+        }
+        .onChange(of: liveActivityService.primaryDisplayChangeToken) { _, _ in
             currentDisplay = liveActivityService.getPrimaryDisplay(for: bikePoint.id)
         }
     }

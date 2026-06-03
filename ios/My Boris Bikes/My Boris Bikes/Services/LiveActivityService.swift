@@ -593,6 +593,20 @@ class LiveActivityService: ObservableObject {
         activeActivities[dockId] != nil
     }
 
+    func activeJourneyPhase(for dockId: String) -> ScheduledJourney.ActiveRun.Phase? {
+        if let activity = activeActivities[dockId] {
+            return ScheduledJourney.ActiveRun.Phase(
+                rawValue: activity.content.state.activeJourneyPhase ?? activity.attributes.scheduledJourneyPhase ?? ""
+            )
+        }
+
+        if let session = activeNotificationSession, session.dockId == dockId {
+            return session.scheduledJourneyPhase
+        }
+
+        return nil
+    }
+
     func updateActiveActivitiesIfNeeded(using bikePoints: [BikePoint]) async {
         guard !bikePoints.isEmpty else { return }
 
@@ -883,7 +897,8 @@ class LiveActivityService: ObservableObject {
         journeyId: String?,
         adHocJourneyId: String? = nil,
         endDock: ScheduledJourneyDock,
-        delaySeconds: UInt64 = 60
+        delaySeconds: UInt64 = 60,
+        transitionSource: String = "manual"
     ) async {
         let current = activeActivities.values.first { activity in
             let phase = ScheduledJourney.ActiveRun.Phase(
@@ -917,7 +932,11 @@ class LiveActivityService: ObservableObject {
             message: "Updating scheduled journey server phase to destination"
         )
         if let journeyId {
-            await ScheduledJourneyService.shared.updatePhase(journeyId: journeyId, phase: .end)
+            await ScheduledJourneyService.shared.updatePhase(
+                journeyId: journeyId,
+                phase: .end,
+                transitionSource: transitionSource
+            )
         }
         if let adHocJourneyId {
             AdHocJourneyService.shared.markPhase(journeyId: adHocJourneyId, phase: .end)
@@ -1325,11 +1344,38 @@ class LiveActivityService: ObservableObject {
 
     /// Get the current primary display for a specific dock (override or global default)
     func getPrimaryDisplay(for dockId: String) -> LiveActivityPrimaryDisplay {
+        if let journeyPhase = activeJourneyPhase(for: dockId) {
+            switch journeyPhase {
+            case .start:
+                return preferredJourneyStartPrimaryDisplay()
+            case .end:
+                return .spaces
+            }
+        }
+
         if let override = LiveActivityDockSettings.getPrimaryDisplay(for: dockId) {
             return override
         }
         let globalRawValue = AppConstants.UserDefaults.sharedDefaults.string(forKey: LiveActivityPrimaryDisplay.userDefaultsKey) ?? LiveActivityPrimaryDisplay.bikes.rawValue
         return LiveActivityPrimaryDisplay(rawValue: globalRawValue) ?? .bikes
+    }
+
+    private func preferredJourneyStartPrimaryDisplay() -> LiveActivityPrimaryDisplay {
+        let rawFilter = AppConstants.UserDefaults.sharedDefaults.string(
+            forKey: BikeDataFilter.userDefaultsKey
+        ) ?? BikeDataFilter.both.rawValue
+        switch BikeDataFilter(rawValue: rawFilter) ?? .both {
+        case .bikesOnly:
+            return .bikes
+        case .eBikesOnly:
+            return .eBikes
+        case .both:
+            let globalRawValue = AppConstants.UserDefaults.sharedDefaults.string(
+                forKey: LiveActivityPrimaryDisplay.userDefaultsKey
+            ) ?? LiveActivityPrimaryDisplay.bikes.rawValue
+            let globalDisplay = LiveActivityPrimaryDisplay(rawValue: globalRawValue) ?? .bikes
+            return globalDisplay == .spaces ? .bikes : globalDisplay
+        }
     }
 
     /// Restore activities that may still be running from a previous app session

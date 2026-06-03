@@ -230,15 +230,24 @@ final class ScheduledJourneyService: ObservableObject {
         }
     }
 
-    func updatePhase(journeyId: String, phase: ScheduledJourney.ActiveRun.Phase) async {
+    func updatePhase(
+        journeyId: String,
+        phase: ScheduledJourney.ActiveRun.Phase,
+        transitionSource: String? = nil
+    ) async {
+        var body: [String: Any] = [
+            "deviceId": deviceId,
+            "phase": phase.rawValue,
+        ]
+        if let transitionSource {
+            body["transitionSource"] = transitionSource
+        }
+
         do {
             _ = try await request(
                 path: "/scheduled-journeys/\(journeyId)/phase",
                 method: "POST",
-                body: [
-                    "deviceId": deviceId,
-                    "phase": phase.rawValue,
-                ],
+                body: body,
                 responseType: JourneyResponse.self
             )
             await refresh()
