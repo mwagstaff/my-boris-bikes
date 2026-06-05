@@ -144,8 +144,53 @@ struct My_Boris_BikesTests {
         )
 
         #expect(acceptableAccuracy == 65)
-        #expect(effectiveActivationDistance == 470)
-        #expect(LiveActivityArrivalSettings.preferredMaximumRegionRadiusMeters == 400)
+        #expect(effectiveActivationDistance == 570)
+        #expect(LiveActivityArrivalSettings.preferredMaximumRegionRadiusMeters == 500)
+    }
+
+    @Test func testStartDockArrivalPolicyRequiresRawDistance() async throws {
+        let policy = DockArrivalHeuristics.arrivalPolicy(
+            for: .start,
+            configuredArrivalThreshold: CLLocationDistance(50),
+            horizontalAccuracy: 45
+        )
+
+        #expect(policy.kind == .startDock)
+        #expect(policy.arrivalThreshold == 50)
+        #expect(policy.acceptableHorizontalAccuracy == 90)
+        #expect(policy.usesCompensatedDistanceForConfirmation == false)
+        #expect(policy.confirmationDwellTime == 8)
+        #expect(
+            policy.isInsideArrivalThreshold(
+                rawDistance: 35,
+                compensatedDistance: 0
+            ) == true
+        )
+        #expect(
+            policy.isInsideArrivalThreshold(
+                rawDistance: 75,
+                compensatedDistance: 30
+            ) == false
+        )
+    }
+
+    @Test func testEndDockArrivalPolicyAllowsCompensatedDistance() async throws {
+        let policy = DockArrivalHeuristics.arrivalPolicy(
+            for: .end,
+            configuredArrivalThreshold: CLLocationDistance(25),
+            horizontalAccuracy: 45
+        )
+
+        #expect(policy.kind == .endDock)
+        #expect(policy.acceptableHorizontalAccuracy == 100)
+        #expect(policy.usesCompensatedDistanceForConfirmation == true)
+        #expect(policy.arrivalThreshold == 40)
+        #expect(
+            policy.isInsideArrivalThreshold(
+                rawDistance: 75,
+                compensatedDistance: 30
+            ) == true
+        )
     }
 
 }

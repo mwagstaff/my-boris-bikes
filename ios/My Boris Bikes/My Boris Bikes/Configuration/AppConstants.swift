@@ -72,6 +72,8 @@ struct AppConstants {
         static let liveActivityAutoRemoveDurationKey = "liveActivityAutoRemoveDuration"
         static let liveActivityAutoEndOnArrivalKey = "liveActivityAutoEndOnArrival"
         static let liveActivityArrivalDistanceThresholdMetersKey = "liveActivityArrivalDistanceThresholdMeters"
+        static let liveActivityStartArrivalDistanceThresholdMetersKey = "liveActivityStartArrivalDistanceThresholdMeters"
+        static let liveActivityEndArrivalDistanceThresholdMetersKey = "liveActivityEndArrivalDistanceThresholdMeters"
 
         static var sharedDefaults: Foundation.UserDefaults {
             Foundation.UserDefaults(suiteName: AppConstants.App.appGroup) ?? .standard

@@ -22,6 +22,11 @@ struct ScheduledJourneyDock: Codable, Hashable, Identifiable, Sendable {
 }
 
 struct ScheduledJourney: Codable, Identifiable, Equatable, Sendable {
+    struct ArrivalSettings: Codable, Equatable, Sendable {
+        let startDistanceMeters: Int
+        let endDistanceMeters: Int
+    }
+
     struct ActiveRun: Codable, Equatable, Sendable {
         let phase: Phase
         let dockId: String
@@ -44,6 +49,7 @@ struct ScheduledJourney: Codable, Identifiable, Equatable, Sendable {
     let endTime: String
     let timezone: String
     let enabled: Bool
+    let arrivalSettings: ArrivalSettings?
     let activeRun: ActiveRun?
     let pausedRunKeys: [String]?
     let createdAt: Date?

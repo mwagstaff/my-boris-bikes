@@ -7,6 +7,59 @@ import os.log
 enum DockArrivalHeuristics {
     static let temporaryFullAccuracyPurposeKey = "DockArrivalPreciseLocation"
 
+    enum ArrivalPolicyKind: String {
+        case startDock
+        case endDock
+        case regularDock
+    }
+
+    struct ArrivalPolicy: Equatable {
+        let kind: ArrivalPolicyKind
+        let arrivalThreshold: CLLocationDistance
+        let acceptableHorizontalAccuracy: CLLocationAccuracy
+        let usesCompensatedDistanceForConfirmation: Bool
+        let confirmationDwellTime: TimeInterval
+        let maximumThresholdExpansion: CLLocationDistance
+
+        var resetDistanceThreshold: CLLocationDistance {
+            effectiveArrivalThreshold +
+                LiveActivityArrivalSettings.confirmationResetHysteresisMeters
+        }
+
+        func measuredArrivalDistance(
+            rawDistance: CLLocationDistance,
+            compensatedDistance: CLLocationDistance
+        ) -> CLLocationDistance {
+            usesCompensatedDistanceForConfirmation
+                ? min(rawDistance, compensatedDistance)
+                : rawDistance
+        }
+
+        func isInsideArrivalThreshold(
+            rawDistance: CLLocationDistance,
+            compensatedDistance: CLLocationDistance
+        ) -> Bool {
+            measuredArrivalDistance(
+                rawDistance: rawDistance,
+                compensatedDistance: compensatedDistance
+            ) <= effectiveArrivalThreshold
+        }
+
+        func isInsideResetThreshold(
+            rawDistance: CLLocationDistance,
+            compensatedDistance: CLLocationDistance
+        ) -> Bool {
+            measuredArrivalDistance(
+                rawDistance: rawDistance,
+                compensatedDistance: compensatedDistance
+            ) <= resetDistanceThreshold
+        }
+
+        var effectiveArrivalThreshold: CLLocationDistance {
+            arrivalThreshold + maximumThresholdExpansion
+        }
+    }
+
     static func acceptableHorizontalAccuracy(
         for arrivalThreshold: CLLocationDistance
     ) -> CLLocationAccuracy {
@@ -48,6 +101,52 @@ enum DockArrivalHeuristics {
     ) -> CLLocationDistance {
         guard horizontalAccuracy > 0 else { return rawDistance }
         return max(0, rawDistance - horizontalAccuracy)
+    }
+
+    static func arrivalPolicy(
+        for phase: ScheduledJourney.ActiveRun.Phase?,
+        configuredArrivalThreshold: CLLocationDistance,
+        horizontalAccuracy: CLLocationAccuracy
+    ) -> ArrivalPolicy {
+        switch phase {
+        case .some(.start):
+            let arrivalThreshold = configuredArrivalThreshold
+            return ArrivalPolicy(
+                kind: .startDock,
+                arrivalThreshold: arrivalThreshold,
+                acceptableHorizontalAccuracy: acceptableHorizontalAccuracy(for: arrivalThreshold),
+                usesCompensatedDistanceForConfirmation: false,
+                confirmationDwellTime: 8,
+                maximumThresholdExpansion: 0
+            )
+        case .some(.end):
+            let arrivalThreshold = max(configuredArrivalThreshold, 40)
+            let effectiveThreshold = effectiveArrivalThreshold(
+                for: arrivalThreshold,
+                horizontalAccuracy: horizontalAccuracy
+            )
+            return ArrivalPolicy(
+                kind: .endDock,
+                arrivalThreshold: arrivalThreshold,
+                acceptableHorizontalAccuracy: 100,
+                usesCompensatedDistanceForConfirmation: true,
+                confirmationDwellTime: LiveActivityArrivalSettings.confirmationDwellTimeSeconds,
+                maximumThresholdExpansion: effectiveThreshold - arrivalThreshold
+            )
+        case nil:
+            let effectiveThreshold = effectiveArrivalThreshold(
+                for: configuredArrivalThreshold,
+                horizontalAccuracy: horizontalAccuracy
+            )
+            return ArrivalPolicy(
+                kind: .regularDock,
+                arrivalThreshold: configuredArrivalThreshold,
+                acceptableHorizontalAccuracy: acceptableHorizontalAccuracy(for: configuredArrivalThreshold),
+                usesCompensatedDistanceForConfirmation: true,
+                confirmationDwellTime: LiveActivityArrivalSettings.confirmationDwellTimeSeconds,
+                maximumThresholdExpansion: effectiveThreshold - configuredArrivalThreshold
+            )
+        }
     }
 }
 
@@ -298,6 +397,17 @@ final class DockArrivalMonitoringService: NSObject {
         DeviceTokenHelper.apnsDeviceToken ?? DeviceTokenHelper.analyticsDeviceToken
     }
 
+    private func configuredArrivalDistanceMeters(for phase: ScheduledJourney.ActiveRun.Phase?) -> CLLocationDistance {
+        switch phase {
+        case .some(.start):
+            LiveActivityArrivalSettings.configuredStartArrivalDistanceMeters()
+        case .some(.end):
+            LiveActivityArrivalSettings.configuredEndArrivalDistanceMeters()
+        case nil:
+            LiveActivityArrivalSettings.configuredEndArrivalDistanceMeters()
+        }
+    }
+
     private func persistMonitoringState(for dock: MonitoredDock) {
         let encoder = JSONEncoder()
         let state = PersistedMonitoringState(
@@ -389,17 +499,24 @@ final class DockArrivalMonitoringService: NSObject {
             )
         }
 
-        startContinuousLowSensitivityTracking(reason: "active_live_activity")
+        if scheduledJourneyPhase == .end {
+            startContinuousHighSensitivityTracking(reason: "scheduled_journey_end_phase")
+        } else {
+            startContinuousLowSensitivityTracking(reason: "active_live_activity")
+        }
 
         logger.info("Starting continuous dock arrival monitoring")
         logLocationEvent(
             "location_updates_started",
             dock: dock,
-            message: "Started continuous low-sensitivity location monitoring",
+            message: scheduledJourneyPhase == .end
+                ? "Started continuous high-sensitivity destination arrival monitoring"
+                : "Started continuous low-sensitivity location monitoring",
             raw: [
                 "authorizationStatus": authorizationStatusLabel(authorizationStatus),
                 "regionRadiusMeters": configuredRegionRadiusMeters(),
-                "regionMonitoringEnabled": CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self)
+                "regionMonitoringEnabled": CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self),
+                "scheduledJourneyPhase": scheduledJourneyPhase?.rawValue ?? "none"
             ]
         )
     }
@@ -423,15 +540,15 @@ final class DockArrivalMonitoringService: NSObject {
         backgroundActivitySession = nil
     }
 
-    private func shouldAttemptArrival(for location: CLLocation) -> Bool {
+    private func shouldAttemptArrival(
+        for location: CLLocation,
+        policy: DockArrivalHeuristics.ArrivalPolicy
+    ) -> Bool {
         if location.horizontalAccuracy < 0 {
             return false
         }
 
-        let arrivalDistanceThreshold = LiveActivityArrivalSettings.configuredArrivalDistanceMeters()
-        let acceptableAccuracy = DockArrivalHeuristics.acceptableHorizontalAccuracy(
-            for: arrivalDistanceThreshold
-        )
+        let acceptableAccuracy = policy.acceptableHorizontalAccuracy
         if location.horizontalAccuracy > acceptableAccuracy {
             logger.info("Ignoring imprecise location update for dock arrival monitoring (accuracy: \(location.horizontalAccuracy, privacy: .public)m)")
             logLocationEvent(
@@ -439,7 +556,10 @@ final class DockArrivalMonitoringService: NSObject {
                 dock: monitoredDock,
                 location: location,
                 message: "Horizontal accuracy too low for arrival detection",
-                raw: ["acceptableHorizontalAccuracyMeters": acceptableAccuracy]
+                raw: [
+                    "acceptableHorizontalAccuracyMeters": acceptableAccuracy,
+                    "arrivalPolicy": policy.kind.rawValue
+                ]
             )
             return false
         }
@@ -461,9 +581,10 @@ final class DockArrivalMonitoringService: NSObject {
             from: distance,
             horizontalAccuracy: location.horizontalAccuracy
         )
-        let arrivalDistanceThreshold = LiveActivityArrivalSettings.configuredArrivalDistanceMeters()
-        let effectiveArrivalDistanceThreshold = DockArrivalHeuristics.effectiveArrivalThreshold(
-            for: arrivalDistanceThreshold,
+        let arrivalDistanceThreshold = configuredArrivalDistanceMeters(for: scheduledJourneyPhase)
+        let arrivalPolicy = DockArrivalHeuristics.arrivalPolicy(
+            for: scheduledJourneyPhase,
+            configuredArrivalThreshold: arrivalDistanceThreshold,
             horizontalAccuracy: location.horizontalAccuracy
         )
         let activationDistanceThreshold = LiveActivityArrivalSettings.preciseActivationDistanceMeters
@@ -471,8 +592,10 @@ final class DockArrivalMonitoringService: NSObject {
             for: activationDistanceThreshold,
             horizontalAccuracy: location.horizontalAccuracy
         )
-        let resetDistanceThreshold = effectiveArrivalDistanceThreshold +
-            LiveActivityArrivalSettings.confirmationResetHysteresisMeters
+        let measuredArrivalDistance = arrivalPolicy.measuredArrivalDistance(
+            rawDistance: distance,
+            compensatedDistance: compensatedDistance
+        )
 
         logger.info("Dock arrival check for \(dock.dockId, privacy: .public): \(distance, privacy: .public)m away")
         logRoutineLocationEventIfNeeded(
@@ -487,7 +610,7 @@ final class DockArrivalMonitoringService: NSObject {
             startPreciseLocationUpdates(reason: "location_within_activation_distance")
         }
 
-        guard shouldAttemptArrival(for: location) else { return }
+        guard shouldAttemptArrival(for: location, policy: arrivalPolicy) else { return }
 
         guard let confirmationStartedAt else {
             logger.info("Ignoring precise location update because confirmation mode is inactive")
@@ -500,7 +623,7 @@ final class DockArrivalMonitoringService: NSObject {
                 "arrival_confirmation_timeout",
                 dock: dock,
                 location: location,
-                distanceMeters: compensatedDistance,
+                distanceMeters: measuredArrivalDistance,
                 message: "Precise confirmation window expired"
             )
             resetConfirmationState()
@@ -511,14 +634,17 @@ final class DockArrivalMonitoringService: NSObject {
             return
         }
 
-        guard min(distance, compensatedDistance) <= resetDistanceThreshold else {
+        guard arrivalPolicy.isInsideResetThreshold(
+            rawDistance: distance,
+            compensatedDistance: compensatedDistance
+        ) else {
             if firstPreciseInsideThresholdAt != nil {
                 logger.info("Dock arrival confirmation reset because user moved outside threshold window")
                 logLocationEvent(
                     "arrival_confirmation_reset",
                     dock: dock,
                     location: location,
-                    distanceMeters: compensatedDistance,
+                    distanceMeters: measuredArrivalDistance,
                     message: "Moved outside confirmation threshold"
                 )
             }
@@ -526,8 +652,25 @@ final class DockArrivalMonitoringService: NSObject {
             return
         }
 
-        guard min(distance, compensatedDistance) <= effectiveArrivalDistanceThreshold else {
+        guard arrivalPolicy.isInsideArrivalThreshold(
+            rawDistance: distance,
+            compensatedDistance: compensatedDistance
+        ) else {
             firstPreciseInsideThresholdAt = nil
+            logLocationEvent(
+                "arrival_threshold_not_met",
+                dock: dock,
+                location: location,
+                distanceMeters: measuredArrivalDistance,
+                message: "Location did not meet arrival threshold",
+                raw: [
+                    "arrivalPolicy": arrivalPolicy.kind.rawValue,
+                    "rawDistanceMeters": distance,
+                    "compensatedDistanceMeters": compensatedDistance,
+                    "effectiveArrivalThresholdMeters": arrivalPolicy.effectiveArrivalThreshold,
+                    "configuredArrivalThresholdMeters": arrivalDistanceThreshold
+                ]
+            )
             return
         }
 
@@ -537,13 +680,20 @@ final class DockArrivalMonitoringService: NSObject {
                 "arrival_confirmation_started",
                 dock: dock,
                 location: location,
-                distanceMeters: compensatedDistance,
-                message: "First precise in-threshold location received"
+                distanceMeters: measuredArrivalDistance,
+                message: "First precise in-threshold location received",
+                raw: [
+                    "arrivalPolicy": arrivalPolicy.kind.rawValue,
+                    "rawDistanceMeters": distance,
+                    "compensatedDistanceMeters": compensatedDistance,
+                    "effectiveArrivalThresholdMeters": arrivalPolicy.effectiveArrivalThreshold,
+                    "configuredArrivalThresholdMeters": arrivalDistanceThreshold
+                ]
             )
             return
         }
 
-        guard Date().timeIntervalSince(firstPreciseInsideThresholdAt ?? Date()) >= LiveActivityArrivalSettings.confirmationDwellTimeSeconds else {
+        guard Date().timeIntervalSince(firstPreciseInsideThresholdAt ?? Date()) >= arrivalPolicy.confirmationDwellTime else {
             return
         }
 
@@ -553,8 +703,15 @@ final class DockArrivalMonitoringService: NSObject {
             "arrival_threshold_met",
             dock: dock,
             location: location,
-            distanceMeters: compensatedDistance,
-            message: "Arrival distance threshold met"
+            distanceMeters: measuredArrivalDistance,
+            message: "Arrival distance threshold met",
+            raw: [
+                "arrivalPolicy": arrivalPolicy.kind.rawValue,
+                "rawDistanceMeters": distance,
+                "compensatedDistanceMeters": compensatedDistance,
+                "effectiveArrivalThresholdMeters": arrivalPolicy.effectiveArrivalThreshold,
+                "configuredArrivalThresholdMeters": arrivalDistanceThreshold
+            ]
         )
 
         // Register a background task token *before* dispatching async work.
@@ -881,7 +1038,7 @@ final class DockArrivalMonitoringService: NSObject {
         let activeDock = dock ?? monitoredDock
         let payloadDeviceId = debugDeviceIdentifier
         let clientTimestamp = ISO8601DateFormatter().string(from: Date())
-        let arrivalThresholdMeters = LiveActivityArrivalSettings.configuredArrivalDistanceMeters()
+        let arrivalThresholdMeters = configuredArrivalDistanceMeters(for: scheduledJourneyPhase)
 
         Task {
             var body: [String: Any] = [
@@ -960,7 +1117,7 @@ final class DockArrivalMonitoringService: NSObject {
     }
 
     private func configuredRegionRadiusMeters() -> CLLocationDistance {
-        let threshold = LiveActivityArrivalSettings.configuredArrivalDistanceMeters()
+        let threshold = configuredArrivalDistanceMeters(for: scheduledJourneyPhase)
         let radius = max(
             threshold + LiveActivityArrivalSettings.regionRadiusBufferMeters,
             LiveActivityArrivalSettings.highFrequencyActivationDistanceMeters

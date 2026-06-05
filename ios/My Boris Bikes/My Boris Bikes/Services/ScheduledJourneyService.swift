@@ -72,6 +72,7 @@ final class ScheduledJourneyService: ObservableObject {
             "buildType": PushEnvironment.buildType,
             "timezone": TimeZone.current.identifier,
             "bikeDataFilter": currentBikeDataFilterRawValue(),
+            "arrivalSettings": currentArrivalSettingsPayload(),
         ]
         if let deviceToken = DeviceTokenHelper.apnsDeviceToken {
             body["deviceToken"] = deviceToken
@@ -197,12 +198,21 @@ final class ScheduledJourneyService: ObservableObject {
             "enabled": draft.enabled,
             "buildType": PushEnvironment.buildType,
             "bikeDataFilter": currentBikeDataFilterRawValue(),
+            "arrivalSettings": currentArrivalSettingsPayload(),
         ]
     }
 
     private func currentBikeDataFilterRawValue() -> String {
         BikeDataFilter.userDefaultsStore.string(forKey: BikeDataFilter.userDefaultsKey)
             ?? BikeDataFilter.both.rawValue
+    }
+
+    private func currentArrivalSettingsPayload() -> [String: Any] {
+        LiveActivityArrivalSettings.migrateArrivalDistanceSettingsIfNeeded()
+        return [
+            "startDistanceMeters": Int(LiveActivityArrivalSettings.configuredStartArrivalDistanceMeters()),
+            "endDistanceMeters": Int(LiveActivityArrivalSettings.configuredEndArrivalDistanceMeters()),
+        ]
     }
 
     func delete(_ journey: ScheduledJourney) async {

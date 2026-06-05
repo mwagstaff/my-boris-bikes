@@ -165,6 +165,8 @@ struct AlternativeDockSettings {
 struct LiveActivityArrivalSettings {
     static let enabledKey = AppConstants.UserDefaults.liveActivityAutoEndOnArrivalKey
     static let distanceThresholdMetersKey = AppConstants.UserDefaults.liveActivityArrivalDistanceThresholdMetersKey
+    static let startDistanceThresholdMetersKey = AppConstants.UserDefaults.liveActivityStartArrivalDistanceThresholdMetersKey
+    static let endDistanceThresholdMetersKey = AppConstants.UserDefaults.liveActivityEndArrivalDistanceThresholdMetersKey
 
     static var userDefaultsStore: UserDefaults {
         AppConstants.UserDefaults.sharedDefaults
@@ -172,10 +174,13 @@ struct LiveActivityArrivalSettings {
 
     static let defaultEnabled = false
     static let defaultArrivalDistanceMeters = 25
+    static let defaultStartArrivalDistanceMeters = 50
+    static let defaultEndArrivalDistanceMeters = 50
     private static let legacyDefaultArrivalDistanceMeters = 35
     private static let arrivalDistanceDefaultMigrationKey = "liveActivityArrivalDistanceDefaultMigratedTo25m"
+    private static let phaseArrivalDistanceMigrationKey = "liveActivityPhaseArrivalDistanceMigrated"
     static let minimumArrivalDistanceMeters = 10
-    static let maximumArrivalDistanceMeters = 75
+    static let maximumArrivalDistanceMeters = 100
     static let arrivalDistanceStepMeters = 5
     static let minimumRetryIntervalSeconds: TimeInterval = 5
     static let minimumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 45
@@ -206,14 +211,46 @@ struct LiveActivityArrivalSettings {
     }
 
     static func configuredArrivalDistanceMeters() -> CLLocationDistance {
+        configuredEndArrivalDistanceMeters()
+    }
+
+    static func configuredStartArrivalDistanceMeters() -> CLLocationDistance {
         let defaults = userDefaultsStore
-        migrateLegacyDefaultArrivalDistanceIfNeeded(defaults: defaults)
-        let storedValue = defaults.object(forKey: distanceThresholdMetersKey) as? Int
-            ?? defaultArrivalDistanceMeters
+        migrateArrivalDistanceSettingsIfNeeded(defaults: defaults)
+        let storedValue = defaults.object(forKey: startDistanceThresholdMetersKey) as? Int
+            ?? defaultStartArrivalDistanceMeters
         return CLLocationDistance(sanitizedArrivalDistanceMeters(storedValue))
     }
 
-    static func migrateLegacyDefaultArrivalDistanceIfNeeded(defaults: UserDefaults = userDefaultsStore) {
+    static func configuredEndArrivalDistanceMeters() -> CLLocationDistance {
+        let defaults = userDefaultsStore
+        migrateArrivalDistanceSettingsIfNeeded(defaults: defaults)
+        let storedValue = defaults.object(forKey: endDistanceThresholdMetersKey) as? Int
+            ?? defaultEndArrivalDistanceMeters
+        return CLLocationDistance(sanitizedArrivalDistanceMeters(storedValue))
+    }
+
+    static func migrateArrivalDistanceSettingsIfNeeded(defaults: UserDefaults = userDefaultsStore) {
+        migrateLegacyDefaultArrivalDistanceIfNeeded(defaults: defaults)
+        guard defaults.bool(forKey: phaseArrivalDistanceMigrationKey) == false else { return }
+
+        let legacyValue = defaults.object(forKey: distanceThresholdMetersKey) as? Int
+        if defaults.object(forKey: startDistanceThresholdMetersKey) == nil {
+            defaults.set(
+                sanitizedArrivalDistanceMeters(legacyValue ?? defaultStartArrivalDistanceMeters),
+                forKey: startDistanceThresholdMetersKey
+            )
+        }
+        if defaults.object(forKey: endDistanceThresholdMetersKey) == nil {
+            defaults.set(
+                sanitizedArrivalDistanceMeters(legacyValue ?? defaultEndArrivalDistanceMeters),
+                forKey: endDistanceThresholdMetersKey
+            )
+        }
+        defaults.set(true, forKey: phaseArrivalDistanceMigrationKey)
+    }
+
+    private static func migrateLegacyDefaultArrivalDistanceIfNeeded(defaults: UserDefaults = userDefaultsStore) {
         guard defaults.bool(forKey: arrivalDistanceDefaultMigrationKey) == false else { return }
 
         let storedValue = defaults.object(forKey: distanceThresholdMetersKey) as? Int

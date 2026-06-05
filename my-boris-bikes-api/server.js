@@ -650,6 +650,7 @@ function sanitizeScheduledJourneyPayload(body) {
       timezone,
       enabled: body?.enabled !== false,
       bikeDataFilter: sanitizeBikeDataFilter(body?.bikeDataFilter),
+      arrivalSettings: sanitizeArrivalSettings(body?.arrivalSettings),
     },
   };
 }
@@ -666,6 +667,7 @@ function serializeScheduledJourney(doc) {
     timezone: doc.timezone || "Europe/London",
     enabled: doc.enabled !== false,
     bikeDataFilter: sanitizeBikeDataFilter(doc.bikeDataFilter),
+    arrivalSettings: sanitizeArrivalSettings(doc.arrivalSettings),
     activeRun: doc.activeRun || null,
     pausedRunKeys: doc.pausedRunKeys || [],
     createdAt: doc.createdAt?.toISOString?.() || doc.createdAt,
@@ -684,6 +686,21 @@ function sanitizeBikeDataFilter(rawValue) {
   return rawValue === "bikesOnly" || rawValue === "eBikesOnly" || rawValue === "both"
     ? rawValue
     : "both";
+}
+
+function sanitizeArrivalDistanceMeters(value, fallback) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return fallback;
+  const roundedValue = Math.round(numericValue / 5) * 5;
+  return Math.min(Math.max(roundedValue, 10), 100);
+}
+
+function sanitizeArrivalSettings(rawValue) {
+  const source = rawValue && typeof rawValue === "object" ? rawValue : {};
+  return {
+    startDistanceMeters: sanitizeArrivalDistanceMeters(source.startDistanceMeters, 50),
+    endDistanceMeters: sanitizeArrivalDistanceMeters(source.endDistanceMeters, 50),
+  };
 }
 
 function localDateParts(date, timeZone) {
@@ -3640,12 +3657,14 @@ app.post("/scheduled-journeys/device/register", async (req, res) => {
   const buildType = req.body?.buildType === "production" ? "production" : "development";
   const timezone = sanitizeTimeZone(req.body?.timezone) || "Europe/London";
   const bikeDataFilter = sanitizeBikeDataFilter(req.body?.bikeDataFilter);
+  const arrivalSettings = sanitizeArrivalSettings(req.body?.arrivalSettings);
 
   const update = {
     deviceId,
     buildType,
     timezone,
     bikeDataFilter,
+    arrivalSettings,
     updatedAt: new Date(),
   };
   if (pushToStartToken) update.pushToStartToken = pushToStartToken;

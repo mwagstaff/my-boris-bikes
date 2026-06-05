@@ -43,8 +43,11 @@ struct PreferencesView: View {
     @AppStorage(LiveActivityArrivalSettings.enabledKey, store: LiveActivityArrivalSettings.userDefaultsStore)
     private var liveActivityAutoEndOnArrival: Bool = LiveActivityArrivalSettings.defaultEnabled
 
-    @AppStorage(LiveActivityArrivalSettings.distanceThresholdMetersKey, store: LiveActivityArrivalSettings.userDefaultsStore)
-    private var liveActivityArrivalDistanceMeters: Int = LiveActivityArrivalSettings.defaultArrivalDistanceMeters
+    @AppStorage(LiveActivityArrivalSettings.startDistanceThresholdMetersKey, store: LiveActivityArrivalSettings.userDefaultsStore)
+    private var liveActivityStartArrivalDistanceMeters: Int = LiveActivityArrivalSettings.defaultStartArrivalDistanceMeters
+
+    @AppStorage(LiveActivityArrivalSettings.endDistanceThresholdMetersKey, store: LiveActivityArrivalSettings.userDefaultsStore)
+    private var liveActivityEndArrivalDistanceMeters: Int = LiveActivityArrivalSettings.defaultEndArrivalDistanceMeters
 
     private var liveActivityPrimaryDisplay: LiveActivityPrimaryDisplay {
         LiveActivityPrimaryDisplay(rawValue: liveActivityPrimaryDisplayRawValue) ?? .bikes
@@ -57,14 +60,25 @@ struct PreferencesView: View {
         )
     }
 
-    private var sanitizedLiveActivityArrivalDistanceMeters: Int {
-        LiveActivityArrivalSettings.sanitizedArrivalDistanceMeters(liveActivityArrivalDistanceMeters)
+    private var sanitizedLiveActivityStartArrivalDistanceMeters: Int {
+        LiveActivityArrivalSettings.sanitizedArrivalDistanceMeters(liveActivityStartArrivalDistanceMeters)
     }
 
-    private var liveActivityArrivalDistanceBinding: Binding<Int> {
+    private var sanitizedLiveActivityEndArrivalDistanceMeters: Int {
+        LiveActivityArrivalSettings.sanitizedArrivalDistanceMeters(liveActivityEndArrivalDistanceMeters)
+    }
+
+    private var liveActivityStartArrivalDistanceBinding: Binding<Int> {
         Binding(
-            get: { sanitizedLiveActivityArrivalDistanceMeters },
-            set: { liveActivityArrivalDistanceMeters = LiveActivityArrivalSettings.sanitizedArrivalDistanceMeters($0) }
+            get: { sanitizedLiveActivityStartArrivalDistanceMeters },
+            set: { liveActivityStartArrivalDistanceMeters = LiveActivityArrivalSettings.sanitizedArrivalDistanceMeters($0) }
+        )
+    }
+
+    private var liveActivityEndArrivalDistanceBinding: Binding<Int> {
+        Binding(
+            get: { sanitizedLiveActivityEndArrivalDistanceMeters },
+            set: { liveActivityEndArrivalDistanceMeters = LiveActivityArrivalSettings.sanitizedArrivalDistanceMeters($0) }
         )
     }
 
@@ -147,26 +161,48 @@ struct PreferencesView: View {
                             )
                         }
 
-                    Picker("Arrival distance", selection: liveActivityArrivalDistanceBinding) {
+                    Picker("Start dock distance", selection: liveActivityStartArrivalDistanceBinding) {
                         ForEach(LiveActivityArrivalSettings.distanceOptions, id: \.self) { distance in
                             Text("\(distance)m")
                                 .tag(distance)
                         }
                     }
-                    .onChange(of: liveActivityArrivalDistanceMeters) { _, newValue in
+                    .onChange(of: liveActivityStartArrivalDistanceMeters) { _, newValue in
                         let sanitizedValue = LiveActivityArrivalSettings.sanitizedArrivalDistanceMeters(newValue)
                         if sanitizedValue != newValue {
-                            liveActivityArrivalDistanceMeters = sanitizedValue
+                            liveActivityStartArrivalDistanceMeters = sanitizedValue
                             return
                         }
-                        trackPreferenceChange(key: LiveActivityArrivalSettings.distanceThresholdMetersKey, value: sanitizedValue)
-                    }
-                    .onAppear {
-                        LiveActivityArrivalSettings.migrateLegacyDefaultArrivalDistanceIfNeeded()
-                        liveActivityArrivalDistanceMeters = sanitizedLiveActivityArrivalDistanceMeters
+                        trackPreferenceChange(key: LiveActivityArrivalSettings.startDistanceThresholdMetersKey, value: sanitizedValue)
+                        Task {
+                            await ScheduledJourneyService.shared.registerDevice()
+                        }
                     }
 
-                    Text("When enabled, starting a Live Activity also uses background location updates. If you come within \(sanitizedLiveActivityArrivalDistanceMeters) metres of that dock, the app asks the server to stop dock availability notifications and dismiss the Live Activity. Reliable arrival detection needs both Always and Precise Location access.")
+                    Picker("End dock distance", selection: liveActivityEndArrivalDistanceBinding) {
+                        ForEach(LiveActivityArrivalSettings.distanceOptions, id: \.self) { distance in
+                            Text("\(distance)m")
+                                .tag(distance)
+                        }
+                    }
+                    .onChange(of: liveActivityEndArrivalDistanceMeters) { _, newValue in
+                        let sanitizedValue = LiveActivityArrivalSettings.sanitizedArrivalDistanceMeters(newValue)
+                        if sanitizedValue != newValue {
+                            liveActivityEndArrivalDistanceMeters = sanitizedValue
+                            return
+                        }
+                        trackPreferenceChange(key: LiveActivityArrivalSettings.endDistanceThresholdMetersKey, value: sanitizedValue)
+                        Task {
+                            await ScheduledJourneyService.shared.registerDevice()
+                        }
+                    }
+                    .onAppear {
+                        LiveActivityArrivalSettings.migrateArrivalDistanceSettingsIfNeeded()
+                        liveActivityStartArrivalDistanceMeters = sanitizedLiveActivityStartArrivalDistanceMeters
+                        liveActivityEndArrivalDistanceMeters = sanitizedLiveActivityEndArrivalDistanceMeters
+                    }
+
+                    Text("When enabled, starting a Live Activity also uses background location updates. Start-dock arrivals use the configured start distance; destination arrivals use the configured end distance. Reliable arrival detection needs both Always and Precise Location access.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
 
