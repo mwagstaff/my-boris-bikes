@@ -737,6 +737,10 @@ final class DockArrivalMonitoringService: NSObject {
         if scheduledJourneyPhase == .start,
            let scheduledDestinationDock,
            (scheduledJourneyId != nil || adHocJourneyId != nil) {
+            let startArrivalScheduledJourneyId = scheduledJourneyId
+            let startArrivalAdHocJourneyId = adHocJourneyId
+            let destinationDock = scheduledDestinationDock
+
             logger.info("Scheduled journey start dock reached; transitioning to end dock")
             logLocationEvent(
                 "scheduled_start_arrival",
@@ -750,9 +754,9 @@ final class DockArrivalMonitoringService: NSObject {
             )
             stopMonitoring(reason: "scheduled_start_arrival")
             await LiveActivityService.shared.transitionScheduledJourneyToEndDock(
-                journeyId: scheduledJourneyId,
-                adHocJourneyId: adHocJourneyId,
-                endDock: scheduledDestinationDock,
+                journeyId: startArrivalScheduledJourneyId,
+                adHocJourneyId: startArrivalAdHocJourneyId,
+                endDock: destinationDock,
                 delaySeconds: 0,
                 transitionSource: "arrival"
             )

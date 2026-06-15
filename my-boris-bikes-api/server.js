@@ -539,7 +539,6 @@ function deviceIdFromRequest(req) {
 async function completeScheduledJourneyFromArrivalSession(session, dockId) {
   if (
     !session ||
-    session.scheduledJourneyPhase !== "end" ||
     typeof session.scheduledJourneyId !== "string" ||
     !ObjectId.isValid(session.scheduledJourneyId)
   ) {
@@ -552,6 +551,33 @@ async function completeScheduledJourneyFromArrivalSession(session, dockId) {
   if (!scheduledJourneysCollection) return false;
 
   const journeyId = session.scheduledJourneyId;
+  const journey = await scheduledJourneysCollection.findOne(
+    { _id: new ObjectId(journeyId), deletedAt: { $exists: false } },
+    { projection: { endDock: 1, activeRun: 1 } }
+  );
+  if (!journey?.activeRun?.phase) {
+    appendDiagnosticJsonLine("scheduled_journey_completion_skipped_from_arrival", {
+      journeyId,
+      dockId,
+      reason: "not_active",
+    });
+    return false;
+  }
+
+  const arrivedAtEndDock = journey.endDock?.id === dockId;
+  const sessionIsEndPhase = session.scheduledJourneyPhase === "end";
+  if (!sessionIsEndPhase && !arrivedAtEndDock) {
+    appendDiagnosticJsonLine("scheduled_journey_completion_skipped_from_arrival", {
+      journeyId,
+      dockId,
+      reason: "not_destination_arrival",
+      scheduledJourneyPhase: session.scheduledJourneyPhase || null,
+      endDockId: journey.endDock?.id || null,
+      activeRunPhase: journey.activeRun.phase,
+    });
+    return false;
+  }
+
   const result = await scheduledJourneysCollection.updateOne(
     {
       _id: new ObjectId(journeyId),
@@ -567,6 +593,8 @@ async function completeScheduledJourneyFromArrivalSession(session, dockId) {
     dockId,
     completed,
     matchedCount: result.matchedCount,
+    scheduledJourneyPhase: session.scheduledJourneyPhase || null,
+    completedByEndDockFallback: !sessionIsEndPhase && arrivedAtEndDock,
   });
   return completed;
 }

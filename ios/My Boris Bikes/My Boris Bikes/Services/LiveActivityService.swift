@@ -946,6 +946,41 @@ class LiveActivityService: ObservableObject {
         await advanceJourneyFromStart(dockId: dockId)
     }
 
+    private func scheduledStartActivity(
+        journeyId: String?,
+        adHocJourneyId: String?
+    ) -> Activity<DockActivityAttributes>? {
+        activeActivityCandidates().first { activity in
+            let phase = ScheduledJourney.ActiveRun.Phase(
+                rawValue: activity.content.state.activeJourneyPhase ?? activity.attributes.scheduledJourneyPhase ?? ""
+            )
+            return phase == .start
+                && (journeyId == nil || activity.attributes.scheduledJourneyId == journeyId)
+                && (adHocJourneyId == nil || activity.attributes.adHocJourneyId == adHocJourneyId)
+        }
+    }
+
+    private func activeActivityFallback() -> Activity<DockActivityAttributes>? {
+        activeActivityCandidates().first
+    }
+
+    private func activeActivityCandidates() -> [Activity<DockActivityAttributes>] {
+        var seenActivityIds = Set<String>()
+        var candidates: [Activity<DockActivityAttributes>] = []
+
+        for activity in activeActivities.values {
+            guard seenActivityIds.insert(activity.id).inserted else { continue }
+            candidates.append(activity)
+        }
+
+        for activity in Activity<DockActivityAttributes>.activities where activity.activityState == .active {
+            guard seenActivityIds.insert(activity.id).inserted else { continue }
+            candidates.append(activity)
+        }
+
+        return candidates
+    }
+
     func transitionScheduledJourneyToEndDock(
         journeyId: String?,
         adHocJourneyId: String? = nil,
@@ -953,14 +988,10 @@ class LiveActivityService: ObservableObject {
         delaySeconds: UInt64 = 60,
         transitionSource: String = "manual"
     ) async {
-        let current = activeActivities.values.first { activity in
-            let phase = ScheduledJourney.ActiveRun.Phase(
-                rawValue: activity.content.state.activeJourneyPhase ?? activity.attributes.scheduledJourneyPhase ?? ""
-            )
-            return phase == .start
-                && (journeyId == nil || activity.attributes.scheduledJourneyId == journeyId)
-                && (adHocJourneyId == nil || activity.attributes.adHocJourneyId == adHocJourneyId)
-        } ?? activeActivities.values.first
+        let current = scheduledStartActivity(
+            journeyId: journeyId,
+            adHocJourneyId: adHocJourneyId
+        ) ?? activeActivityFallback()
 
         logLiveActivityDiagnosticEvent(
             "scheduled_transition_to_end_started",
