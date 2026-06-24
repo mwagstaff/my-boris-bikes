@@ -12,9 +12,7 @@ struct SimplifiedDonutChart: View {
     let emptySpaces: Int
     let size: CGFloat
     var displayMode: DisplayMode = .all
-
-    @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
-    private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
+    let bikeDataFilter: BikeDataFilter
     
     private let strokeWidth: CGFloat = 7
     private let borderWidth: CGFloat = 2
@@ -49,10 +47,6 @@ struct SimplifiedDonutChart: View {
     private var rawEmptySpacePercentage: Double {
         guard total > 0 else { return 0 }
         return Double(filteredEmptySpaces) / Double(total)
-    }
-
-    private var bikeDataFilter: BikeDataFilter {
-        BikeDataFilter(rawValue: bikeDataFilterRawValue) ?? .both
     }
 
     private var filteredCounts: BikeAvailabilityCounts {
@@ -164,9 +158,9 @@ struct SimplifiedDonutChart: View {
 
 #Preview {
     VStack(spacing: 20) {
-        SimplifiedDonutChart(standardBikes: 5, eBikes: 3, emptySpaces: 12, size: 24)
-        SimplifiedDonutChart(standardBikes: 0, eBikes: 0, emptySpaces: 0, size: 24)
-        SimplifiedDonutChart(standardBikes: 2, eBikes: 0, emptySpaces: 8, size: 24)
+        SimplifiedDonutChart(standardBikes: 5, eBikes: 3, emptySpaces: 12, size: 24, bikeDataFilter: .both)
+        SimplifiedDonutChart(standardBikes: 0, eBikes: 0, emptySpaces: 0, size: 24, bikeDataFilter: .both)
+        SimplifiedDonutChart(standardBikes: 2, eBikes: 0, emptySpaces: 8, size: 24, bikeDataFilter: .both)
     }
     .padding()
 }

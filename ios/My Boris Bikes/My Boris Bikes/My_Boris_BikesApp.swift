@@ -61,6 +61,9 @@ struct My_Boris_BikesApp: App {
             selectedTab = 0 // Navigate to favorites tab
         case "map":
             selectedTab = 1 // Navigate to map tab
+        case "journeys":
+            selectedDockId = nil
+            selectedTab = 2 // Navigate to journeys tab
         case "dock":
             // Extract dock ID from path
             let dockId = url.pathComponents.last ?? ""

@@ -48,6 +48,7 @@ class MapViewModel {
         )
     )
     var visibleBikePoints: [MapBikePointSummary] = []
+    var showsDetailedPins = true
     var shouldShowZoomMessage = false
     var lastUpdateTime: Date?
     var staleDataWarningMessage: String?
@@ -74,6 +75,8 @@ class MapViewModel {
     @ObservationIgnored private var isSetup = false
     @ObservationIgnored private var hasPendingBikePointCenter = false
     @ObservationIgnored private var pendingDockId: String?
+    @ObservationIgnored private var isMapInteractionActive = false
+    @ObservationIgnored private var pendingProcessedMapData: ProcessedMapData?
 
     // Inlined from BaseViewModel (error delay logic)
     @ObservationIgnored private var cancellables = Set<AnyCancellable>()
@@ -131,11 +134,32 @@ class MapViewModel {
         loadBikePoints(trigger: .manual)
     }
 
+    // Tracks interaction without publishing camera state or rebuilding annotations per frame.
+    func handleContinuousMapCameraChange(_ region: MKCoordinateRegion) {
+        isMapInteractionActive = true
+        currentMapCenter = region.center
+        currentMapSpan = region.span
+    }
+
     // Called from .onMapCameraChange(frequency: .onEnd) — fires once when panning settles.
     func handleMapCameraChange(_ region: MKCoordinateRegion) {
+        isMapInteractionActive = false
         currentMapCenter = region.center
         currentMapSpan = region.span
         updateVisibleBikePoints()
+
+        if let pendingProcessedMapData {
+            self.pendingProcessedMapData = nil
+            applyFreshProcessedMapData(pendingProcessedMapData)
+        }
+    }
+
+    func endMapInteraction() {
+        isMapInteractionActive = false
+        if let pendingProcessedMapData {
+            self.pendingProcessedMapData = nil
+            applyFreshProcessedMapData(pendingProcessedMapData)
+        }
     }
 
     func centerOnNearestBikePoint() {
@@ -376,6 +400,11 @@ class MapViewModel {
     }
 
     private func applyFreshProcessedMapData(_ processed: ProcessedMapData) {
+        guard !isMapInteractionActive else {
+            pendingProcessedMapData = processed
+            return
+        }
+
         allBikePointsByID = processed.bikePointsByID
         allBikePointSummaries = processed.summaries
         lastUpdateTime = processed.savedAt
@@ -498,11 +527,13 @@ class MapViewModel {
         }
 
         let spanAverage = (currentMapSpan.latitudeDelta + currentMapSpan.longitudeDelta) / 2
+        let shouldShowDetailedPins = spanAverage <= 0.012
+        let visiblePointLimit = shouldShowDetailedPins ? 30 : maxVisiblePoints
         let dynamicDistance = max(500.0, min(3000.0, spanAverage * 50000.0))
         let maxDistanceSquared = dynamicDistance * dynamicDistance
 
         var closest: [(summary: MapBikePointSummary, distanceSquared: Double)] = []
-        closest.reserveCapacity(maxVisiblePoints)
+        closest.reserveCapacity(visiblePointLimit)
         var totalNearbyPoints = 0
         var farthestIndex = 0
         var farthestDistanceSquared = -1.0
@@ -516,7 +547,7 @@ class MapViewModel {
             guard distanceSquared <= maxDistanceSquared else { continue }
             totalNearbyPoints += 1
 
-            if closest.count < maxVisiblePoints {
+            if closest.count < visiblePointLimit {
                 closest.append((summary, distanceSquared))
                 if distanceSquared > farthestDistanceSquared {
                     farthestDistanceSquared = distanceSquared
@@ -540,7 +571,10 @@ class MapViewModel {
             .sorted { $0.distanceSquared < $1.distanceSquared }
             .map(\.summary)
 
-        let shouldShowZoom = totalNearbyPoints > maxVisiblePoints && spanAverage > 0.005
+        let shouldShowZoom = totalNearbyPoints > visiblePointLimit && spanAverage > 0.005
+        if showsDetailedPins != shouldShowDetailedPins {
+            showsDetailedPins = shouldShowDetailedPins
+        }
         if shouldShowZoomMessage != shouldShowZoom {
             shouldShowZoomMessage = shouldShowZoom
         }

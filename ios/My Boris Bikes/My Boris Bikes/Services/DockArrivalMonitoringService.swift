@@ -120,18 +120,17 @@ enum DockArrivalHeuristics {
                 maximumThresholdExpansion: 0
             )
         case .some(.end):
-            let arrivalThreshold = max(configuredArrivalThreshold, 40)
-            let effectiveThreshold = effectiveArrivalThreshold(
-                for: arrivalThreshold,
-                horizontalAccuracy: horizontalAccuracy
-            )
+            let arrivalThreshold = configuredArrivalThreshold
             return ArrivalPolicy(
                 kind: .endDock,
                 arrivalThreshold: arrivalThreshold,
-                acceptableHorizontalAccuracy: 100,
-                usesCompensatedDistanceForConfirmation: true,
-                confirmationDwellTime: LiveActivityArrivalSettings.confirmationDwellTimeSeconds,
-                maximumThresholdExpansion: effectiveThreshold - arrivalThreshold
+                acceptableHorizontalAccuracy: min(
+                    acceptableHorizontalAccuracy(for: arrivalThreshold),
+                    LiveActivityArrivalSettings.journeyEndAcceptedHorizontalAccuracyMeters
+                ),
+                usesCompensatedDistanceForConfirmation: false,
+                confirmationDwellTime: LiveActivityArrivalSettings.journeyEndConfirmationDwellTimeSeconds,
+                maximumThresholdExpansion: 0
             )
         case nil:
             let effectiveThreshold = effectiveArrivalThreshold(
@@ -885,9 +884,10 @@ final class DockArrivalMonitoringService: NSObject {
         content.title = "Dock arrival"
         content.body = "Welcome to \(dock.dockName)!"
         content.sound = .default
+        let minuteBucket = Int(Date().timeIntervalSince1970 / 60)
 
         let request = UNNotificationRequest(
-            identifier: "scheduled-start-arrival-\(dock.dockId)-\(UUID().uuidString)",
+            identifier: "scheduled-start-arrival-\(scheduledJourneyId ?? adHocJourneyId ?? dock.dockId)-\(minuteBucket)",
             content: content,
             trigger: nil
         )

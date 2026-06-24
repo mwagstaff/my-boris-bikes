@@ -541,20 +541,7 @@ private struct DockLiveActivityView: View {
     }
 
     private var lockScreenDetailURL: URL? {
-        var components = URLComponents()
-        components.scheme = "myborisbikes"
-        components.host = "dock"
-        components.path = "/\(displayDockId(attributes: attributes, state: state))"
-        components.queryItems = [
-            URLQueryItem(name: "bikeFilter", value: bikeDataFilter.rawValue),
-            URLQueryItem(name: "minBikes", value: String(minBikes)),
-            URLQueryItem(name: "minEBikes", value: String(minEBikes)),
-            URLQueryItem(name: "minSpaces", value: String(minSpaces))
-        ]
-        if let journeyMetric {
-            components.queryItems?.append(URLQueryItem(name: "journeyMetric", value: journeyMetric.queryValue))
-        }
-        return components.url
+        URL(string: "myborisbikes://journeys")
     }
 
     private func journeySummary(for alternative: DockActivityAttributes.AlternativeDock) -> JourneyAvailabilitySummary? {
@@ -903,7 +890,7 @@ private struct CompactDonutView: View {
 
 struct My_Boris_Bikes_WidgetLiveActivity: Widget {
     private var appLaunchURL: URL? {
-        URL(string: "myborisbikes://app")
+        URL(string: "myborisbikes://journeys")
     }
 
     var body: some WidgetConfiguration {

@@ -21,6 +21,13 @@ class LiveActivityService: ObservableObject {
         let adHocJourneyId: String?
     }
 
+    private struct ActiveJourneyActivitySummary {
+        let dockId: String
+        let dockName: String
+        let phase: ScheduledJourney.ActiveRun.Phase
+        let scheduledJourneyId: String?
+    }
+
     private struct DeviceEndResponse: Decodable {
         let success: Bool
         let endedCount: Int
@@ -34,6 +41,7 @@ class LiveActivityService: ObservableObject {
             let expiresAt: String?
             let scheduledJourneyId: String?
             let scheduledJourneyPhase: String?
+            let adHocJourneyId: String?
         }
 
         let active: Bool
@@ -69,6 +77,39 @@ class LiveActivityService: ObservableObject {
         }
 
         return activeNotificationSession
+    }
+
+    private func activeJourneyActivitySummary() -> ActiveJourneyActivitySummary? {
+        let activityCandidates = Array(activeActivities.values) +
+            Activity<DockActivityAttributes>.activities.filter { $0.activityState == .active }
+
+        for activity in activityCandidates {
+            let state = activity.content.state
+            guard let phase = ScheduledJourney.ActiveRun.Phase(
+                rawValue: state.activeJourneyPhase ?? activity.attributes.scheduledJourneyPhase ?? ""
+            ) else {
+                continue
+            }
+
+            return ActiveJourneyActivitySummary(
+                dockId: state.resolvedDockId ?? activity.attributes.dockId,
+                dockName: state.resolvedDockName ?? activity.attributes.dockName,
+                phase: phase,
+                scheduledJourneyId: activity.attributes.scheduledJourneyId
+            )
+        }
+
+        if let session = activeNotificationSession,
+           let phase = session.scheduledJourneyPhase {
+            return ActiveJourneyActivitySummary(
+                dockId: session.dockId,
+                dockName: session.dockName,
+                phase: phase,
+                scheduledJourneyId: session.scheduledJourneyId
+            )
+        }
+
+        return nil
     }
 
     /// Track stale dates for active activities (keyed by dock ID)
@@ -254,6 +295,11 @@ class LiveActivityService: ObservableObject {
         DockArrivalMonitoringService.shared.stopMonitoring(for: dockId, reason: "live_activity_cleared")
     }
 
+    private func completeAdHocJourneyIfNeeded(for activity: Activity<DockActivityAttributes>) {
+        guard let adHocJourneyId = activity.attributes.adHocJourneyId else { return }
+        AdHocJourneyService.shared.complete(journeyId: adHocJourneyId)
+    }
+
     private func reconcileTrackedServerSessions(activeDockIds: Set<String>) {
         let trackedSessions = trackedServerSessionsByDock()
         guard !trackedSessions.isEmpty else { return }
@@ -283,6 +329,8 @@ class LiveActivityService: ObservableObject {
         dockId: String,
         skipServerUnregister: Bool = false
     ) async {
+        completeAdHocJourneyIfNeeded(for: activity)
+
         if !skipServerUnregister, let pushToken = activity.pushToken {
             let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
             await unregisterFromServer(dockId: dockId, pushToken: tokenString)
@@ -309,6 +357,36 @@ class LiveActivityService: ObservableObject {
         destinationDock: ScheduledJourneyDock? = nil
     ) {
         let dockId = bikePoint.id
+
+        if scheduledJourneyPhase == nil,
+           let activeJourney = activeJourneyActivitySummary() {
+            logger.warning("Ignoring regular live activity start for \(dockId) because journey activity is active for \(activeJourney.dockId)")
+            TroubleshootingLogStore.shared.record(
+                category: "live_activity",
+                event: "regular_start_blocked_active_journey",
+                message: "Ignored regular Live Activity start while a journey Live Activity is active.",
+                metadata: [
+                    "requestedDockId": dockId,
+                    "requestedDockName": bikePoint.commonName,
+                    "activeDockId": activeJourney.dockId,
+                    "activeDockName": activeJourney.dockName,
+                    "activeJourneyPhase": activeJourney.phase.rawValue,
+                ]
+            )
+            logLiveActivityDiagnosticEvent(
+                "live_activity_regular_start_blocked_active_journey",
+                dockId: dockId,
+                dockName: bikePoint.commonName,
+                scheduledJourneyId: activeJourney.scheduledJourneyId,
+                scheduledJourneyPhase: activeJourney.phase,
+                message: "Ignored regular live activity start while a journey is active",
+                raw: [
+                    "activeDockId": activeJourney.dockId,
+                    "activeDockName": activeJourney.dockName,
+                ]
+            )
+            return
+        }
 
         // Enforce a single active live activity across the app
         endAllActivities(except: dockId)
@@ -608,6 +686,7 @@ class LiveActivityService: ObservableObject {
         if activity.attributes.dockId != dockId {
             cancelObservationTasks(for: activity.attributes.dockId)
         }
+        completeAdHocJourneyIfNeeded(for: activity)
 
         // Clear the per-dock override
         LiveActivityDockSettings.clearPrimaryDisplay(for: dockId)
@@ -839,7 +918,7 @@ class LiveActivityService: ObservableObject {
                     expiresAt: parseServerISODate(session.expiresAt),
                     scheduledJourneyId: session.scheduledJourneyId,
                     scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase(rawValue: session.scheduledJourneyPhase ?? ""),
-                    adHocJourneyId: nil
+                    adHocJourneyId: session.adHocJourneyId
                 )
             } else {
                 activeNotificationSession = nil
@@ -1466,6 +1545,8 @@ class LiveActivityService: ObservableObject {
     func restoreActivities() {
         let runningActivities = Activity<DockActivityAttributes>.activities
         let runningDockIds = Set(runningActivities.map { $0.content.state.resolvedDockId ?? $0.attributes.dockId })
+        let activeAdHocJourneyIds = Set(runningActivities.compactMap(\.attributes.adHocJourneyId))
+        AdHocJourneyService.shared.reconcileActivePhases(activeJourneyIds: activeAdHocJourneyIds)
 
         // If local in-memory tracking says an activity exists but the system no longer has it
         // (e.g. user swiped it away while app was suspended), clear local state.

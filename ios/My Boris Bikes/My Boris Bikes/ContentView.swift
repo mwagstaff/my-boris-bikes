@@ -40,7 +40,7 @@ struct ContentView: View {
     }
     
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             TabView(selection: $selectedTabIndex) {
                 HomeView(
                     onBikePointSelected: { bikePoint in
@@ -71,7 +71,11 @@ struct ContentView: View {
                 }
                 .tag(1)
 
-                JourneysView()
+                JourneysView { dockId in
+                    selectedBikePointForMap = nil
+                    selectedDockId = dockId
+                    selectedTabIndex = 1
+                }
                     .tabItem {
                         Image(systemName: "figure.outdoor.cycle")
                         Text("Journeys")
@@ -108,32 +112,23 @@ struct ContentView: View {
                 }
             }
 
-            VStack(spacing: 8) {
-                if shouldShowLocationBanner {
-                    LocationPermissionBanner(
-                        locationService: locationService,
-                        onRequestPermission: handleLocationPermissionRequest
-                    )
-                }
-
-                Spacer()
+            if shouldShowLocationBanner {
+                LocationPermissionBanner(
+                    locationService: locationService,
+                    onRequestPermission: handleLocationPermissionRequest
+                )
             }
-
-            VStack {
-                Spacer()
-
-                if let notificationSession {
-                    ActiveNotificationsBanner(
-                        session: notificationSession,
-                        onTap: {
-                            handleNotificationBannerTap(
-                                notificationSession
-                            )
-                        }
-                    )
-                    .padding(.horizontal)
-                    .padding(.bottom, 56)
-                }
+        }
+        .overlay(alignment: .bottom) {
+            if let notificationSession {
+                ActiveNotificationsBanner(
+                    session: notificationSession,
+                    onTap: {
+                        handleNotificationBannerTap(notificationSession)
+                    }
+                )
+                .padding(.horizontal)
+                .padding(.bottom, 64)
             }
         }
         .onAppear {
@@ -177,6 +172,7 @@ struct ContentView: View {
             selectedTabIndex = newTab
         }
         .onChange(of: selectedTabIndex) { _, newTab in
+            selectedTab = newTab
             AnalyticsService.shared.track(action: .screenView, screen: analyticsScreen(for: newTab))
         }
         .onChange(of: selectedDockId) { _, newDockId in

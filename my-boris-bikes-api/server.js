@@ -584,7 +584,12 @@ async function completeScheduledJourneyFromArrivalSession(session, dockId) {
       deletedAt: { $exists: false },
       "activeRun.phase": { $in: ["start", "end"] },
     },
-    { $set: { activeRun: null, updatedAt: new Date() } }
+    {
+      $set: { activeRun: null, updatedAt: new Date() },
+      $addToSet: {
+        pausedRunKeys: journey.activeRun?.runKey || scheduledRunKey(journey),
+      },
+    }
   );
 
   const completed = result.modifiedCount > 0;
@@ -2206,6 +2211,22 @@ async function sendArrivalConfirmationPush(deviceToken, buildType, dockName) {
     `Welcome to ${resolvedDockName}!`,
     "arrival_confirmation",
     "arrival confirmation"
+  );
+}
+
+async function sendArrivalSpaceAvailabilityPush(
+  deviceToken,
+  buildType,
+  dockName,
+  dockData
+) {
+  return sendAlertPush(
+    deviceToken,
+    buildType,
+    "Space availability",
+    scheduledJourneyDestinationAvailabilityBody(dockName, dockData),
+    "arrival_space_availability",
+    "arrival space availability"
   );
 }
 
@@ -3959,7 +3980,10 @@ app.post("/scheduled-journeys/:id/phase", async (req, res) => {
 
   if (phase === "end") {
     await sendScheduledJourneyTransitionPushes(journey, dock, {
-      includeStartArrivalNotification: transitionSource !== "manual",
+      // Arrival monitoring already posts the welcome notification locally.
+      // Suppress the server copy so one physical arrival produces one alert.
+      includeStartArrivalNotification:
+        transitionSource !== "manual" && transitionSource !== "arrival",
     });
   }
 
@@ -3976,12 +4000,22 @@ app.post("/scheduled-journeys/:id/complete", async (req, res) => {
     return res.status(400).json({ error: "Missing deviceId or invalid journey id" });
   }
 
+  const journey = await collection.findOne({
+    _id: new ObjectId(journeyId),
+    deviceId,
+    deletedAt: { $exists: false },
+  });
+  if (!journey) return res.status(404).json({ error: "Scheduled journey not found" });
+
+  const runKey = journey.activeRun?.runKey || scheduledRunKey(journey);
   const result = await collection.findOneAndUpdate(
-    { _id: new ObjectId(journeyId), deviceId, deletedAt: { $exists: false } },
-    { $set: { activeRun: null, updatedAt: new Date() } },
+    { _id: journey._id, deviceId, deletedAt: { $exists: false } },
+    {
+      $set: { activeRun: null, updatedAt: new Date() },
+      $addToSet: { pausedRunKeys: runKey },
+    },
     { returnDocument: "after" }
   );
-  if (!result) return res.status(404).json({ error: "Scheduled journey not found" });
   res.json({ success: true, journey: serializeScheduledJourney(result) });
 });
 
@@ -4187,13 +4221,38 @@ app.post("/live-activity/start", (req, res) => {
     const scheduledJourneyObjectId = new ObjectId(scheduledJourneyId);
     scheduledJourneysCollection.findOne(
       { _id: scheduledJourneyObjectId, deletedAt: { $exists: false } },
-      { projection: { startDock: 1, endDock: 1, activeRun: 1, timezone: 1, startTime: 1 } }
+      { projection: { startDock: 1, endDock: 1, activeRun: 1, pausedRunKeys: 1, timezone: 1, startTime: 1 } }
     ).then((journey) => {
       if (!journey) return null;
+      const registrationRunKey = req.body?.scheduledRunKey || scheduledRunKey(journey);
+      if (
+        normalizedScheduledJourneyPhase === "start" &&
+        !journey.activeRun?.phase &&
+        Array.isArray(journey.pausedRunKeys) &&
+        journey.pausedRunKeys.includes(registrationRunKey)
+      ) {
+        logger.warn(
+          `Skipping stale start-phase registration for scheduled journey ${scheduledJourneyId} because run ${registrationRunKey} is complete or paused`
+        );
+        appendDiagnosticJsonLine("scheduled_journey_stale_start_registration_skipped", {
+          journeyId: scheduledJourneyId,
+          dockId,
+          dockName: normalizedDockName || dockId,
+          reason: "run_paused",
+          runKey: registrationRunKey,
+        });
+        return null;
+      }
       if (normalizedScheduledJourneyPhase === "start" && journey.activeRun?.phase === "end") {
         logger.warn(
           `Skipping stale start-phase registration for scheduled journey ${scheduledJourneyId} because it is already watching the destination dock`
         );
+        appendDiagnosticJsonLine("scheduled_journey_stale_start_registration_skipped", {
+          journeyId: scheduledJourneyId,
+          dockId,
+          dockName: normalizedDockName || dockId,
+          reason: "already_end_phase",
+        });
         return null;
       }
       if (normalizedScheduledJourneyPhase === "end" && !journey.activeRun?.phase) {
@@ -4212,7 +4271,7 @@ app.post("/live-activity/start", (req, res) => {
               dockId: dock?.id || dockId,
               dockName: dock?.name || normalizedDockName || dockId,
               startedAt: journey.activeRun?.startedAt || new Date(),
-              runKey: journey.activeRun?.runKey || req.body?.scheduledRunKey || scheduledRunKey(journey),
+              runKey: journey.activeRun?.runKey || registrationRunKey,
             },
             updatedAt: new Date(),
           },
@@ -4536,23 +4595,60 @@ app.post("/live-activity/arrive", async (req, res) => {
   }
 
   let confirmationSent = false;
+  let spaceAvailabilitySent = false;
   if (effectiveSessions.length > 0) {
     const [, session] = effectiveSessions[0];
     const dockName =
-      session.dockName ||
+      session.activeDockName ||
       (typeof poller?.lastData?.dockName === "string" && poller.lastData.dockName.trim()
         ? poller.lastData.dockName.trim()
-        : dockId);
+        : session.dockName || dockId);
     const confirmationBuildType = session.buildType;
+    const welcomeAlreadySent = Boolean(session.destinationArrivalWelcomeSentAt);
 
-    try {
-      await sendArrivalConfirmationPush(deviceToken, confirmationBuildType, dockName);
-      confirmationSent = true;
-    } catch (err) {
-      logger.error(
-        `Failed to send arrival confirmation to ${deviceToken.substring(0, 8)}...:`,
-        err.message
-      );
+    if (!welcomeAlreadySent) {
+      // Mark before awaiting APNS so concurrent arrival requests cannot enqueue
+      // duplicate notifications for the same tracked journey session.
+      session.destinationArrivalWelcomeSentAt = Date.now();
+      try {
+        await sendArrivalConfirmationPush(deviceToken, confirmationBuildType, dockName);
+        confirmationSent = true;
+      } catch (err) {
+        delete session.destinationArrivalWelcomeSentAt;
+        logger.error(
+          `Failed to send arrival confirmation to ${deviceToken.substring(0, 8)}...:`,
+          err.message
+        );
+      }
+    }
+
+    const isJourneyDestinationArrival =
+      session.scheduledJourneyPhase === "end" &&
+      Boolean(session.scheduledJourneyId || session.adHocJourneyId);
+    const welcomeWasSent = confirmationSent || welcomeAlreadySent;
+
+    if (
+      isJourneyDestinationArrival &&
+      welcomeWasSent &&
+      !session.destinationArrivalSpaceSentAt
+    ) {
+      session.destinationArrivalSpaceSentAt = Date.now();
+      try {
+        const dockData = poller?.lastData || (await fetchDockData(dockId));
+        await sendArrivalSpaceAvailabilityPush(
+          deviceToken,
+          confirmationBuildType,
+          dockName,
+          dockData
+        );
+        spaceAvailabilitySent = true;
+      } catch (err) {
+        delete session.destinationArrivalSpaceSentAt;
+        logger.error(
+          `Failed to send arrival space availability to ${deviceToken.substring(0, 8)}...:`,
+          err.message
+        );
+      }
     }
   }
 
@@ -4593,6 +4689,7 @@ app.post("/live-activity/arrive", async (req, res) => {
     endedCount,
     completedScheduledJourneyCount,
     confirmationSent,
+    spaceAvailabilitySent,
     remainingCount,
   });
 
@@ -4602,6 +4699,7 @@ app.post("/live-activity/arrive", async (req, res) => {
     endedCount,
     completedScheduledJourneyCount,
     confirmationSent,
+    spaceAvailabilitySent,
     remainingCount,
     message:
       endedCount > 0

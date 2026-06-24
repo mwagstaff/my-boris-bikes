@@ -174,22 +174,29 @@ struct My_Boris_BikesTests {
         )
     }
 
-    @Test func testEndDockArrivalPolicyAllowsCompensatedDistance() async throws {
+    @Test func testEndDockArrivalPolicyRequiresRawDistance() async throws {
         let policy = DockArrivalHeuristics.arrivalPolicy(
             for: .end,
-            configuredArrivalThreshold: CLLocationDistance(25),
+            configuredArrivalThreshold: CLLocationDistance(50),
             horizontalAccuracy: 45
         )
 
         #expect(policy.kind == .endDock)
-        #expect(policy.acceptableHorizontalAccuracy == 100)
-        #expect(policy.usesCompensatedDistanceForConfirmation == true)
-        #expect(policy.arrivalThreshold == 40)
+        #expect(policy.acceptableHorizontalAccuracy == 90)
+        #expect(policy.usesCompensatedDistanceForConfirmation == false)
+        #expect(policy.arrivalThreshold == 50)
+        #expect(policy.confirmationDwellTime == 2)
+        #expect(
+            policy.isInsideArrivalThreshold(
+                rawDistance: 35,
+                compensatedDistance: 0
+            ) == true
+        )
         #expect(
             policy.isInsideArrivalThreshold(
                 rawDistance: 75,
                 compensatedDistance: 30
-            ) == true
+            ) == false
         )
     }
 

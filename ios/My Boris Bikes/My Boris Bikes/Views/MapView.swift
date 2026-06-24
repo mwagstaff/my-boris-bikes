@@ -41,10 +41,13 @@ struct MapView: View {
     @EnvironmentObject var favoritesService: FavoritesService
     @EnvironmentObject var bannerService: BannerService
     @State private var selectedBikePointForDetail: BikePoint?
+    @State private var selectedMapDockId: String?
     @State private var pendingDockDetailId: String?
     @Binding var selectedBikePointForMap: BikePoint?
     @Binding var selectedDockId: String?
     @AppStorage(AppConstants.UserDefaults.mapDisplayModeKey) private var mapAvailabilityDisplayModeRawValue = MapAvailabilityDisplayMode.docksAndSpaces.rawValue
+    @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
+    private var bikeDataFilterRawValue = BikeDataFilter.both.rawValue
     let onShowServiceStatus: (() -> Void)?
 
     init(
@@ -59,36 +62,43 @@ struct MapView: View {
     
     var body: some View {
         @Bindable var viewModel = viewModel
+        let favoriteDockIds = Set(favoritesService.favorites.map(\.id))
+        let bikeDataFilter = BikeDataFilter(rawValue: bikeDataFilterRawValue) ?? .both
+
         NavigationStack {
             ZStack {
-                Map(position: $viewModel.position) {
+                Map(position: $viewModel.position, selection: $selectedMapDockId) {
                     ForEach(viewModel.visibleBikePoints, id: \.id) { bikePoint in
-                        Annotation(bikePoint.commonName, coordinate: bikePoint.coordinate) {
-                            BikePointMapPin(
-                                bikePoint: bikePoint,
-                                isFavorite: favoritesService.isFavorite(bikePoint.id),
-                                displayMode: mapAvailabilityDisplayMode
-                            ) {
-                                guard let fullBikePoint = viewModel.bikePoint(for: bikePoint.id) else { return }
-                                AnalyticsService.shared.trackDockTap(
-                                    screen: .map,
-                                    bikePoint: fullBikePoint,
-                                    source: "map_pin"
+                        let isFavorite = favoriteDockIds.contains(bikePoint.id)
+
+                        if viewModel.showsDetailedPins {
+                            Annotation(bikePoint.commonName, coordinate: bikePoint.coordinate) {
+                                BikePointMapPin(
+                                    bikePoint: bikePoint,
+                                    isFavorite: isFavorite,
+                                    displayMode: mapAvailabilityDisplayMode,
+                                    bikeDataFilter: bikeDataFilter
                                 )
-                                selectedBikePointForDetail = fullBikePoint
                             }
+                            .tag(bikePoint.id)
+                        } else {
+                            Marker(
+                                bikePoint.commonName,
+                                systemImage: "bicycle",
+                                coordinate: bikePoint.coordinate
+                            )
+                            .tint(markerTint(isAvailable: bikePoint.isAvailable, isFavorite: isFavorite))
+                            .tag(bikePoint.id)
                         }
                     }
-                    
-                    // User location indicator
-                    if let userLocation = locationService.location {
-                        Annotation("", coordinate: userLocation.coordinate) {
-                            UserLocationIndicator(heading: locationService.heading)
-                        }
-                    }
+
+                    UserAnnotation()
                 }
                 .mapStyle(.standard(elevation: .flat)) // Optimize map rendering
                 .mapControlVisibility(.hidden) // Hide unnecessary controls
+                .onMapCameraChange(frequency: .continuous) { context in
+                    viewModel.handleContinuousMapCameraChange(context.region)
+                }
                 .onMapCameraChange(frequency: .onEnd) { context in
                     viewModel.handleMapCameraChange(context.region)
                 }
@@ -103,11 +113,11 @@ struct MapView: View {
                         selectedDockId = nil
                     }
                     viewModel.setup(locationService: locationService)
-                    locationService.startHeadingUpdates()
                 }
                 .onDisappear {
-                    locationService.stopHeadingUpdates()
+                    viewModel.endMapInteraction()
                     selectedBikePointForDetail = nil
+                    selectedMapDockId = nil
                     pendingDockDetailId = nil
                 }
                 .onChange(of: selectedBikePointForMap) { _, newBikePoint in
@@ -122,6 +132,11 @@ struct MapView: View {
                         handleDockDeepLinkSelection(dockId)
                         selectedDockId = nil
                     }
+                }
+                .onChange(of: selectedMapDockId) { _, newDockId in
+                    guard let newDockId else { return }
+                    selectBikePoint(id: newDockId, source: "map_marker")
+                    selectedMapDockId = nil
                 }
                 .onChange(of: viewModel.visibleBikePoints) { _, _ in
                     guard let pendingDockDetailId else { return }
@@ -341,13 +356,30 @@ struct MapView: View {
             pendingDockDetailId = dockId
         }
     }
+
+    private func selectBikePoint(id: String, source: String) {
+        guard let bikePoint = viewModel.bikePoint(for: id) else { return }
+        AnalyticsService.shared.trackDockTap(
+            screen: .map,
+            bikePoint: bikePoint,
+            source: source
+        )
+        selectedBikePointForDetail = bikePoint
+    }
+
+    private func markerTint(isAvailable: Bool, isFavorite: Bool) -> Color {
+        if isFavorite {
+            return AppConstants.Colors.favoriteHighlight
+        }
+        return isAvailable ? .accentColor : .orange
+    }
 }
 
 struct BikePointMapPin: View {
     let bikePoint: MapBikePointSummary
     let isFavorite: Bool
     let displayMode: MapAvailabilityDisplayMode
-    let onTap: () -> Void
+    let bikeDataFilter: BikeDataFilter
     
     private let donutSize: CGFloat = 40
     private var favoriteRingSize: CGFloat {
@@ -370,7 +402,8 @@ struct BikePointMapPin: View {
                         standardBikes: bikePoint.standardBikes,
                         eBikes: bikePoint.eBikes,
                         emptySpaces: bikePoint.emptyDocks,
-                        size: donutSize // Smaller for better performance
+                        size: donutSize,
+                        bikeDataFilter: bikeDataFilter
                     )
 
                 if !bikePoint.isAvailable {
@@ -382,16 +415,7 @@ struct BikePointMapPin: View {
                             .offset(x: -10, y: -10)
                     }
             }
-            // Apply long press to the donut only
-            .contentShape(Circle())
-            .onLongPressGesture(minimumDuration: 0.28, maximumDistance: 40) { onTap() }
-            .onTapGesture {
-                onTap()
-            }
-            // Accessibility: expose as a button with an activate action
             .accessibilityLabel(Text("\(bikePoint.commonName) dock details"))
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction { onTap() }
 
             if displayMode == .docksAndSpaces {
                 BikePointCapacityBadge(

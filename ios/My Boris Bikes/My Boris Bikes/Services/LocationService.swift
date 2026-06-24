@@ -13,13 +13,14 @@ class LocationService: NSObject, ObservableObject {
     
     private let locationManager = CLLocationManager()
     private let logger = Logger(subsystem: "com.myborisbikes.app", category: "LocationService")
+    private var wantsHeadingUpdates = false
     
     override init() {
         super.init()
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
         locationManager.distanceFilter = 10
-        locationManager.headingFilter = 1
+        locationManager.headingFilter = 5
         locationManager.headingOrientation = .portrait
         
         // Initialize with current authorization status
@@ -55,6 +56,8 @@ class LocationService: NSObject, ObservableObject {
     }
 
     func startHeadingUpdates() {
+        wantsHeadingUpdates = true
+
         guard CLLocationManager.headingAvailable() else {
             logger.info("Heading updates unavailable on this device")
             return
@@ -75,6 +78,11 @@ class LocationService: NSObject, ObservableObject {
     }
 
     func stopHeadingUpdates() {
+        wantsHeadingUpdates = false
+        suspendHeadingUpdates()
+    }
+
+    private func suspendHeadingUpdates() {
         logger.info("Stopping heading updates")
         locationManager.stopUpdatingHeading()
         heading = nil
@@ -152,12 +160,14 @@ extension LocationService: CLLocationManagerDelegate {
             logger.info("Location authorized, clearing error and starting updates")
             error = nil
             startLocationUpdates()
-            startHeadingUpdates()
+            if wantsHeadingUpdates {
+                startHeadingUpdates()
+            }
         case .denied, .restricted:
             logger.warning("Location access denied or restricted, stopping updates")
             error = "Location access denied. Distance sorting will not be available."
             stopLocationUpdates()
-            stopHeadingUpdates()
+            suspendHeadingUpdates()
         case .notDetermined:
             logger.info("Location authorization not determined")
         @unknown default:

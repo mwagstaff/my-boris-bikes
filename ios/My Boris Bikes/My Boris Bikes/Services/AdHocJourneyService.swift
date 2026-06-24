@@ -84,6 +84,19 @@ final class AdHocJourneyService: ObservableObject {
         persist()
     }
 
+    func reconcileActivePhases(activeJourneyIds: Set<String>) {
+        var changed = false
+        for index in recentJourneys.indices where recentJourneys[index].activePhase != nil {
+            guard !activeJourneyIds.contains(recentJourneys[index].id) else { continue }
+            recentJourneys[index].activePhase = nil
+            changed = true
+        }
+
+        guard changed else { return }
+        sortAndTrim()
+        persist()
+    }
+
     private func upsert(_ journey: AdHocJourney) {
         recentJourneys.removeAll { existing in
             existing.id == journey.id ||
