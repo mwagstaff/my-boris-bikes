@@ -46,6 +46,10 @@ const START_ARRIVAL_DESTINATION_SPACE_ALERT_DELAY_MS = parseInt(
   process.env.START_ARRIVAL_DESTINATION_SPACE_ALERT_DELAY_MS || "30000",
   10
 );
+const DESTINATION_AVAILABILITY_GENERIC_ALERT_SUPPRESSION_MS = parseInt(
+  process.env.DESTINATION_AVAILABILITY_GENERIC_ALERT_SUPPRESSION_MS || "120000",
+  10
+);
 const DEFAULT_NOTIFICATION_WINDOW_MS = 2 * 60 * 60 * 1000;
 const HARD_NOTIFICATION_CUTOFF_MS = 2 * 60 * 60 * 1000;
 const EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS =
@@ -1145,6 +1149,7 @@ function scheduleStartArrivalDestinationSpaceAlert({
   delayMs,
   scheduledJourneyId,
   adHocJourneyId,
+  triggerSource = "start_arrival",
 }) {
   const key = startArrivalDestinationAlertKey(deviceToken, startDockId, endDock.id);
   const existingTimeout = scheduledStartArrivalDestinationAlerts.get(key);
@@ -1173,7 +1178,11 @@ function scheduleStartArrivalDestinationSpaceAlert({
         resolvedDockName
       );
 
-      appendDiagnosticJsonLine("scheduled_start_arrival_destination_space_alert_sent", {
+      const diagnosticKind =
+        triggerSource === "destination_approach"
+          ? "destination_approach_space_alert_sent"
+          : "scheduled_start_arrival_destination_space_alert_sent";
+      appendDiagnosticJsonLine(diagnosticKind, {
         startDockId,
         startDockName,
         endDockId: endDock.id,
@@ -1181,6 +1190,7 @@ function scheduleStartArrivalDestinationSpaceAlert({
         deviceToken: shortenIdentifier(deviceToken),
         buildType,
         delayMs,
+        triggerSource,
         scheduledJourneyId: scheduledJourneyId || null,
         adHocJourneyId: adHocJourneyId || null,
         emptySpaces: endDockData.emptySpaces,
@@ -1191,12 +1201,17 @@ function scheduleStartArrivalDestinationSpaceAlert({
         `Failed to send delayed destination space alert for ${endDock.id}:`,
         err.message
       );
-      appendDiagnosticJsonLine("scheduled_start_arrival_destination_space_alert_failed", {
+      const diagnosticKind =
+        triggerSource === "destination_approach"
+          ? "destination_approach_space_alert_failed"
+          : "scheduled_start_arrival_destination_space_alert_failed";
+      appendDiagnosticJsonLine(diagnosticKind, {
         startDockId,
         endDockId: endDock.id,
         deviceToken: shortenIdentifier(deviceToken),
         buildType,
         delayMs,
+        triggerSource,
         scheduledJourneyId: scheduledJourneyId || null,
         adHocJourneyId: adHocJourneyId || null,
         error: err.message,
@@ -2214,22 +2229,6 @@ async function sendArrivalConfirmationPush(deviceToken, buildType, dockName) {
   );
 }
 
-async function sendArrivalSpaceAvailabilityPush(
-  deviceToken,
-  buildType,
-  dockName,
-  dockData
-) {
-  return sendAlertPush(
-    deviceToken,
-    buildType,
-    "Space availability",
-    scheduledJourneyDestinationAvailabilityBody(dockName, dockData),
-    "arrival_space_availability",
-    "arrival space availability"
-  );
-}
-
 // ── Silent Background Push (complication refresh) ─────────────────────
 // Sends a content-available:1 push to wake the iOS app so it can fetch
 // fresh dock data and relay it to the watch via transferCurrentComplicationUserInfo.
@@ -2439,6 +2438,24 @@ async function pollDock(dockId) {
           );
 
           if (!alertMessage) continue;
+          if (
+            session.genericAvailabilityAlertSuppressedUntil &&
+            Date.now() < session.genericAvailabilityAlertSuppressedUntil
+          ) {
+            appendDiagnosticJsonLine("availability_alert_suppressed", {
+              dockId,
+              dockName: data.dockName,
+              pushToken: shortenIdentifier(pushToken),
+              deviceToken: shortenIdentifier(session.deviceToken),
+              primaryDisplay,
+              alertMessage,
+              suppressedUntil: new Date(
+                session.genericAvailabilityAlertSuppressedUntil
+              ).toISOString(),
+              reason: "recent_destination_availability_snapshot",
+            });
+            continue;
+          }
           if (!session.deviceToken) {
             logger.info(
               `Skipped availability alert for ${pushToken.substring(0, 8)}... (no device token registered)`
@@ -4480,6 +4497,8 @@ app.post("/live-activity/session/update", async (req, res) => {
         seededData
       );
       session.destinationAvailabilitySentAt = Date.now();
+      session.genericAvailabilityAlertSuppressedUntil =
+        Date.now() + DESTINATION_AVAILABILITY_GENERIC_ALERT_SUPPRESSION_MS;
     } catch (err) {
       logger.warn(
         `Failed to send scheduled journey destination availability push: ${err.message}`
@@ -4595,7 +4614,6 @@ app.post("/live-activity/arrive", async (req, res) => {
   }
 
   let confirmationSent = false;
-  let spaceAvailabilitySent = false;
   if (effectiveSessions.length > 0) {
     const [, session] = effectiveSessions[0];
     const dockName =
@@ -4622,34 +4640,6 @@ app.post("/live-activity/arrive", async (req, res) => {
       }
     }
 
-    const isJourneyDestinationArrival =
-      session.scheduledJourneyPhase === "end" &&
-      Boolean(session.scheduledJourneyId || session.adHocJourneyId);
-    const welcomeWasSent = confirmationSent || welcomeAlreadySent;
-
-    if (
-      isJourneyDestinationArrival &&
-      welcomeWasSent &&
-      !session.destinationArrivalSpaceSentAt
-    ) {
-      session.destinationArrivalSpaceSentAt = Date.now();
-      try {
-        const dockData = poller?.lastData || (await fetchDockData(dockId));
-        await sendArrivalSpaceAvailabilityPush(
-          deviceToken,
-          confirmationBuildType,
-          dockName,
-          dockData
-        );
-        spaceAvailabilitySent = true;
-      } catch (err) {
-        delete session.destinationArrivalSpaceSentAt;
-        logger.error(
-          `Failed to send arrival space availability to ${deviceToken.substring(0, 8)}...:`,
-          err.message
-        );
-      }
-    }
   }
 
   const matchedPushTokens = new Set(effectiveSessions.map(([pushToken]) => pushToken));
@@ -4689,7 +4679,6 @@ app.post("/live-activity/arrive", async (req, res) => {
     endedCount,
     completedScheduledJourneyCount,
     confirmationSent,
-    spaceAvailabilitySent,
     remainingCount,
   });
 
@@ -4699,7 +4688,6 @@ app.post("/live-activity/arrive", async (req, res) => {
     endedCount,
     completedScheduledJourneyCount,
     confirmationSent,
-    spaceAvailabilitySent,
     remainingCount,
     message:
       endedCount > 0
@@ -4727,6 +4715,10 @@ app.post("/live-activity/start-arrival", (req, res) => {
     req.body?.buildType === "development" || req.body?.buildType === "production"
       ? req.body.buildType
       : null;
+  const triggerSource =
+    typeof req.body?.triggerSource === "string" && req.body.triggerSource.trim()
+      ? req.body.triggerSource.trim()
+      : "start_arrival";
 
   if (!startDockId) {
     return res.status(400).json({ error: "Missing required field: startDockId" });
@@ -4768,9 +4760,12 @@ app.post("/live-activity/start-arrival", (req, res) => {
     effectiveSession?.minimumThresholds,
     "spaces"
   );
-  const delayMs = Number.isFinite(START_ARRIVAL_DESTINATION_SPACE_ALERT_DELAY_MS)
-    ? Math.max(0, START_ARRIVAL_DESTINATION_SPACE_ALERT_DELAY_MS)
-    : 30000;
+  const requestedDelayMs = Number(req.body?.delayMs);
+  const delayMs = Number.isFinite(requestedDelayMs)
+    ? Math.max(0, Math.trunc(requestedDelayMs))
+    : Number.isFinite(START_ARRIVAL_DESTINATION_SPACE_ALERT_DELAY_MS)
+      ? Math.max(0, START_ARRIVAL_DESTINATION_SPACE_ALERT_DELAY_MS)
+      : 30000;
 
   scheduleStartArrivalDestinationSpaceAlert({
     deviceToken,
@@ -4784,9 +4779,18 @@ app.post("/live-activity/start-arrival", (req, res) => {
       typeof req.body?.scheduledJourneyId === "string" ? req.body.scheduledJourneyId : null,
     adHocJourneyId:
       typeof req.body?.adHocJourneyId === "string" ? req.body.adHocJourneyId : null,
+    triggerSource,
   });
+  if (effectiveSession) {
+    effectiveSession.genericAvailabilityAlertSuppressedUntil =
+      Date.now() + DESTINATION_AVAILABILITY_GENERIC_ALERT_SUPPRESSION_MS;
+  }
 
-  appendDiagnosticJsonLine("scheduled_start_arrival_destination_space_alert_scheduled", {
+  const diagnosticKind =
+    triggerSource === "destination_approach"
+      ? "destination_approach_space_alert_scheduled"
+      : "scheduled_start_arrival_destination_space_alert_scheduled";
+  appendDiagnosticJsonLine(diagnosticKind, {
     startDockId,
     startDockName,
     endDockId: endDock.id,
@@ -4798,6 +4802,7 @@ app.post("/live-activity/start-arrival", (req, res) => {
     fallbackSessions: fallbackSessions.length,
     delayMs,
     minimumSpaces,
+    triggerSource,
     scheduledJourneyId:
       typeof req.body?.scheduledJourneyId === "string" ? req.body.scheduledJourneyId : null,
     adHocJourneyId:

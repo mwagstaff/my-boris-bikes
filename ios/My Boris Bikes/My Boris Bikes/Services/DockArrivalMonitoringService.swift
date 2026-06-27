@@ -205,6 +205,7 @@ final class DockArrivalMonitoringService: NSObject {
     private var scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase?
     private var adHocJourneyId: String?
     private var scheduledDestinationDock: ScheduledJourneyDock?
+    private var destinationApproachSpaceAvailabilityRequested = false
 
     private override init() {
         super.init()
@@ -275,6 +276,7 @@ final class DockArrivalMonitoringService: NSObject {
         lastRoutineLocationLogAt = nil
         confirmationStartedAt = nil
         firstPreciseInsideThresholdAt = nil
+        destinationApproachSpaceAvailabilityRequested = false
         hasRequestedTemporaryFullAccuracyThisSession = false
         logLocationEvent("monitor_begin", dock: dock, message: "Preparing dock arrival monitoring")
 
@@ -329,6 +331,7 @@ final class DockArrivalMonitoringService: NSObject {
         lastRoutineLocationLogAt = nil
         confirmationStartedAt = nil
         firstPreciseInsideThresholdAt = nil
+        destinationApproachSpaceAvailabilityRequested = false
         hasRequestedTemporaryFullAccuracyThisSession = false
         if !preserveDock {
             monitoredDock = nil
@@ -747,10 +750,6 @@ final class DockArrivalMonitoringService: NSObject {
                 message: "Start dock reached; transitioning scheduled journey to destination dock"
             )
             sendScheduledStartArrivalNotification(for: dock)
-            await scheduleDestinationSpaceAvailabilityNotification(
-                startDock: dock,
-                destinationDock: scheduledDestinationDock
-            )
             stopMonitoring(reason: "scheduled_start_arrival")
             await LiveActivityService.shared.transitionScheduledJourneyToEndDock(
                 journeyId: startArrivalScheduledJourneyId,
@@ -898,10 +897,46 @@ final class DockArrivalMonitoringService: NSObject {
         }
     }
 
+    private func requestDestinationApproachSpaceAvailabilityIfNeeded(for dock: MonitoredDock, reason: String) {
+        guard scheduledJourneyPhase == .end else { return }
+        guard scheduledJourneyId != nil || adHocJourneyId != nil else { return }
+        guard !destinationApproachSpaceAvailabilityRequested else { return }
+
+        destinationApproachSpaceAvailabilityRequested = true
+        let destinationDock = ScheduledJourneyDock(
+            id: dock.dockId,
+            name: dock.dockName,
+            latitude: dock.latitude,
+            longitude: dock.longitude
+        )
+
+        Task {
+            let scheduled = await scheduleDestinationSpaceAvailabilityNotification(
+                startDock: dock,
+                destinationDock: destinationDock,
+                delayMs: 0,
+                triggerSource: "destination_approach"
+            )
+            if !scheduled {
+                destinationApproachSpaceAvailabilityRequested = false
+            }
+        }
+
+        logLocationEvent(
+            "destination_approach_space_alert_requested",
+            dock: dock,
+            message: "Requested destination space availability notification on approach",
+            raw: ["reason": reason]
+        )
+    }
+
+    @discardableResult
     private func scheduleDestinationSpaceAvailabilityNotification(
         startDock: MonitoredDock,
-        destinationDock: ScheduledJourneyDock
-    ) async {
+        destinationDock: ScheduledJourneyDock,
+        delayMs: Int? = nil,
+        triggerSource: String = "start_arrival"
+    ) async -> Bool {
         guard let deviceToken = DeviceTokenHelper.apnsDeviceToken else {
             logger.warning("Cannot schedule destination space notification because APNs device token is unavailable")
             logLocationEvent(
@@ -909,7 +944,7 @@ final class DockArrivalMonitoringService: NSObject {
                 dock: startDock,
                 message: "APNs device token unavailable"
             )
-            return
+            return false
         }
 
         var body: [String: Any] = [
@@ -923,7 +958,11 @@ final class DockArrivalMonitoringService: NSObject {
             ],
             "deviceToken": deviceToken,
             "buildType": PushEnvironment.buildType,
+            "triggerSource": triggerSource,
         ]
+        if let delayMs {
+            body["delayMs"] = delayMs
+        }
         if let scheduledJourneyId {
             body["scheduledJourneyId"] = scheduledJourneyId
         }
@@ -946,7 +985,7 @@ final class DockArrivalMonitoringService: NSObject {
                     dock: startDock,
                     message: "Server returned HTTP \(httpResponse.statusCode)"
                 )
-                return
+                return false
             }
 
             logLocationEvent(
@@ -956,8 +995,10 @@ final class DockArrivalMonitoringService: NSObject {
                 raw: [
                     "destinationDockId": destinationDock.id,
                     "destinationDockName": destinationDock.name,
+                    "triggerSource": triggerSource,
                 ]
             )
+            return true
         } catch {
             logger.error("Failed to schedule destination space notification: \(error.localizedDescription)")
             logLocationEvent(
@@ -965,6 +1006,7 @@ final class DockArrivalMonitoringService: NSObject {
                 dock: startDock,
                 message: "Network error: \(error.localizedDescription)"
             )
+            return false
         }
     }
 
@@ -1207,11 +1249,12 @@ final class DockArrivalMonitoringService: NSObject {
     }
 
     private func startPreciseLocationUpdates(reason: String, startConfirmationTimer: Bool = true) {
-        guard monitoredDock != nil else { return }
+        guard let dock = monitoredDock else { return }
         guard !isSendingArrivalRequest else { return }
 
         configureHighPowerTrackingProfile()
         startBackgroundActivitySessionIfNeeded()
+        requestDestinationApproachSpaceAvailabilityIfNeeded(for: dock, reason: reason)
 
         // Only start the confirmation clock once a location update has confirmed
         // the user is within the activation distance. Region entry switches to

@@ -20,6 +20,7 @@ struct JourneysView: View {
     @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
     @StateObject private var adHocJourneyService = AdHocJourneyService.shared
     @StateObject private var dockAvailabilityStore = JourneyDockAvailabilityStore()
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var locationService: LocationService
     @State private var journeyEditorPresentation: JourneyEditorPresentation?
     @State private var adHocDraftPresentation: AdHocJourneyDraftPresentation?
@@ -67,91 +68,31 @@ struct JourneysView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    Button { journeyEditorPresentation = .add } label: {
-                        Label("Add scheduled journey", systemImage: "calendar.badge.plus")
-                    }
-                    .disabled(scheduledJourneyService.journeys.count >= 5)
-
-                    Button { adHocDraftPresentation = .new } label: {
-                        Label("Start ad-hoc journey", systemImage: "figure.outdoor.cycle")
-                    }
-                }
-
+            Group {
                 if let currentActiveJourney {
-                    Section {
-                        switch currentActiveJourney {
-                        case .scheduled(let journey):
-                            scheduledJourneyRow(journey)
-                        case .adHoc(let journey):
-                            adHocJourneyRow(journey)
-                        }
-                    } header: {
-                        Text("Active Journey")
-                    }
-                }
-
-                Section {
-                    if scheduledJourneysByStartDistance.isEmpty {
-                        ContentUnavailableView(
-                            scheduledJourneyService.journeys.contains(where: \.isActive)
-                                ? "No other scheduled journeys"
-                                : "No scheduled journeys",
-                            systemImage: "calendar.badge.clock",
-                            description: Text(
-                                scheduledJourneyService.journeys.contains(where: \.isActive)
-                                    ? "Your current journey is shown above."
-                                    : "Add your regular routes here."
-                            )
-                        )
-                    } else {
-                        ForEach(scheduledJourneysByStartDistance) { journey in
-                            scheduledJourneyRow(journey)
-                        }
-                    }
-                } header: {
-                    Text("Scheduled Journeys")
-                }
-
-                Section {
-                    if adHocJourneysByStartDistance.isEmpty {
-                        ContentUnavailableView(
-                            adHocJourneyService.recentJourneys.contains(where: \.isActive)
-                                ? "No other ad-hoc journeys"
-                                : "No ad-hoc journeys",
-                            systemImage: "clock.arrow.circlepath",
-                            description: Text(
-                                adHocJourneyService.recentJourneys.contains(where: \.isActive)
-                                    ? "Your current journey is shown above."
-                                    : "Start a one-off journey and the latest 10 will appear here."
-                            )
-                        )
-                    } else {
-                        ForEach(adHocJourneysByStartDistance) { journey in
-                            adHocJourneyRow(journey)
-                        }
-                    }
-                } header: {
-                    Text("Ad-hoc journeys")
+                    activeJourneyScreen(currentActiveJourney)
+                } else {
+                    normalJourneysList
                 }
             }
             .navigationTitle("Journeys")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        Button { journeyEditorPresentation = .add } label: {
-                            Label("Scheduled journey", systemImage: "calendar.badge.plus")
-                        }
-                        .disabled(scheduledJourneyService.journeys.count >= 5)
+                if currentActiveJourney == nil {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Menu {
+                            Button { journeyEditorPresentation = .add } label: {
+                                Label("Scheduled journey", systemImage: "calendar.badge.plus")
+                            }
+                            .disabled(scheduledJourneyService.journeys.count >= 5)
 
-                        Button { adHocDraftPresentation = .new } label: {
-                            Label("Ad-hoc journey", systemImage: "figure.outdoor.cycle")
+                            Button { adHocDraftPresentation = .new } label: {
+                                Label("Ad-hoc journey", systemImage: "figure.outdoor.cycle")
+                            }
+                        } label: {
+                            Image(systemName: "plus")
                         }
-                    } label: {
-                        Image(systemName: "plus")
+                        .accessibilityLabel("Add journey")
                     }
-                    .accessibilityLabel("Add journey")
                 }
             }
             .task {
@@ -159,15 +100,21 @@ struct JourneysView: View {
                 await scheduledJourneyService.refresh()
             }
             .task(id: activeDockIDs) {
-                dockAvailabilityStore.refresh(dockIDs: activeDockIDs)
+                refreshActiveDockAvailability(cacheBusting: true)
             }
             .onReceive(dockAvailabilityRefreshTimer) { _ in
-                guard !activeDockIDs.isEmpty else { return }
-                dockAvailabilityStore.refresh(dockIDs: activeDockIDs, cacheBusting: true)
+                refreshActiveDockAvailability(cacheBusting: true)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task {
+                    await scheduledJourneyService.refresh()
+                    refreshActiveDockAvailability(cacheBusting: true)
+                }
             }
             .refreshable {
                 await scheduledJourneyService.refresh()
-                dockAvailabilityStore.refresh(dockIDs: activeDockIDs, cacheBusting: true)
+                refreshActiveDockAvailability(cacheBusting: true)
             }
             .sheet(item: $journeyEditorPresentation) { presentation in
                 AddJourneyView(presentation: presentation)
@@ -192,6 +139,76 @@ struct JourneysView: View {
                 Text("This removes the journey from your scheduled journeys.")
             }
         }
+    }
+
+    private var normalJourneysList: some View {
+        List {
+            Section {
+                Button { journeyEditorPresentation = .add } label: {
+                    Label("Add scheduled journey", systemImage: "calendar.badge.plus")
+                }
+                .disabled(scheduledJourneyService.journeys.count >= 5)
+
+                Button { adHocDraftPresentation = .new } label: {
+                    Label("Start ad-hoc journey", systemImage: "figure.outdoor.cycle")
+                }
+            }
+
+            Section {
+                if scheduledJourneysByStartDistance.isEmpty {
+                    ContentUnavailableView(
+                        "No scheduled journeys",
+                        systemImage: "calendar.badge.clock",
+                        description: Text("Add your regular routes here.")
+                    )
+                } else {
+                    ForEach(scheduledJourneysByStartDistance) { journey in
+                        scheduledJourneyRow(journey)
+                    }
+                }
+            } header: {
+                Text("Scheduled Journeys")
+            }
+
+            Section {
+                if adHocJourneysByStartDistance.isEmpty {
+                    ContentUnavailableView(
+                        "No ad-hoc journeys",
+                        systemImage: "clock.arrow.circlepath",
+                        description: Text("Start a one-off journey and the latest 10 will appear here.")
+                    )
+                } else {
+                    ForEach(adHocJourneysByStartDistance) { journey in
+                        adHocJourneyRow(journey)
+                    }
+                }
+            } header: {
+                Text("Ad-hoc journeys")
+            }
+        }
+    }
+
+    private func activeJourneyScreen(_ currentActiveJourney: CurrentActiveJourney) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                switch currentActiveJourney {
+                case .scheduled(let journey):
+                    scheduledJourneyRow(journey)
+                case .adHoc(let journey):
+                    adHocJourneyRow(journey)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 24)
+        }
+    }
+
+    private func refreshActiveDockAvailability(cacheBusting: Bool) {
+        dockAvailabilityStore.refresh(dockIDs: activeDockIDs, cacheBusting: cacheBusting)
     }
 
     private func scheduledJourneyRow(_ journey: ScheduledJourney) -> some View {
@@ -362,7 +379,7 @@ private struct AdHocJourneyRow: View {
                     endName: journey.endDock.displayName(using: favoritesService)
                 )
 
-                Button("Stop", role: .destructive, action: onStop)
+                Button("End journey", role: .destructive, action: onStop)
                     .buttonStyle(.bordered)
             } else {
                 ViewThatFits(in: .horizontal) {
@@ -594,7 +611,7 @@ private struct ScheduledJourneyRow: View {
     private var primaryActions: some View {
         HStack(spacing: 8) {
             if journey.isActive {
-                Button("Stop", role: .destructive, action: onStop)
+                Button("End journey", role: .destructive, action: onStop)
                     .buttonStyle(.bordered)
             } else {
                 Button("Start now", action: onActivate)
@@ -646,18 +663,29 @@ private final class JourneyDockAvailabilityStore: ObservableObject {
         }
 
         let requestedIDs = Set(dockIDs)
-        let cachedBikePoints = AllBikePointsCache.shared.load()
-            .filter { requestedIDs.contains($0.id) }
-        bikePointsByID = Dictionary(uniqueKeysWithValues: cachedBikePoints.map { ($0.id, $0) })
+        let uniqueDockIDs = Array(requestedIDs).sorted()
+        if cacheBusting {
+            bikePointsByID = bikePointsByID.filter { requestedIDs.contains($0.key) }
+        } else {
+            let cachedBikePoints = AllBikePointsCache.shared.load()
+                .filter { requestedIDs.contains($0.id) }
+            bikePointsByID = Dictionary(uniqueKeysWithValues: cachedBikePoints.map { ($0.id, $0) })
+        }
 
         cancellable = TfLAPIService.shared
-            .fetchMultipleBikePoints(ids: dockIDs, cacheBusting: cacheBusting)
+            .fetchMultipleBikePoints(ids: uniqueDockIDs, cacheBusting: cacheBusting)
             .sink(
                 receiveCompletion: { _ in },
                 receiveValue: { [weak self] bikePoints in
                     self?.bikePointsByID = Dictionary(
                         uniqueKeysWithValues: bikePoints.map { ($0.id, $0) }
                     )
+                    for bikePoint in bikePoints {
+                        DockArrivalMonitoringService.shared.updateMonitoredDockIfNeeded(using: bikePoint)
+                    }
+                    Task {
+                        await LiveActivityService.shared.updateActiveActivitiesIfNeeded(using: bikePoints)
+                    }
                 }
             )
     }
