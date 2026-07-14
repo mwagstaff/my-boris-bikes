@@ -8,6 +8,7 @@ final class ScheduledJourneyService: ObservableObject {
 
     @Published private(set) var journeys: [ScheduledJourney] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var isHolidayModeEnabled: Bool
     @Published var errorMessage: String?
 
     private struct ListResponse: Decodable {
@@ -20,11 +21,13 @@ final class ScheduledJourneyService: ObservableObject {
 
     private let logger = Logger(subsystem: "dev.skynolimit.myborisbikes", category: "ScheduledJourneys")
     private let pushToStartTokenStorageKey = "scheduled_journey_push_to_start_token"
+    private static let holidayModeStorageKey = "scheduled_journey_holiday_mode_enabled"
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
     private var pushToStartTask: Task<Void, Never>?
 
     private init() {
+        isHolidayModeEnabled = UserDefaults.standard.bool(forKey: Self.holidayModeStorageKey)
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
@@ -52,6 +55,26 @@ final class ScheduledJourneyService: ObservableObject {
         DeviceTokenHelper.scheduledJourneyDeviceId
     }
 
+    var hasEnabledJourneys: Bool {
+        journeys.contains { $0.enabled }
+    }
+
+    func setHolidayMode(_ enabled: Bool) async {
+        isHolidayModeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.holidayModeStorageKey)
+        TroubleshootingLogStore.shared.record(
+            category: "scheduled_journey",
+            event: enabled ? "holiday_mode_enabled" : "holiday_mode_disabled",
+            message: enabled
+                ? "Holiday mode enabled; scheduled journeys paused."
+                : "Holiday mode disabled; scheduled journeys resumed.",
+            metadata: ["deviceId": deviceId]
+        )
+        // The register endpoint syncs device-level state (including holiday mode)
+        // to the server, which suppresses scheduled journey pushes while enabled.
+        await registerDevice()
+    }
+
     func startPushToStartTokenObservation() {
         guard pushToStartTask == nil else { return }
         pushToStartTask = Task { [weak self] in
@@ -73,6 +96,7 @@ final class ScheduledJourneyService: ObservableObject {
             "timezone": TimeZone.current.identifier,
             "bikeDataFilter": currentBikeDataFilterRawValue(),
             "arrivalSettings": currentArrivalSettingsPayload(),
+            "holidayMode": isHolidayModeEnabled,
         ]
         if let deviceToken = DeviceTokenHelper.apnsDeviceToken {
             body["deviceToken"] = deviceToken
@@ -199,6 +223,7 @@ final class ScheduledJourneyService: ObservableObject {
             "buildType": PushEnvironment.buildType,
             "bikeDataFilter": currentBikeDataFilterRawValue(),
             "arrivalSettings": currentArrivalSettingsPayload(),
+            "holidayMode": isHolidayModeEnabled,
         ]
     }
 
@@ -251,6 +276,10 @@ final class ScheduledJourneyService: ObservableObject {
     }
 
     func activate(_ journey: ScheduledJourney) async {
+        guard !isHolidayModeEnabled else {
+            errorMessage = "Holiday mode is enabled — disable it to start a scheduled journey."
+            return
+        }
         TroubleshootingLogStore.shared.record(
             category: "scheduled_journey",
             event: "manual_activation_started",

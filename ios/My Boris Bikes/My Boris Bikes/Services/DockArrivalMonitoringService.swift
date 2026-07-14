@@ -482,16 +482,24 @@ final class DockArrivalMonitoringService: NSObject {
                 message: "Reduced location accuracy prevents reliable region monitoring"
             )
             stopMonitoringDockRegion()
-            startContinuousHighSensitivityTracking(reason: "reduced_accuracy_authorization")
+            // High-power tracking cannot improve fixes that iOS coarsens under
+            // reduced accuracy, so use the low-power profile here.
+            startContinuousLowSensitivityTracking(reason: "reduced_accuracy_authorization")
             return
         }
 
         stopAllLocationUpdates()
         stopBackgroundActivitySession()
         stopMonitoringDockRegion()
+        resetConfirmationState()
 
         if CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) {
+            // Region monitoring keeps GPS off until the user nears the dock.
+            // startMonitoringDockRegion's requestState(for:) escalates to
+            // continuous precise updates immediately if already inside the
+            // activation region.
             startMonitoringDockRegion(for: dock)
+            logger.info("Starting region-based dock arrival monitoring")
         } else {
             logger.warning("Dock arrival region monitoring is unavailable; relying on continuous location updates")
             logLocationEvent(
@@ -499,28 +507,8 @@ final class DockArrivalMonitoringService: NSObject {
                 dock: dock,
                 message: "Region monitoring unavailable; using continuous location updates"
             )
+            startContinuousLowSensitivityTracking(reason: "region_monitoring_unavailable")
         }
-
-        if scheduledJourneyPhase == .end {
-            startContinuousHighSensitivityTracking(reason: "scheduled_journey_end_phase")
-        } else {
-            startContinuousLowSensitivityTracking(reason: "active_live_activity")
-        }
-
-        logger.info("Starting continuous dock arrival monitoring")
-        logLocationEvent(
-            "location_updates_started",
-            dock: dock,
-            message: scheduledJourneyPhase == .end
-                ? "Started continuous high-sensitivity destination arrival monitoring"
-                : "Started continuous low-sensitivity location monitoring",
-            raw: [
-                "authorizationStatus": authorizationStatusLabel(authorizationStatus),
-                "regionRadiusMeters": configuredRegionRadiusMeters(),
-                "regionMonitoringEnabled": CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self),
-                "scheduledJourneyPhase": scheduledJourneyPhase?.rawValue ?? "none"
-            ]
-        )
     }
 
     private func startBackgroundActivitySessionIfNeeded() {
@@ -629,6 +617,9 @@ final class DockArrivalMonitoringService: NSObject {
                 message: "Precise confirmation window expired"
             )
             resetConfirmationState()
+            // Stop the high-power updates, then re-check region state — if the
+            // user is still inside the activation region this re-escalates.
+            deEscalateTracking(reason: "arrival_confirmation_timeout")
             for region in locationManager.monitoredRegions {
                 guard region.identifier.hasPrefix(Self.regionIdentifierPrefix) else { continue }
                 locationManager.requestState(for: region)
@@ -1181,7 +1172,7 @@ final class DockArrivalMonitoringService: NSObject {
         locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         locationManager.distanceFilter = 25
         locationManager.activityType = .fitness
-        locationManager.pausesLocationUpdatesAutomatically = false
+        locationManager.pausesLocationUpdatesAutomatically = true
     }
 
     private func configureHighPowerTrackingProfile() {
@@ -1189,19 +1180,6 @@ final class DockArrivalMonitoringService: NSObject {
         locationManager.distanceFilter = kCLDistanceFilterNone
         locationManager.activityType = .otherNavigation
         locationManager.pausesLocationUpdatesAutomatically = false
-    }
-
-    private func startContinuousHighSensitivityTracking(reason: String) {
-        configureHighPowerTrackingProfile()
-        startBackgroundActivitySessionIfNeeded()
-        locationManager.startUpdatingLocation()
-        locationManager.requestLocation()
-        logLocationEvent(
-            "continuous_high_sensitivity_started",
-            dock: monitoredDock,
-            message: "Started continuous high-sensitivity location updates",
-            raw: ["reason": reason]
-        )
     }
 
     private func startContinuousLowSensitivityTracking(reason: String) {
@@ -1281,6 +1259,25 @@ final class DockArrivalMonitoringService: NSObject {
         stopBackgroundActivitySession()
     }
 
+    /// Drops back from continuous (potentially high-power) location updates to
+    /// passive region monitoring. When no dock region is armed (region
+    /// monitoring unavailable or failed), falls back to low-sensitivity
+    /// continuous updates so arrival detection still works.
+    private func deEscalateTracking(reason: String) {
+        guard !isSendingArrivalRequest else { return }
+
+        let hasArmedDockRegion = locationManager.monitoredRegions.contains {
+            $0.identifier.hasPrefix(Self.regionIdentifierPrefix)
+        }
+
+        if hasArmedDockRegion {
+            stopAllLocationUpdates()
+            stopBackgroundActivitySession()
+        } else {
+            startContinuousLowSensitivityTracking(reason: reason)
+        }
+    }
+
     private func resetConfirmationState() {
         confirmationStartedAt = nil
         firstPreciseInsideThresholdAt = nil
@@ -1340,6 +1337,7 @@ final class DockArrivalMonitoringService: NSObject {
             )
         }
         resetConfirmationState()
+        deEscalateTracking(reason: reason)
     }
 
     private func shouldUploadDebugEvent(_ event: String) -> Bool {
@@ -1455,7 +1453,7 @@ extension DockArrivalMonitoringService: CLLocationManagerDelegate {
         stopAllLocationUpdates()
         stopBackgroundActivitySession()
         stopMonitoringDockRegion()
-        startContinuousHighSensitivityTracking(reason: "region_monitoring_failed")
+        startContinuousLowSensitivityTracking(reason: "region_monitoring_failed")
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {

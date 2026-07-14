@@ -258,10 +258,14 @@ class MapViewModel {
 
         backgroundUpdateTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
+                // Skip network refreshes while the app is backgrounded (it can
+                // stay alive during dock arrival monitoring).
+                guard UIApplication.shared.applicationState != .background else { return }
                 self?.logger.info("Background update triggered")
                 self?.loadBikePoints(trigger: .background)
             }
         }
+        backgroundUpdateTimer?.tolerance = interval * 0.1
         logger.info("Background updates started with interval: \(interval, privacy: .public)s")
     }
 
@@ -498,6 +502,7 @@ class MapViewModel {
         transientRetryTimer = Timer.scheduledTimer(withTimeInterval: retryInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                guard UIApplication.shared.applicationState != .background else { return }
                 guard self.transientRetryAttemptCount < 8 else {
                     self.logger.info("Stopping transient retry loop after max attempts")
                     self.stopTransientRetry()
@@ -509,6 +514,7 @@ class MapViewModel {
                 self.loadBikePoints(trigger: .retry)
             }
         }
+        transientRetryTimer?.tolerance = retryInterval * 0.1
     }
 
     private func stopTransientRetry() {

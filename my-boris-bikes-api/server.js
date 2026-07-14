@@ -3735,11 +3735,31 @@ app.post("/scheduled-journeys/device/register", async (req, res) => {
   };
   if (pushToStartToken) update.pushToStartToken = pushToStartToken;
   if (deviceToken) update.deviceToken = deviceToken;
+  const holidayModeProvided = typeof req.body?.holidayMode === "boolean";
+  if (holidayModeProvided) update.holidayMode = req.body.holidayMode;
 
   await collection.updateMany(
     { deviceId, deletedAt: { $exists: false } },
     { $set: update }
   );
+
+  // Holiday mode is a per-device setting, applied to every journey the device owns.
+  // Turning it on must immediately silence any journey already mid-run, not just
+  // block future scheduled starts — otherwise the live poll loop keeps pushing
+  // Live Activity updates for the in-progress session.
+  if (holidayModeProvided && update.holidayMode === true) {
+    const activeDeviceJourneys = await collection
+      .find({
+        deviceId,
+        deletedAt: { $exists: false },
+        "activeRun.phase": { $in: ["start", "end"] },
+      })
+      .toArray();
+    for (const journey of activeDeviceJourneys) {
+      await endActiveScheduledJourneyRun(journey, "holiday_mode_enabled");
+      logger.info(`Ended active scheduled journey ${journey._id} because holiday mode was enabled`);
+    }
+  }
 
   res.json({ success: true, deviceId, hasPushToStartToken: !!pushToStartToken });
 });
@@ -3783,6 +3803,17 @@ app.post("/scheduled-journeys", async (req, res) => {
     return res.status(400).json({ error: sanitized.error });
   }
 
+  // Holiday mode is a per-device setting: inherit the device's current value from
+  // any of its other journeys rather than trusting this single request body, so a
+  // stale client can't accidentally create a journey that skips the device's pause.
+  const existingDeviceJourney = await collection.findOne(
+    { deviceId, deletedAt: { $exists: false } },
+    { projection: { holidayMode: 1 } }
+  );
+  const holidayMode = existingDeviceJourney
+    ? existingDeviceJourney.holidayMode === true
+    : req.body?.holidayMode === true;
+
   const now = new Date();
   const doc = {
     ...sanitized.value,
@@ -3791,6 +3822,7 @@ app.post("/scheduled-journeys", async (req, res) => {
     pushToStartToken: normalizeApnsDeviceToken(req.body?.pushToStartToken) || null,
     buildType: req.body?.buildType === "production" ? "production" : "development",
     bikeDataFilter: sanitized.value.bikeDataFilter,
+    holidayMode,
     activeRun: null,
     pausedRunKeys: [],
     createdAt: now,
@@ -3860,6 +3892,14 @@ app.post("/scheduled-journeys/:id/activate", async (req, res) => {
     deletedAt: { $exists: false },
   });
   if (!journey) return res.status(404).json({ error: "Scheduled journey not found" });
+
+  if (journey.holidayMode === true) {
+    return res.status(409).json({
+      success: false,
+      error: "Holiday mode is enabled — disable it to start a scheduled journey",
+      journey: serializeScheduledJourney(journey),
+    });
+  }
 
   const runKey = scheduledRunKey(journey);
   if (req.body?.remoteStart !== false) {
@@ -5254,6 +5294,24 @@ app.get("/complication/status", (_req, res) => {
   });
 });
 
+// Ends any live tracked push sessions for a scheduled journey's docks and clears
+// its activeRun, so no further Live Activity/notification pushes go out for it.
+async function endActiveScheduledJourneyRun(journey, reason) {
+  for (const dockId of [journey.startDock.id, journey.endDock.id]) {
+    await endTrackedSessionsForDock(
+      dockId,
+      (_pushToken, session) =>
+        session.scheduledJourneyId === journey._id.toString() ||
+        session.deviceToken === journey.deviceToken,
+      reason
+    );
+  }
+  await scheduledJourneysCollection.updateOne(
+    { _id: journey._id },
+    { $set: { activeRun: null, updatedAt: new Date() } }
+  );
+}
+
 async function processScheduledJourneyStarts() {
   if (!scheduledJourneysCollection) return;
 
@@ -5265,26 +5323,22 @@ async function processScheduledJourneyStarts() {
     .toArray();
 
   for (const journey of activeJourneys) {
-    if (!shouldEndScheduledJourneyWindow(journey)) continue;
-    for (const dockId of [journey.startDock.id, journey.endDock.id]) {
-      await endTrackedSessionsForDock(
-        dockId,
-        (_pushToken, session) =>
-          session.scheduledJourneyId === journey._id.toString() ||
-          session.deviceToken === journey.deviceToken,
-        "scheduled_window_end"
-      );
-    }
-    await scheduledJourneysCollection.updateOne(
-      { _id: journey._id },
-      { $set: { activeRun: null, updatedAt: new Date() } }
+    const holidayModeActive = journey.holidayMode === true;
+    if (!holidayModeActive && !shouldEndScheduledJourneyWindow(journey)) continue;
+    await endActiveScheduledJourneyRun(
+      journey,
+      holidayModeActive ? "holiday_mode_enabled" : "scheduled_window_end"
     );
-    logger.info(`Ended scheduled journey ${journey._id} at end of window`);
+    logger.info(
+      `Ended scheduled journey ${journey._id}` +
+        (holidayModeActive ? " (holiday mode enabled)" : " at end of window")
+    );
   }
 
   const candidates = await scheduledJourneysCollection
     .find({
       enabled: { $ne: false },
+      holidayMode: { $ne: true },
       deletedAt: { $exists: false },
     })
     .toArray();

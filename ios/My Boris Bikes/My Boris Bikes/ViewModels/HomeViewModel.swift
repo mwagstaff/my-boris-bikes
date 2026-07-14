@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CoreLocation
+import UIKit
 
 @MainActor
 class HomeViewModel: BaseViewModel {
@@ -273,12 +274,17 @@ class HomeViewModel: BaseViewModel {
     
     private func startAutoRefresh() {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: AppConstants.App.refreshInterval, repeats: true) { [weak self] _ in
-            Task {
+            Task { @MainActor in
+                // Skip network refreshes while backgrounded — the app can stay
+                // alive in the background during dock arrival monitoring, and
+                // fresh data is loaded on return to foreground.
+                guard UIApplication.shared.applicationState != .background else { return }
                 self?.loadAllBikePointsIfNeeded(forceRefresh: false)
                 // Always force refresh to ensure fresh data at every interval
                 await self?.loadFavoriteData(forceRefresh: true)
             }
         }
+        refreshTimer?.tolerance = AppConstants.App.refreshInterval * 0.1
         // Fire the timer immediately to ensure first update happens right away
         refreshTimer?.fire()
     }

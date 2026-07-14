@@ -22,7 +22,7 @@ struct ContentView: View {
     @State private var selectedTabIndex = 0
     @State private var selectedBikePointForMap: BikePoint?
     @State private var isServiceBannerDismissed = false
-    private let notificationStatusRefreshTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+    private let notificationStatusRefreshTimer = Timer.publish(every: 60, tolerance: 6, on: .main, in: .common).autoconnect()
 
     private var shouldShowLocationBanner: Bool {
         locationService.authorizationStatus == .denied ||
@@ -120,13 +120,22 @@ struct ContentView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if let notificationSession {
-                ActiveNotificationsBanner(
-                    session: notificationSession,
-                    onTap: {
-                        handleNotificationBannerTap(notificationSession)
+            if scheduledJourneyService.isHolidayModeEnabled || notificationSession != nil {
+                VStack(spacing: 8) {
+                    if scheduledJourneyService.isHolidayModeEnabled {
+                        HolidayModeBanner {
+                            Task { await scheduledJourneyService.setHolidayMode(false) }
+                        }
                     }
-                )
+                    if let notificationSession {
+                        ActiveNotificationsBanner(
+                            session: notificationSession,
+                            onTap: {
+                                handleNotificationBannerTap(notificationSession)
+                            }
+                        )
+                    }
+                }
                 .padding(.horizontal)
                 .padding(.bottom, 64)
             }
@@ -157,6 +166,9 @@ struct ContentView: View {
             isServiceBannerDismissed = false
         }
         .onReceive(notificationStatusRefreshTimer) { _ in
+            // Skip the server poll while backgrounded; the willEnterForeground
+            // handler above refreshes on return.
+            guard UIApplication.shared.applicationState != .background else { return }
             Task { await liveActivityService.refreshNotificationStatusFromServer() }
         }
         .onChange(of: bannerService.currentBanner) { _, newBanner in
@@ -241,6 +253,34 @@ struct ContentView: View {
         default:
             return .unknown
         }
+    }
+}
+
+private struct HolidayModeBanner: View {
+    let onTap: () -> Void
+
+    private let message = "Holiday mode enabled | Tap to disable"
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                Image(systemName: "beach.umbrella.fill")
+                    .foregroundColor(.white)
+                Text(message)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.orange.opacity(0.95))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .shadow(color: .black.opacity(0.12), radius: 4, x: 0, y: 1)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(message.replacingOccurrences(of: " | ", with: ". "))
     }
 }
 

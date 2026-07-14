@@ -133,6 +133,7 @@ struct FavoritesListView: View {
     @ObservedObject private var liveActivityService = LiveActivityService.shared
     private let alternativeRefreshTimer = Timer.publish(
         every: AppConstants.App.refreshInterval,
+        tolerance: AppConstants.App.refreshInterval * 0.1,
         on: .main,
         in: .common
     ).autoconnect()
@@ -469,6 +470,9 @@ struct FavoritesListView: View {
             }
         }
         .onReceive(alternativeRefreshTimer) { _ in
+            // Skip network refreshes while backgrounded; data is refreshed by
+            // the willEnterForeground handler on return.
+            guard UIApplication.shared.applicationState != .background else { return }
             refreshVisibleAlternativeDockData()
         }
         .onDisappear {

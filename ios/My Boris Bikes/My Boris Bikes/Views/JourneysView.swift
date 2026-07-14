@@ -28,6 +28,7 @@ struct JourneysView: View {
     private let onDockSelected: (String) -> Void
     private let dockAvailabilityRefreshTimer = Timer.publish(
         every: AppConstants.App.refreshInterval,
+        tolerance: AppConstants.App.refreshInterval * 0.1,
         on: .main,
         in: .common
     ).autoconnect()
@@ -103,6 +104,9 @@ struct JourneysView: View {
                 refreshActiveDockAvailability(cacheBusting: true)
             }
             .onReceive(dockAvailabilityRefreshTimer) { _ in
+                // Skip network refreshes while backgrounded; the scenePhase
+                // handler below refreshes on return to active.
+                guard scenePhase == .active else { return }
                 refreshActiveDockAvailability(cacheBusting: true)
             }
             .onChange(of: scenePhase) { _, phase in
