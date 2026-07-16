@@ -387,8 +387,15 @@ final class DockArrivalMonitoringService: NSObject {
             ?? LiveActivityArrivalSettings.defaultEnabled
     }
 
+    // Read directly from shared defaults (rather than ScheduledJourneyService,
+    // which is @MainActor) so this can be checked synchronously from
+    // CLLocationManagerDelegate callbacks.
+    private var isHolidayModeEnabled: Bool {
+        AppConstants.UserDefaults.sharedDefaults.bool(forKey: AppConstants.UserDefaults.holidayModeEnabledKey)
+    }
+
     private var shouldMonitorCurrentDock: Bool {
-        scheduledJourneyPhase != nil || isEnabled
+        !isHolidayModeEnabled && (scheduledJourneyPhase != nil || isEnabled)
     }
 
     var monitoredDockID: String? {
@@ -442,6 +449,13 @@ final class DockArrivalMonitoringService: NSObject {
 
     private func startMonitoringIfPossible() {
         guard let dock = monitoredDock else { return }
+
+        guard shouldMonitorCurrentDock else {
+            logger.info("Dock arrival monitoring skipped because holiday mode or preference is disabled")
+            stopPreciseLocationUpdates()
+            stopMonitoringDockRegion()
+            return
+        }
 
         guard CLLocationManager.locationServicesEnabled() else {
             logger.warning("Dock arrival monitoring unavailable because location services are disabled")
@@ -1453,6 +1467,7 @@ extension DockArrivalMonitoringService: CLLocationManagerDelegate {
         stopAllLocationUpdates()
         stopBackgroundActivitySession()
         stopMonitoringDockRegion()
+        guard shouldMonitorCurrentDock else { return }
         startContinuousLowSensitivityTracking(reason: "region_monitoring_failed")
     }
 

@@ -21,13 +21,17 @@ final class ScheduledJourneyService: ObservableObject {
 
     private let logger = Logger(subsystem: "dev.skynolimit.myborisbikes", category: "ScheduledJourneys")
     private let pushToStartTokenStorageKey = "scheduled_journey_push_to_start_token"
-    private static let holidayModeStorageKey = "scheduled_journey_holiday_mode_enabled"
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
     private var pushToStartTask: Task<Void, Never>?
 
     private init() {
-        isHolidayModeEnabled = UserDefaults.standard.bool(forKey: Self.holidayModeStorageKey)
+        // Stored in the shared app-group defaults (rather than .standard) so
+        // DockArrivalMonitoringService can synchronously check this flag from
+        // CLLocationManagerDelegate callbacks without an actor hop.
+        isHolidayModeEnabled = AppConstants.UserDefaults.sharedDefaults.bool(
+            forKey: AppConstants.UserDefaults.holidayModeEnabledKey
+        )
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
@@ -61,7 +65,7 @@ final class ScheduledJourneyService: ObservableObject {
 
     func setHolidayMode(_ enabled: Bool) async {
         isHolidayModeEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.holidayModeStorageKey)
+        AppConstants.UserDefaults.sharedDefaults.set(enabled, forKey: AppConstants.UserDefaults.holidayModeEnabledKey)
         TroubleshootingLogStore.shared.record(
             category: "scheduled_journey",
             event: enabled ? "holiday_mode_enabled" : "holiday_mode_disabled",
@@ -70,6 +74,14 @@ final class ScheduledJourneyService: ObservableObject {
                 : "Holiday mode disabled; scheduled journeys resumed.",
             metadata: ["deviceId": deviceId]
         )
+        if enabled {
+            // Kill any in-progress scheduled journey immediately on-device: end its
+            // Live Activity (so nothing lingers in the Dynamic Island/Lock Screen)
+            // and stop dock arrival monitoring (so no background location checks,
+            // and no armed region keeps waking the app after a force-quit).
+            await LiveActivityService.shared.endAllScheduledJourneyActivities(reason: "holiday_mode_enabled")
+            DockArrivalMonitoringService.shared.stopMonitoring(reason: "holiday_mode_enabled")
+        }
         // The register endpoint syncs device-level state (including holiday mode)
         // to the server, which suppresses scheduled journey pushes while enabled.
         await registerDevice()

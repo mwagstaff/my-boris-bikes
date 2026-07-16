@@ -707,6 +707,20 @@ class LiveActivityService: ObservableObject {
         }
     }
 
+    /// Ends every currently active Live Activity tied to a scheduled journey (leaving
+    /// ad hoc journey activities untouched). Used when holiday mode is enabled so
+    /// nothing scheduled-journey-related lingers in the Dynamic Island/Lock Screen.
+    func endAllScheduledJourneyActivities(reason: String) async {
+        let dockIds = activeActivities.compactMap { dockId, activity in
+            activity.attributes.scheduledJourneyId != nil ? dockId : nil
+        }
+        guard !dockIds.isEmpty else { return }
+        logger.info("Ending \(dockIds.count) scheduled journey live activities (\(reason))")
+        for dockId in dockIds {
+            endLiveActivity(for: dockId)
+        }
+    }
+
     func isActivityActive(for dockId: String) -> Bool {
         activeActivities[dockId] != nil
     }

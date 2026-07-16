@@ -74,6 +74,7 @@ struct AppConstants {
         static let liveActivityArrivalDistanceThresholdMetersKey = "liveActivityArrivalDistanceThresholdMeters"
         static let liveActivityStartArrivalDistanceThresholdMetersKey = "liveActivityStartArrivalDistanceThresholdMeters"
         static let liveActivityEndArrivalDistanceThresholdMetersKey = "liveActivityEndArrivalDistanceThresholdMeters"
+        static let holidayModeEnabledKey = "holidayModeEnabled"
 
         static var sharedDefaults: Foundation.UserDefaults {
             Foundation.UserDefaults(suiteName: AppConstants.App.appGroup) ?? .standard
