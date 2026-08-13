@@ -25,6 +25,9 @@ struct BikeSpot_LondonApp: App {
         LiveActivityService.shared.restoreActivities()
         LiveActivityService.shared.startActivityUpdateObservation()
         ScheduledJourneyService.shared.startPushToStartTokenObservation()
+        Task {
+            await DockArrivalMonitoringService.shared.retryPendingArrivalDeliveryIfNeeded()
+        }
     }
 
     var body: some Scene {
@@ -42,6 +45,9 @@ struct BikeSpot_LondonApp: App {
             case .active:
                 // Reconcile local/server live activity state after foregrounding
                 LiveActivityService.shared.restoreActivities()
+                Task {
+                    await DockArrivalMonitoringService.shared.retryPendingArrivalDeliveryIfNeeded()
+                }
                 // When the app comes to foreground, reload widget timelines
                 // so they pick up the freshest data from the main app
                 WidgetCenter.shared.reloadAllTimelines()

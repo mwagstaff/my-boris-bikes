@@ -182,18 +182,24 @@ struct LiveActivityArrivalSettings {
     static let minimumArrivalDistanceMeters = 10
     static let maximumArrivalDistanceMeters = 100
     static let arrivalDistanceStepMeters = 5
-    static let minimumRetryIntervalSeconds: TimeInterval = 5
     static let minimumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 45
     static let maximumAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 100
     static let journeyEndAcceptedHorizontalAccuracyMeters: CLLocationAccuracy = 100
+    static let journeyEndAccuracyAllowanceMultiplier = 0.5
+    static let journeyEndMaximumAccuracyAllowanceMeters: CLLocationDistance = 25
     static let maximumArrivalThresholdExpansionMeters: CLLocationDistance = 45
     static let maximumActivationAccuracyExpansionMeters: CLLocationDistance = 120
     static let confirmationDwellTimeSeconds: TimeInterval = 1.5
-    static let journeyEndConfirmationDwellTimeSeconds: TimeInterval = 2
-    static let confirmationTimeoutSeconds: TimeInterval = 120
+    static let journeyEndConfirmationDwellTimeSeconds: TimeInterval = 1
+    static let confirmationTimeoutSeconds: TimeInterval = 30
     static let confirmationResetHysteresisMeters: CLLocationDistance = 15
+    static let strongFixMaximumAccuracyMeters: CLLocationAccuracy = 20
+    static let maximumDepartureConfirmationSpeedMetersPerSecond: CLLocationSpeed = 3
+    static let maximumLocationAgeSeconds: TimeInterval = 30
+    static let maximumFutureLocationOffsetSeconds: TimeInterval = 5
     static let highFrequencyActivationDistanceMeters: CLLocationDistance = 500
     static let preciseActivationDistanceMeters: CLLocationDistance = 450
+    static let navigationAccuracyActivationDistanceMeters: CLLocationDistance = 200
     static let regionRadiusBufferMeters: CLLocationDistance = 50
     static let preferredMaximumRegionRadiusMeters: CLLocationDistance = 500
 

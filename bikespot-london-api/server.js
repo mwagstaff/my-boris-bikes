@@ -2,6 +2,7 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const http2 = require("http2");
 const winston = require("winston");
 const promClient = require("prom-client");
@@ -64,12 +65,17 @@ const COMPLICATION_TOKENS_PATH =
 const DOCK_OVERRIDES_PATH =
   process.env.DOCK_OVERRIDES_PATH ||
   path.join(__dirname, "dock-overrides.json");
+const ARRIVAL_RECEIPTS_PATH =
+  process.env.ARRIVAL_RECEIPTS_PATH ||
+  path.join(__dirname, "arrival-receipts.json");
+const ARRIVAL_RECEIPT_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_LIVE_ACTIVITY_ALTERNATIVES = 5;
 const VALID_PRIMARY_DISPLAYS = new Set(["bikes", "eBikes", "allBikes", "spaces"]);
 const MAX_PUSH_EVENT_LOG_ENTRIES = 500;
 const MAX_BACKGROUND_LOCATION_EVENT_LOG_ENTRIES = 500;
 const LIVE_ACTIVITY_ALERT_CATEGORY = "LIVE_ACTIVITY_ALERT";
 const MONGODB_URI =
+  process.env.MONGODB_URI_BIKESPOT_LONDON ||
   process.env.MONGODB_URI_MY_BORIS_BIKES ||
   process.env.MONGODB_URI ||
   process.env.MONGO_URI ||
@@ -500,7 +506,7 @@ let scheduledJourneysCollection = null;
 async function connectMongoIfConfigured() {
   if (!MONGODB_URI) {
     logger.warn(
-      "MONGODB_URI_MY_BORIS_BIKES is not configured; scheduled journey endpoints will return 503"
+      "MONGODB_URI_BIKESPOT_LONDON is not configured; scheduled journey endpoints will return 503"
     );
     return;
   }
@@ -917,6 +923,59 @@ function saveDockOverrides() {
 }
 
 loadDockOverrides();
+
+// ── Idempotent Arrival Receipts ─────────────────────────────────────
+// Persist successful event IDs so a client can safely retry after losing the
+// original HTTP response without treating the already-ended session as a miss.
+const arrivalReceipts = new Map();
+
+function pruneArrivalReceipts(now = Date.now()) {
+  for (const [eventId, receipt] of arrivalReceipts) {
+    if (!receipt?.storedAt || now - receipt.storedAt > ARRIVAL_RECEIPT_TTL_MS) {
+      arrivalReceipts.delete(eventId);
+    }
+  }
+}
+
+function loadArrivalReceipts() {
+  try {
+    if (!fs.existsSync(ARRIVAL_RECEIPTS_PATH)) return;
+    const entries = JSON.parse(fs.readFileSync(ARRIVAL_RECEIPTS_PATH, "utf8"));
+    for (const [eventId, receipt] of entries) {
+      if (typeof eventId === "string" && receipt && typeof receipt === "object") {
+        arrivalReceipts.set(eventId, receipt);
+      }
+    }
+    pruneArrivalReceipts();
+    logger.info(`Loaded ${arrivalReceipts.size} arrival receipt(s) from disk`);
+  } catch (err) {
+    logger.warn(`Could not load arrival receipts from disk: ${err.message}`);
+  }
+}
+
+function arrivalDeviceFingerprint(deviceToken) {
+  return crypto.createHash("sha256").update(deviceToken).digest("hex");
+}
+
+function saveArrivalReceipt(eventId, dockId, deviceToken, response) {
+  try {
+    pruneArrivalReceipts();
+    arrivalReceipts.set(eventId, {
+      dockId,
+      deviceFingerprint: arrivalDeviceFingerprint(deviceToken),
+      response,
+      storedAt: Date.now(),
+    });
+    fs.writeFileSync(
+      ARRIVAL_RECEIPTS_PATH,
+      JSON.stringify(Array.from(arrivalReceipts.entries()), null, 2)
+    );
+  } catch (err) {
+    logger.warn(`Could not save arrival receipt: ${err.message}`);
+  }
+}
+
+loadArrivalReceipts();
 
 // ── Complication Refresh Tokens ───────────────────────────────────────
 // Regular APNs device tokens registered to receive silent background refresh pushes.
@@ -4596,11 +4655,16 @@ app.post("/live-activity/end", async (req, res) => {
 });
 
 app.post("/live-activity/arrive", async (req, res) => {
+  const arrivalEventId =
+    typeof req.body?.arrivalEventId === "string"
+      ? req.body.arrivalEventId.trim()
+      : "";
   const dockId =
     typeof req.body?.dockId === "string" ? req.body.dockId.trim() : "";
   const bodyDeviceToken = normalizeApnsDeviceToken(req.body?.deviceToken);
   const headerDeviceToken = normalizeApnsDeviceToken(req.headers["x-device-token"]);
   const deviceToken = bodyDeviceToken || headerDeviceToken;
+  const requestedPushToken = normalizeApnsDeviceToken(req.body?.pushToken);
   const requestedBuildType =
     req.body?.buildType === undefined ? null : req.body.buildType;
 
@@ -4615,6 +4679,13 @@ app.post("/live-activity/arrive", async (req, res) => {
   }
 
   if (
+    arrivalEventId &&
+    !/^[A-Za-z0-9-]{16,128}$/.test(arrivalEventId)
+  ) {
+    return res.status(400).json({ error: "Invalid arrivalEventId" });
+  }
+
+  if (
     requestedBuildType !== null &&
     requestedBuildType !== "development" &&
     requestedBuildType !== "production"
@@ -4622,6 +4693,27 @@ app.post("/live-activity/arrive", async (req, res) => {
     return res
       .status(400)
       .json({ error: 'buildType must be "development" or "production"' });
+  }
+
+  if (arrivalEventId) {
+    pruneArrivalReceipts();
+    const receipt = arrivalReceipts.get(arrivalEventId);
+    if (receipt) {
+      if (
+        receipt.dockId !== dockId ||
+        receipt.deviceFingerprint !== arrivalDeviceFingerprint(deviceToken)
+      ) {
+        return res.status(409).json({ error: "arrivalEventId was already used" });
+      }
+      logger.info(
+        `Replaying dock arrival receipt: dock=${dockId}, event=${arrivalEventId}`
+      );
+      return res.json({
+        ...receipt.response,
+        arrivalEventId,
+        duplicate: true,
+      });
+    }
   }
 
   logger.info(
@@ -4634,6 +4726,7 @@ app.post("/live-activity/arrive", async (req, res) => {
   if (poller) {
     for (const [pushToken, session] of poller.tokens) {
       if (session.deviceToken !== deviceToken) continue;
+      if (requestedPushToken && pushToken !== requestedPushToken) continue;
       fallbackSessions.push([pushToken, session]);
       if (requestedBuildType && session.buildType !== requestedBuildType) continue;
       matchingSessions.push([pushToken, session]);
@@ -4722,18 +4815,26 @@ app.post("/live-activity/arrive", async (req, res) => {
     remainingCount,
   });
 
-  res.json({
+  const responseBody = {
     success: true,
     dockId,
+    arrivalEventId: arrivalEventId || null,
     endedCount,
     completedScheduledJourneyCount,
     confirmationSent,
     remainingCount,
+    duplicate: false,
     message:
       endedCount > 0
         ? "Live activity ended after dock arrival"
         : "No active live activity session matched this arrival update",
-  });
+  };
+
+  if (arrivalEventId && endedCount > 0) {
+    saveArrivalReceipt(arrivalEventId, dockId, deviceToken, responseBody);
+  }
+
+  res.json(responseBody);
 });
 
 app.post("/live-activity/start-arrival", (req, res) => {

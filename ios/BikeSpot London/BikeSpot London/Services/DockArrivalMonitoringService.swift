@@ -7,6 +7,20 @@ import os.log
 enum DockArrivalHeuristics {
     static let temporaryFullAccuracyPurposeKey = "DockArrivalPreciseLocation"
 
+    struct ArrivalEvidence: Equatable {
+        let startedAt: Date
+        let lastQualifyingAt: Date
+        let closestMeasuredDistance: CLLocationDistance
+        let qualifyingFixCount: Int
+        let confirmationThreshold: CLLocationDistance
+    }
+
+    enum ArrivalEvidenceDecision: Equatable {
+        case none
+        case candidate(ArrivalEvidence)
+        case confirmed
+    }
+
     enum ArrivalPolicyKind: String {
         case startDock
         case endDock
@@ -121,6 +135,10 @@ enum DockArrivalHeuristics {
             )
         case .some(.end):
             let arrivalThreshold = configuredArrivalThreshold
+            let accuracyAllowance = min(
+                horizontalAccuracy * LiveActivityArrivalSettings.journeyEndAccuracyAllowanceMultiplier,
+                LiveActivityArrivalSettings.journeyEndMaximumAccuracyAllowanceMeters
+            )
             return ArrivalPolicy(
                 kind: .endDock,
                 arrivalThreshold: arrivalThreshold,
@@ -130,7 +148,7 @@ enum DockArrivalHeuristics {
                 ),
                 usesCompensatedDistanceForConfirmation: false,
                 confirmationDwellTime: LiveActivityArrivalSettings.journeyEndConfirmationDwellTimeSeconds,
-                maximumThresholdExpansion: 0
+                maximumThresholdExpansion: max(0, accuracyAllowance)
             )
         case nil:
             let effectiveThreshold = effectiveArrivalThreshold(
@@ -146,6 +164,99 @@ enum DockArrivalHeuristics {
                 maximumThresholdExpansion: effectiveThreshold - configuredArrivalThreshold
             )
         }
+    }
+
+    static func evaluateArrivalEvidence(
+        existingEvidence: ArrivalEvidence?,
+        timestamp: Date,
+        rawDistance: CLLocationDistance,
+        compensatedDistance: CLLocationDistance,
+        horizontalAccuracy: CLLocationAccuracy,
+        speed: CLLocationSpeed,
+        policy: ArrivalPolicy
+    ) -> ArrivalEvidenceDecision {
+        let measuredDistance = policy.measuredArrivalDistance(
+            rawDistance: rawDistance,
+            compensatedDistance: compensatedDistance
+        )
+        let isInsideArrival = policy.isInsideArrivalThreshold(
+            rawDistance: rawDistance,
+            compensatedDistance: compensatedDistance
+        )
+        let isStrongFix = policy.kind == .endDock &&
+            horizontalAccuracy <= LiveActivityArrivalSettings.strongFixMaximumAccuracyMeters &&
+            rawDistance <= policy.arrivalThreshold
+
+        if isStrongFix {
+            return .confirmed
+        }
+
+        guard var evidence = existingEvidence else {
+            guard isInsideArrival else { return .none }
+            return .candidate(ArrivalEvidence(
+                startedAt: timestamp,
+                lastQualifyingAt: timestamp,
+                closestMeasuredDistance: measuredDistance,
+                qualifyingFixCount: 1,
+                confirmationThreshold: policy.effectiveArrivalThreshold
+            ))
+        }
+
+        let elapsed = timestamp.timeIntervalSince(evidence.startedAt)
+        if elapsed < 0 || elapsed > LiveActivityArrivalSettings.confirmationTimeoutSeconds {
+            guard isInsideArrival else { return .none }
+            return .candidate(ArrivalEvidence(
+                startedAt: timestamp,
+                lastQualifyingAt: timestamp,
+                closestMeasuredDistance: measuredDistance,
+                qualifyingFixCount: 1,
+                confirmationThreshold: policy.effectiveArrivalThreshold
+            ))
+        }
+
+        let retainedResetThreshold = evidence.confirmationThreshold +
+            LiveActivityArrivalSettings.confirmationResetHysteresisMeters
+        guard measuredDistance <= max(policy.resetDistanceThreshold, retainedResetThreshold) else {
+            return .none
+        }
+
+        let closestDistance = min(evidence.closestMeasuredDistance, measuredDistance)
+        let confirmationThreshold = isInsideArrival
+            ? max(evidence.confirmationThreshold, policy.effectiveArrivalThreshold)
+            : evidence.confirmationThreshold
+        if isInsideArrival, timestamp > evidence.lastQualifyingAt {
+            evidence = ArrivalEvidence(
+                startedAt: evidence.startedAt,
+                lastQualifyingAt: timestamp,
+                closestMeasuredDistance: closestDistance,
+                qualifyingFixCount: evidence.qualifyingFixCount + 1,
+                confirmationThreshold: confirmationThreshold
+            )
+        } else {
+            evidence = ArrivalEvidence(
+                startedAt: evidence.startedAt,
+                lastQualifyingAt: evidence.lastQualifyingAt,
+                closestMeasuredDistance: closestDistance,
+                qualifyingFixCount: evidence.qualifyingFixCount,
+                confirmationThreshold: confirmationThreshold
+            )
+        }
+
+        if evidence.qualifyingFixCount >= 2,
+           elapsed >= policy.confirmationDwellTime {
+            return .confirmed
+        }
+
+        let hasPlausibleWalkingSpeed = speed >= 0 &&
+            speed <= LiveActivityArrivalSettings.maximumDepartureConfirmationSpeedMetersPerSecond
+        if policy.kind == .endDock,
+           hasPlausibleWalkingSpeed,
+           elapsed >= policy.confirmationDwellTime,
+           evidence.closestMeasuredDistance <= evidence.confirmationThreshold {
+            return .confirmed
+        }
+
+        return .candidate(evidence)
     }
 }
 
@@ -164,7 +275,9 @@ final class DockArrivalMonitoringService: NSObject {
     static let shared = DockArrivalMonitoringService()
 
     private static let regionIdentifierPrefix = "live-activity-arrival-region-"
+    private static let maximumPendingArrivalAge: TimeInterval = 24 * 60 * 60
     private let monitoredDockStorageKey = "liveActivityArrivalMonitoredDock"
+    private let pendingArrivalStorageKey = "liveActivityPendingArrivalEvent"
     private let logger = Logger(subsystem: "dev.skynolimit.myborisbikes", category: "DockArrival")
     private let locationManager = CLLocationManager()
     private let serverEventSession: URLSession = {
@@ -182,6 +295,7 @@ final class DockArrivalMonitoringService: NSObject {
         let confirmationSent: Bool
         let remainingCount: Int
         let message: String
+        let duplicate: Bool?
     }
 
     private struct PersistedMonitoringState: Codable {
@@ -192,13 +306,29 @@ final class DockArrivalMonitoringService: NSObject {
         let scheduledDestinationDock: ScheduledJourneyDock?
     }
 
+    private struct PendingArrivalEvent: Codable, Equatable {
+        let eventId: String
+        let dock: MonitoredDock
+        let createdAt: Date
+        let scheduledJourneyId: String?
+        let adHocJourneyId: String?
+        let liveActivityPushToken: String?
+    }
+
+    private enum TrackingMode: Equatable {
+        case passiveRegion
+        case coarseApproach
+        case approach
+        case precise
+    }
+
     private var monitoredDock: MonitoredDock?
     private var backgroundActivitySession: CLBackgroundActivitySession?
     private var isSendingArrivalRequest = false
-    private var lastArrivalAttemptAt: Date?
     private var lastRoutineLocationLogAt: Date?
-    private var confirmationStartedAt: Date?
-    private var firstPreciseInsideThresholdAt: Date?
+    private var arrivalEvidence: DockArrivalHeuristics.ArrivalEvidence?
+    private var trackingMode: TrackingMode = .passiveRegion
+    private var isDeliveringPendingArrival = false
     private var hasRequestedAlwaysAuthorizationThisSession = false
     private var hasRequestedTemporaryFullAccuracyThisSession = false
     private var scheduledJourneyId: String?
@@ -271,11 +401,10 @@ final class DockArrivalMonitoringService: NSObject {
         self.scheduledDestinationDock = destinationDock
         monitoredDock = dock
         persistMonitoringState(for: dock)
-        lastArrivalAttemptAt = nil
         isSendingArrivalRequest = false
         lastRoutineLocationLogAt = nil
-        confirmationStartedAt = nil
-        firstPreciseInsideThresholdAt = nil
+        arrivalEvidence = nil
+        trackingMode = .passiveRegion
         destinationApproachSpaceAvailabilityRequested = false
         hasRequestedTemporaryFullAccuracyThisSession = false
         logLocationEvent("monitor_begin", dock: dock, message: "Preparing dock arrival monitoring")
@@ -327,10 +456,9 @@ final class DockArrivalMonitoringService: NSObject {
         stopMonitoringDockRegion()
         stopBackgroundActivitySession()
         isSendingArrivalRequest = false
-        lastArrivalAttemptAt = nil
         lastRoutineLocationLogAt = nil
-        confirmationStartedAt = nil
-        firstPreciseInsideThresholdAt = nil
+        arrivalEvidence = nil
+        trackingMode = .passiveRegion
         destinationApproachSpaceAvailabilityRequested = false
         hasRequestedTemporaryFullAccuracyThisSession = false
         if !preserveDock {
@@ -447,6 +575,72 @@ final class DockArrivalMonitoringService: NSObject {
         return try? decoder.decode(MonitoredDock.self, from: data)
     }
 
+    private func persistPendingArrival(_ event: PendingArrivalEvent) {
+        var events = loadPendingArrivals()
+        guard !events.contains(where: { $0.eventId == event.eventId }) else { return }
+        events.append(event)
+        guard let data = try? JSONEncoder().encode(events) else { return }
+        AppConstants.UserDefaults.sharedDefaults.set(data, forKey: pendingArrivalStorageKey)
+    }
+
+    private func loadPendingArrivals() -> [PendingArrivalEvent] {
+        guard let data = AppConstants.UserDefaults.sharedDefaults.data(forKey: pendingArrivalStorageKey) else {
+            return []
+        }
+        let decoder = JSONDecoder()
+        if let events = try? decoder.decode([PendingArrivalEvent].self, from: data) {
+            return events
+        }
+        if let legacyEvent = try? decoder.decode(PendingArrivalEvent.self, from: data) {
+            return [legacyEvent]
+        }
+        return []
+    }
+
+    private func clearPendingArrival(eventId: String) {
+        let remainingEvents = loadPendingArrivals().filter { $0.eventId != eventId }
+        guard !remainingEvents.isEmpty else {
+            AppConstants.UserDefaults.sharedDefaults.removeObject(forKey: pendingArrivalStorageKey)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(remainingEvents) else { return }
+        AppConstants.UserDefaults.sharedDefaults.set(data, forKey: pendingArrivalStorageKey)
+    }
+
+    @MainActor
+    func retryPendingArrivalDeliveryIfNeeded() async {
+        for event in loadPendingArrivals() {
+            stopMonitoring(for: event.dock.dockId, reason: "pending_arrival_reconciliation")
+            await MainActor.run {
+                LiveActivityService.shared.endLiveActivity(
+                    for: event.dock.dockId,
+                    skipServerUnregister: true
+                )
+            }
+            if let scheduledJourneyId = event.scheduledJourneyId {
+                await ScheduledJourneyService.shared.complete(journeyId: scheduledJourneyId)
+            }
+            if let adHocJourneyId = event.adHocJourneyId {
+                AdHocJourneyService.shared.complete(journeyId: adHocJourneyId)
+            }
+            if Date().timeIntervalSince(event.createdAt) > Self.maximumPendingArrivalAge {
+                clearPendingArrival(eventId: event.eventId)
+                logLocationEvent(
+                    "arrival_delivery_expired",
+                    dock: event.dock,
+                    message: "Removed an arrival event after its server session window elapsed",
+                    raw: ["arrivalEventId": event.eventId]
+                )
+                continue
+            }
+            _ = await deliverPendingArrival(event)
+        }
+    }
+
+    func hasPendingArrival(for dockId: String) -> Bool {
+        loadPendingArrivals().contains { $0.dock.dockId == dockId }
+    }
+
     private func startMonitoringIfPossible() {
         guard let dock = monitoredDock else { return }
 
@@ -508,12 +702,15 @@ final class DockArrivalMonitoringService: NSObject {
         resetConfirmationState()
 
         if CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) {
-            // Region monitoring keeps GPS off until the user nears the dock.
-            // startMonitoringDockRegion's requestState(for:) escalates to
-            // continuous precise updates immediately if already inside the
-            // activation region.
             startMonitoringDockRegion(for: dock)
             logger.info("Starting region-based dock arrival monitoring")
+            if scheduledJourneyPhase == .end {
+                // A coarse standard stream is cheap and protects against a
+                // delayed region-entry event at the end of a journey.
+                startContinuousLowSensitivityTracking(reason: "journey_end_approach")
+            } else {
+                trackingMode = .passiveRegion
+            }
         } else {
             logger.warning("Dock arrival region monitoring is unavailable; relying on continuous location updates")
             logLocationEvent(
@@ -552,6 +749,19 @@ final class DockArrivalMonitoringService: NSObject {
             return false
         }
 
+        let age = Date().timeIntervalSince(location.timestamp)
+        if age > LiveActivityArrivalSettings.maximumLocationAgeSeconds ||
+            age < -LiveActivityArrivalSettings.maximumFutureLocationOffsetSeconds {
+            logLocationEvent(
+                "location_ignored_stale",
+                dock: monitoredDock,
+                location: location,
+                message: "Location timestamp is outside the accepted freshness window",
+                raw: ["locationAgeSeconds": age]
+            )
+            return false
+        }
+
         let acceptableAccuracy = policy.acceptableHorizontalAccuracy
         if location.horizontalAccuracy > acceptableAccuracy {
             logger.info("Ignoring imprecise location update for dock arrival monitoring (accuracy: \(location.horizontalAccuracy, privacy: .public)m)")
@@ -565,11 +775,6 @@ final class DockArrivalMonitoringService: NSObject {
                     "arrivalPolicy": policy.kind.rawValue
                 ]
             )
-            return false
-        }
-
-        if let lastArrivalAttemptAt,
-           Date().timeIntervalSince(lastArrivalAttemptAt) < LiveActivityArrivalSettings.minimumRetryIntervalSeconds {
             return false
         }
 
@@ -609,103 +814,70 @@ final class DockArrivalMonitoringService: NSObject {
             activationDistanceThreshold: effectiveActivationDistanceThreshold
         )
 
-        if confirmationStartedAt == nil,
-           min(distance, compensatedDistance) <= effectiveActivationDistanceThreshold {
-            startPreciseLocationUpdates(reason: "location_within_activation_distance")
+        let activationDistance = min(distance, compensatedDistance)
+        if activationDistance <= effectiveActivationDistanceThreshold,
+           trackingMode == .coarseApproach || trackingMode == .passiveRegion {
+            startApproachLocationUpdates(reason: "location_within_activation_distance")
+        }
+        let navigationActivationDistance = DockArrivalHeuristics.effectiveActivationDistance(
+            for: LiveActivityArrivalSettings.navigationAccuracyActivationDistanceMeters,
+            horizontalAccuracy: location.horizontalAccuracy
+        )
+        if activationDistance <= navigationActivationDistance,
+           trackingMode != .precise {
+            startPreciseLocationUpdates(reason: "location_within_navigation_accuracy_distance")
         }
 
         guard shouldAttemptArrival(for: location, policy: arrivalPolicy) else { return }
 
-        guard let confirmationStartedAt else {
-            logger.info("Ignoring precise location update because confirmation mode is inactive")
-            return
-        }
-
-        if Date().timeIntervalSince(confirmationStartedAt) >= LiveActivityArrivalSettings.confirmationTimeoutSeconds {
-            logger.info("Dock arrival confirmation timed out for dock \(dock.dockId, privacy: .public); reverting to region monitoring")
-            logLocationEvent(
-                "arrival_confirmation_timeout",
-                dock: dock,
-                location: location,
-                distanceMeters: measuredArrivalDistance,
-                message: "Precise confirmation window expired"
-            )
-            resetConfirmationState()
-            // Stop the high-power updates, then re-check region state — if the
-            // user is still inside the activation region this re-escalates.
-            deEscalateTracking(reason: "arrival_confirmation_timeout")
-            for region in locationManager.monitoredRegions {
-                guard region.identifier.hasPrefix(Self.regionIdentifierPrefix) else { continue }
-                locationManager.requestState(for: region)
-            }
-            return
-        }
-
-        guard arrivalPolicy.isInsideResetThreshold(
+        let previousEvidence = arrivalEvidence
+        let decision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: previousEvidence,
+            timestamp: location.timestamp,
             rawDistance: distance,
-            compensatedDistance: compensatedDistance
-        ) else {
-            if firstPreciseInsideThresholdAt != nil {
-                logger.info("Dock arrival confirmation reset because user moved outside threshold window")
+            compensatedDistance: compensatedDistance,
+            horizontalAccuracy: location.horizontalAccuracy,
+            speed: location.speed,
+            policy: arrivalPolicy
+        )
+
+        switch decision {
+        case .none:
+            arrivalEvidence = nil
+            if previousEvidence != nil {
                 logLocationEvent(
                     "arrival_confirmation_reset",
                     dock: dock,
                     location: location,
                     distanceMeters: measuredArrivalDistance,
-                    message: "Moved outside confirmation threshold"
+                    message: "Moved outside confirmation hysteresis or candidate expired"
                 )
             }
-            firstPreciseInsideThresholdAt = nil
             return
-        }
-
-        guard arrivalPolicy.isInsideArrivalThreshold(
-            rawDistance: distance,
-            compensatedDistance: compensatedDistance
-        ) else {
-            firstPreciseInsideThresholdAt = nil
-            logLocationEvent(
-                "arrival_threshold_not_met",
-                dock: dock,
-                location: location,
-                distanceMeters: measuredArrivalDistance,
-                message: "Location did not meet arrival threshold",
-                raw: [
-                    "arrivalPolicy": arrivalPolicy.kind.rawValue,
-                    "rawDistanceMeters": distance,
-                    "compensatedDistanceMeters": compensatedDistance,
-                    "effectiveArrivalThresholdMeters": arrivalPolicy.effectiveArrivalThreshold,
-                    "configuredArrivalThresholdMeters": arrivalDistanceThreshold
-                ]
-            )
+        case .candidate(let evidence):
+            arrivalEvidence = evidence
+            if previousEvidence == nil {
+                logLocationEvent(
+                    "arrival_confirmation_started",
+                    dock: dock,
+                    location: location,
+                    distanceMeters: measuredArrivalDistance,
+                    message: "First in-threshold location received",
+                    raw: [
+                        "arrivalPolicy": arrivalPolicy.kind.rawValue,
+                        "rawDistanceMeters": distance,
+                        "compensatedDistanceMeters": compensatedDistance,
+                        "effectiveArrivalThresholdMeters": arrivalPolicy.effectiveArrivalThreshold,
+                        "configuredArrivalThresholdMeters": arrivalDistanceThreshold
+                    ]
+                )
+            }
             return
-        }
-
-        if firstPreciseInsideThresholdAt == nil {
-            firstPreciseInsideThresholdAt = Date()
-            logLocationEvent(
-                "arrival_confirmation_started",
-                dock: dock,
-                location: location,
-                distanceMeters: measuredArrivalDistance,
-                message: "First precise in-threshold location received",
-                raw: [
-                    "arrivalPolicy": arrivalPolicy.kind.rawValue,
-                    "rawDistanceMeters": distance,
-                    "compensatedDistanceMeters": compensatedDistance,
-                    "effectiveArrivalThresholdMeters": arrivalPolicy.effectiveArrivalThreshold,
-                    "configuredArrivalThresholdMeters": arrivalDistanceThreshold
-                ]
-            )
-            return
-        }
-
-        guard Date().timeIntervalSince(firstPreciseInsideThresholdAt ?? Date()) >= arrivalPolicy.confirmationDwellTime else {
-            return
+        case .confirmed:
+            arrivalEvidence = nil
         }
 
         isSendingArrivalRequest = true
-        lastArrivalAttemptAt = Date()
         logLocationEvent(
             "arrival_threshold_met",
             dock: dock,
@@ -725,9 +897,11 @@ final class DockArrivalMonitoringService: NSObject {
         // The token inside postJSON only activates once the Task body runs —
         // without this outer token, iOS could suspend the app in the window
         // between Task dispatch and postJSON acquiring its own token.
-        var outerTaskId = UIBackgroundTaskIdentifier.invalid
+        nonisolated(unsafe) var outerTaskId = UIBackgroundTaskIdentifier.invalid
         outerTaskId = UIApplication.shared.beginBackgroundTask(withName: "dock-arrival-detection") {
+            guard outerTaskId != .invalid else { return }
             UIApplication.shared.endBackgroundTask(outerTaskId)
+            outerTaskId = .invalid
         }
 
         Task {
@@ -735,6 +909,7 @@ final class DockArrivalMonitoringService: NSObject {
             await MainActor.run {
                 guard outerTaskId != .invalid else { return }
                 UIApplication.shared.endBackgroundTask(outerTaskId)
+                outerTaskId = .invalid
             }
         }
     }
@@ -766,20 +941,82 @@ final class DockArrivalMonitoringService: NSObject {
             return true
         }
 
+        let completedScheduledJourneyId = scheduledJourneyPhase == .end ? scheduledJourneyId : nil
+        let completedAdHocJourneyId = scheduledJourneyPhase == .end ? adHocJourneyId : nil
+        let liveActivityPushToken = await MainActor.run {
+            LiveActivityService.shared.pushTokenForArrival(for: dock.dockId)
+        }
+        let event = PendingArrivalEvent(
+            eventId: UUID().uuidString,
+            dock: dock,
+            createdAt: Date(),
+            scheduledJourneyId: completedScheduledJourneyId,
+            adHocJourneyId: completedAdHocJourneyId,
+            liveActivityPushToken: liveActivityPushToken
+        )
+        persistPendingArrival(event)
+        logLocationEvent(
+            "arrival_confirmed_locally",
+            dock: dock,
+            message: "Persisted confirmed arrival before server delivery",
+            raw: ["arrivalEventId": event.eventId]
+        )
+
+        // Local completion must not depend on a network round trip. The durable
+        // event above is retried until the server acknowledges the same event ID.
+        stopMonitoring(reason: "arrival_confirmed_locally")
+        await MainActor.run {
+            LiveActivityService.shared.endLiveActivity(for: dock.dockId, skipServerUnregister: true)
+        }
+        if let completedScheduledJourneyId {
+            await ScheduledJourneyService.shared.complete(journeyId: completedScheduledJourneyId)
+        }
+        if let completedAdHocJourneyId {
+            await AdHocJourneyService.shared.complete(journeyId: completedAdHocJourneyId)
+        }
+        AnalyticsService.shared.track(
+            action: .liveActivityEnd,
+            screen: .app,
+            dock: AnalyticsDockInfo(id: dock.dockId, name: dock.dockName),
+            metadata: ["reason": "arrival"]
+        )
+
+        return await deliverPendingArrival(event)
+    }
+
+    @discardableResult
+    @MainActor
+    private func deliverPendingArrival(_ event: PendingArrivalEvent) async -> Bool {
+        guard !isDeliveringPendingArrival else { return false }
+        guard loadPendingArrivals().contains(where: { $0.eventId == event.eventId }) else { return true }
         guard let deviceToken = DeviceTokenHelper.apnsDeviceToken else {
-            logger.warning("Cannot end live activity on arrival because APNs device token is unavailable")
-            isSendingArrivalRequest = false
-            logLocationEvent("arrival_request_failed", dock: dock, message: "APNs device token unavailable")
+            logLocationEvent(
+                "arrival_delivery_deferred",
+                dock: event.dock,
+                message: "APNs device token unavailable; retaining pending arrival",
+                raw: ["arrivalEventId": event.eventId]
+            )
             return false
         }
 
-        let body: [String: Any] = [
-            "dockId": dock.dockId,
+        isDeliveringPendingArrival = true
+        defer { isDeliveringPendingArrival = false }
+
+        var body: [String: Any] = [
+            "arrivalEventId": event.eventId,
+            "dockId": event.dock.dockId,
             "deviceToken": deviceToken,
             "buildType": PushEnvironment.buildType,
         ]
-
-        logLocationEvent("arrival_request_started", dock: dock, message: "Sending arrival request to server")
+        if let liveActivityPushToken = event.liveActivityPushToken {
+            body["pushToken"] = liveActivityPushToken
+        }
+        logLocationEvent(
+            "arrival_request_started",
+            dock: event.dock,
+            message: "Sending persisted arrival request to server",
+            raw: ["arrivalEventId": event.eventId]
+        )
 
         do {
             let (data, httpResponse) = try await postJSON(
@@ -788,96 +1025,55 @@ final class DockArrivalMonitoringService: NSObject {
                 requestHeaderToken: deviceToken,
                 backgroundTaskName: "dock-arrival-request"
             )
-
             guard (200...299).contains(httpResponse.statusCode) else {
-                logger.warning("Unexpected status \(httpResponse.statusCode) when ending live activity on arrival")
-                isSendingArrivalRequest = false
                 logLocationEvent(
                     "arrival_request_failed",
-                    dock: dock,
-                    message: "Server returned HTTP \(httpResponse.statusCode)"
+                    dock: event.dock,
+                    message: "Server returned HTTP \(httpResponse.statusCode)",
+                    raw: ["arrivalEventId": event.eventId]
                 )
                 return false
             }
 
-            let arrivalResponse: ArrivalResponse
-            do {
-                arrivalResponse = try JSONDecoder().decode(ArrivalResponse.self, from: data)
-            } catch {
-                logger.error("Failed to decode arrival response: \(error.localizedDescription)")
-                isSendingArrivalRequest = false
-                logLocationEvent(
-                    "arrival_request_failed",
-                    dock: dock,
-                    message: "Could not decode arrival response: \(error.localizedDescription)"
-                )
-                return false
-            }
-
-            guard arrivalResponse.success, arrivalResponse.endedCount > 0 else {
-                logger.warning(
-                    "Arrival request returned no matched sessions for dock \(dock.dockId, privacy: .public); keeping local live activity active"
-                )
-                isSendingArrivalRequest = false
+            let response = try JSONDecoder().decode(ArrivalResponse.self, from: data)
+            guard response.success,
+                  response.endedCount > 0 || response.duplicate == true else {
                 logLocationEvent(
                     "arrival_request_unmatched",
-                    dock: dock,
-                    message: arrivalResponse.message,
+                    dock: event.dock,
+                    message: response.message,
                     raw: [
-                        "endedCount": arrivalResponse.endedCount,
-                        "confirmationSent": arrivalResponse.confirmationSent,
-                        "remainingCount": arrivalResponse.remainingCount,
+                        "arrivalEventId": event.eventId,
+                        "endedCount": response.endedCount,
+                        "remainingCount": response.remainingCount,
                     ]
                 )
-                await LiveActivityService.shared.refreshNotificationStatusFromServer()
                 return false
             }
 
-            logger.info("Server confirmed dock arrival for dock \(dock.dockId, privacy: .public); ending local live activity")
+            clearPendingArrival(eventId: event.eventId)
             logLocationEvent(
                 "arrival_request_succeeded",
-                dock: dock,
-                message: arrivalResponse.confirmationSent
-                    ? "Server accepted arrival request and sent confirmation"
-                    : "Server accepted arrival request but confirmation push was not sent",
+                dock: event.dock,
+                message: response.duplicate == true
+                    ? "Server replayed the previously accepted arrival"
+                    : "Server accepted the arrival request",
                 raw: [
-                    "endedCount": arrivalResponse.endedCount,
-                    "confirmationSent": arrivalResponse.confirmationSent,
-                    "remainingCount": arrivalResponse.remainingCount,
+                    "arrivalEventId": event.eventId,
+                    "endedCount": response.endedCount,
+                    "confirmationSent": response.confirmationSent,
+                    "duplicate": response.duplicate ?? false,
                 ]
             )
-            AnalyticsService.shared.track(
-                action: .liveActivityEnd,
-                screen: .app,
-                dock: AnalyticsDockInfo(id: dock.dockId, name: dock.dockName),
-                metadata: [
-                    "reason": "arrival",
-                    "confirmationSent": arrivalResponse.confirmationSent,
-                    "endedCount": arrivalResponse.endedCount,
-                ]
-            )
-
-            let completedScheduledJourneyId = scheduledJourneyPhase == .end ? scheduledJourneyId : nil
-            let completedAdHocJourneyId = scheduledJourneyPhase == .end ? adHocJourneyId : nil
-            await MainActor.run {
-                LiveActivityService.shared.endLiveActivity(for: dock.dockId, skipServerUnregister: true)
-            }
-            stopMonitoring(reason: "arrival_confirmed")
             await LiveActivityService.shared.refreshNotificationStatusFromServer()
-            if let completedScheduledJourneyId {
-                await ScheduledJourneyService.shared.complete(journeyId: completedScheduledJourneyId)
-            }
-            if let completedAdHocJourneyId {
-                await AdHocJourneyService.shared.complete(journeyId: completedAdHocJourneyId)
-            }
             return true
         } catch {
-            logger.error("Failed to notify server of dock arrival: \(error.localizedDescription)")
-            isSendingArrivalRequest = false
+            logger.error("Failed to deliver persisted dock arrival: \(error.localizedDescription)")
             logLocationEvent(
                 "arrival_request_failed",
-                dock: dock,
-                message: "Network error: \(error.localizedDescription)"
+                dock: event.dock,
+                message: "Network or response error: \(error.localizedDescription)",
+                raw: ["arrivalEventId": event.eventId]
             )
             return false
         }
@@ -1025,7 +1221,6 @@ final class DockArrivalMonitoringService: NSObject {
         )
 
         isSendingArrivalRequest = true
-        lastArrivalAttemptAt = Date()
 
         let success = await notifyServerOfArrival(for: dock)
         let message = success
@@ -1183,10 +1378,17 @@ final class DockArrivalMonitoringService: NSObject {
     }
 
     private func configureLowPowerTrackingProfile() {
-        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-        locationManager.distanceFilter = 25
-        locationManager.activityType = .fitness
+        locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        locationManager.distanceFilter = 100
+        locationManager.activityType = .otherNavigation
         locationManager.pausesLocationUpdatesAutomatically = true
+    }
+
+    private func configureApproachTrackingProfile() {
+        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        locationManager.distanceFilter = 20
+        locationManager.activityType = .otherNavigation
+        locationManager.pausesLocationUpdatesAutomatically = false
     }
 
     private func configureHighPowerTrackingProfile() {
@@ -1198,6 +1400,7 @@ final class DockArrivalMonitoringService: NSObject {
 
     private func startContinuousLowSensitivityTracking(reason: String) {
         configureLowPowerTrackingProfile()
+        trackingMode = .coarseApproach
         startBackgroundActivitySessionIfNeeded()
         locationManager.startUpdatingLocation()
         locationManager.requestLocation()
@@ -1212,6 +1415,7 @@ final class DockArrivalMonitoringService: NSObject {
     private func stopAllLocationUpdates() {
         locationManager.stopUpdatingLocation()
         configureLowPowerTrackingProfile()
+        trackingMode = .passiveRegion
     }
 
     private func stopMonitoringDockRegion() {
@@ -1240,31 +1444,41 @@ final class DockArrivalMonitoringService: NSObject {
         )
     }
 
-    private func startPreciseLocationUpdates(reason: String, startConfirmationTimer: Bool = true) {
+    private func startApproachLocationUpdates(reason: String) {
+        guard let dock = monitoredDock else { return }
+        guard !isSendingArrivalRequest else { return }
+        guard trackingMode != .precise else { return }
+
+        configureApproachTrackingProfile()
+        trackingMode = .approach
+        startBackgroundActivitySessionIfNeeded()
+        requestDestinationApproachSpaceAvailabilityIfNeeded(for: dock, reason: reason)
+        locationManager.startUpdatingLocation()
+        locationManager.requestLocation()
+        logLocationEvent(
+            "approach_updates_started",
+            dock: monitoredDock,
+            message: "Started balanced near-dock location updates",
+            raw: ["reason": reason]
+        )
+    }
+
+    private func startPreciseLocationUpdates(reason: String) {
         guard let dock = monitoredDock else { return }
         guard !isSendingArrivalRequest else { return }
 
         configureHighPowerTrackingProfile()
+        trackingMode = .precise
         startBackgroundActivitySessionIfNeeded()
         requestDestinationApproachSpaceAvailabilityIfNeeded(for: dock, reason: reason)
-
-        // Only start the confirmation clock once a location update has confirmed
-        // the user is within the activation distance. Region entry switches to
-        // high-power mode but defers the clock to avoid
-        // expiring the window long before the user reaches the dock.
-        if startConfirmationTimer, confirmationStartedAt == nil {
-            confirmationStartedAt = Date()
-            firstPreciseInsideThresholdAt = nil
-            logLocationEvent(
-                "precise_updates_started",
-                dock: monitoredDock,
-                message: "Started precise location confirmation",
-                raw: ["reason": reason]
-            )
-        }
-
         locationManager.startUpdatingLocation()
         locationManager.requestLocation()
+        logLocationEvent(
+            "precise_updates_started",
+            dock: monitoredDock,
+            message: "Started navigation-grade final-approach updates",
+            raw: ["reason": reason]
+        )
     }
 
     private func stopPreciseLocationUpdates() {
@@ -1273,10 +1487,8 @@ final class DockArrivalMonitoringService: NSObject {
         stopBackgroundActivitySession()
     }
 
-    /// Drops back from continuous (potentially high-power) location updates to
-    /// passive region monitoring. When no dock region is armed (region
-    /// monitoring unavailable or failed), falls back to low-sensitivity
-    /// continuous updates so arrival detection still works.
+    /// Drops back from continuous high-accuracy updates. Journey destinations
+    /// retain a coarse stream to protect against delayed geofence delivery.
     private func deEscalateTracking(reason: String) {
         guard !isSendingArrivalRequest else { return }
 
@@ -1284,17 +1496,16 @@ final class DockArrivalMonitoringService: NSObject {
             $0.identifier.hasPrefix(Self.regionIdentifierPrefix)
         }
 
-        if hasArmedDockRegion {
+        if scheduledJourneyPhase == .end || !hasArmedDockRegion {
+            startContinuousLowSensitivityTracking(reason: reason)
+        } else {
             stopAllLocationUpdates()
             stopBackgroundActivitySession()
-        } else {
-            startContinuousLowSensitivityTracking(reason: reason)
         }
     }
 
     private func resetConfirmationState() {
-        confirmationStartedAt = nil
-        firstPreciseInsideThresholdAt = nil
+        arrivalEvidence = nil
     }
 
     private func logRoutineLocationEventIfNeeded(
@@ -1333,24 +1544,23 @@ final class DockArrivalMonitoringService: NSObject {
                 "regionIdentifier": region?.identifier ?? "unknown"
             ]
         )
-        startPreciseLocationUpdates(reason: reason, startConfirmationTimer: false)
+        startApproachLocationUpdates(reason: reason)
     }
 
     private func handleDockRegionExit(reason: String, region: CLRegion?) {
         guard let dock = monitoredDock else { return }
         logger.info("Exited dock monitoring region for \(dock.dockId, privacy: .public) (\(reason, privacy: .public))")
-        if confirmationStartedAt != nil || firstPreciseInsideThresholdAt != nil {
+        if arrivalEvidence != nil {
             logLocationEvent(
                 "region_exited",
                 dock: dock,
-                message: "Left near-dock activation region; stopping precise confirmation",
+                message: "Left near-dock activation region; preserving recent arrival evidence",
                 raw: [
                     "reason": reason,
                     "regionIdentifier": region?.identifier ?? "unknown"
                 ]
             )
         }
-        resetConfirmationState()
         deEscalateTracking(reason: reason)
     }
 
@@ -1422,8 +1632,26 @@ final class DockArrivalMonitoringService: NSObject {
 extension DockArrivalMonitoringService: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard !isSendingArrivalRequest else { return }
-        guard let latestLocation = locations.last else { return }
-        checkArrival(with: latestLocation)
+        for location in locations.sorted(by: { $0.timestamp < $1.timestamp }) {
+            guard !isSendingArrivalRequest else { break }
+            checkArrival(with: location)
+        }
+    }
+
+    func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
+        logLocationEvent(
+            "location_updates_paused",
+            dock: monitoredDock,
+            message: "Core Location paused the coarse approach stream"
+        )
+    }
+
+    func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
+        logLocationEvent(
+            "location_updates_resumed",
+            dock: monitoredDock,
+            message: "Core Location resumed location delivery"
+        )
     }
 
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {

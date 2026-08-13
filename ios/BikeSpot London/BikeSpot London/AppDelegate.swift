@@ -55,6 +55,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             await registerComplicationToken(tokenString)
             await LiveActivityService.shared.handleDeviceTokenRegistration()
             await ScheduledJourneyService.shared.registerDevice()
+            await DockArrivalMonitoringService.shared.retryPendingArrivalDeliveryIfNeeded()
         }
     }
 
@@ -85,6 +86,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         Task {
             let success = await BackgroundRefreshService.shared.performComplicationRefresh()
+            await DockArrivalMonitoringService.shared.retryPendingArrivalDeliveryIfNeeded()
             completionHandler(success ? .newData : .failed)
         }
     }

@@ -185,7 +185,8 @@ struct BikeSpot_LondonTests {
         #expect(policy.acceptableHorizontalAccuracy == 90)
         #expect(policy.usesCompensatedDistanceForConfirmation == false)
         #expect(policy.arrivalThreshold == 50)
-        #expect(policy.confirmationDwellTime == 2)
+        #expect(policy.effectiveArrivalThreshold == 72.5)
+        #expect(policy.confirmationDwellTime == 1)
         #expect(
             policy.isInsideArrivalThreshold(
                 rawDistance: 35,
@@ -198,6 +199,111 @@ struct BikeSpot_LondonTests {
                 compensatedDistance: 30
             ) == false
         )
+    }
+
+    @Test func testEndDockArrivalPreservesClosestApproachWhileWalkingAway() async throws {
+        let policy = DockArrivalHeuristics.arrivalPolicy(
+            for: .end,
+            configuredArrivalThreshold: 50,
+            horizontalAccuracy: 45
+        )
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let firstDecision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: nil,
+            timestamp: startedAt,
+            rawDistance: 70,
+            compensatedDistance: 25,
+            horizontalAccuracy: 45,
+            speed: 4,
+            policy: policy
+        )
+        guard case .candidate(let evidence) = firstDecision else {
+            Issue.record("Expected the first plausible dock fix to start confirmation")
+            return
+        }
+        let improvedAccuracyPolicy = DockArrivalHeuristics.arrivalPolicy(
+            for: .end,
+            configuredArrivalThreshold: 50,
+            horizontalAccuracy: 20
+        )
+
+        let departureDecision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: evidence,
+            timestamp: startedAt.addingTimeInterval(1),
+            rawDistance: 78,
+            compensatedDistance: 58,
+            horizontalAccuracy: 20,
+            speed: 1.4,
+            policy: improvedAccuracyPolicy
+        )
+
+        #expect(departureDecision == .confirmed)
+    }
+
+    @Test func testEndDockArrivalDoesNotConfirmFastPassBy() async throws {
+        let policy = DockArrivalHeuristics.arrivalPolicy(
+            for: .end,
+            configuredArrivalThreshold: 50,
+            horizontalAccuracy: 45
+        )
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let firstDecision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: nil,
+            timestamp: startedAt,
+            rawDistance: 70,
+            compensatedDistance: 25,
+            horizontalAccuracy: 45,
+            speed: 6,
+            policy: policy
+        )
+        guard case .candidate(let evidence) = firstDecision else {
+            Issue.record("Expected the first plausible dock fix to start confirmation")
+            return
+        }
+
+        let passingDecision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: evidence,
+            timestamp: startedAt.addingTimeInterval(1),
+            rawDistance: 78,
+            compensatedDistance: 33,
+            horizontalAccuracy: 45,
+            speed: 6,
+            policy: policy
+        )
+        guard case .candidate(let retainedEvidence) = passingDecision else {
+            Issue.record("Expected hysteresis to retain, but not confirm, a fast pass-by")
+            return
+        }
+
+        let resetDecision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: retainedEvidence,
+            timestamp: startedAt.addingTimeInterval(2),
+            rawDistance: 90,
+            compensatedDistance: 45,
+            horizontalAccuracy: 45,
+            speed: 6,
+            policy: policy
+        )
+        #expect(resetDecision == .none)
+    }
+
+    @Test func testStrongDockFixConfirmsImmediately() async throws {
+        let policy = DockArrivalHeuristics.arrivalPolicy(
+            for: .end,
+            configuredArrivalThreshold: 50,
+            horizontalAccuracy: 12
+        )
+        let decision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: nil,
+            timestamp: Date(),
+            rawDistance: 35,
+            compensatedDistance: 23,
+            horizontalAccuracy: 12,
+            speed: -1,
+            policy: policy
+        )
+
+        #expect(decision == .confirmed)
     }
 
 }

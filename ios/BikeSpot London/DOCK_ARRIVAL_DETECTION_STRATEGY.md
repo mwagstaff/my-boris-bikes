@@ -29,8 +29,9 @@ Practical issues:
 The working solution is therefore not "geofence only". It is:
 
 1. Use region monitoring as a secondary signal when available.
-2. Run continuous high-sensitivity location updates for the whole active session.
-3. Evaluate arrival using both raw distance and the reported horizontal accuracy envelope.
+2. Run a low-cost coarse stream during the destination phase so delayed geofence delivery cannot create a blind spot.
+3. Escalate location accuracy in stages as the user approaches the dock.
+4. Evaluate arrival using both raw distance and the reported horizontal accuracy envelope.
 
 ## Core Design
 
@@ -47,9 +48,10 @@ When a session starts, the service:
 
 1. Requests the right permissions if needed.
 2. Requests temporary full accuracy if the app only has Reduced Accuracy.
-3. Starts continuous `CLLocationManager` updates using navigation-grade settings.
+3. Starts coarse `CLLocationManager` updates for a journey destination.
 4. Optionally starts `CLCircularRegion` monitoring if the platform supports it.
-5. Re-checks every new location against an arrival heuristic.
+5. Escalates to balanced near-dock updates and then navigation-grade updates for the final approach.
+6. Re-checks every fresh location, including batched updates, against an arrival heuristic.
 
 ## Permission Model
 
@@ -67,20 +69,15 @@ To improve real-world precision on iOS 14+, the app also uses:
 
 This matters because Reduced Accuracy can make region monitoring ineffective and makes small-destination arrival detection much less reliable.
 
-## Tracking Mode
+## Tracking Modes
 
-The final approach is intentionally aggressive.
+The monitor uses staged accuracy to limit battery use:
 
-While an arrival-monitoring session is active, the app uses:
+- Far from a journey destination: `kCLLocationAccuracyHundredMeters`, a 100m distance filter, and automatic pausing.
+- Inside the 500m approach region: `kCLLocationAccuracyNearestTenMeters` with a 20m distance filter.
+- Inside the final 200m, expanded by reported uncertainty: `kCLLocationAccuracyBestForNavigation` with no distance filter.
 
-- `desiredAccuracy = kCLLocationAccuracyBestForNavigation`
-- `distanceFilter = kCLDistanceFilterNone`
-- `activityType = .otherNavigation`
-- `pausesLocationUpdatesAutomatically = false`
-- `allowsBackgroundLocationUpdates = true`
-- `showsBackgroundLocationIndicator = true`
-
-This is expensive in battery terms, but it is the right trade if missing arrival is worse than temporary extra battery usage.
+All active profiles use `.otherNavigation`, which matches cycling and does not disable indoor positioning. Background updates and the visible background indicator remain enabled while monitoring is active.
 
 ## Region Monitoring Role
 
@@ -90,13 +87,13 @@ Region monitoring is still useful, but only as a helper:
 - It can trigger near-destination logic if iOS delivers it in time.
 - It is not treated as the primary arrival mechanism.
 
-The region radius is capped to 400m, which is a practical upper limit based on Apple’s guidance that smaller regions work better.
+The region radius is capped to 500m so the balanced approach profile has time to settle before the final 200m.
 
 Important rule:
 
 - Do not rely on `didEnterRegion` as the only way to escalate monitoring.
 
-Instead, keep continuous tracking active and let region events act as bonus signals.
+For journey destinations, keep a coarse stream active and let region events act as an additional escalation signal.
 
 ## Arrival Heuristic
 
@@ -129,7 +126,9 @@ Current approach:
 
 - Start with the user-configured arrival distance.
 - Add up to 80% of the excess GPS uncertainty.
-- Cap the total expansion at 35m.
+- Cap the general-policy expansion at 45m.
+
+Journey ends use a more conservative allowance: half the reported horizontal accuracy, capped at 25m, is added to the configured raw-distance threshold.
 
 This means a nominal 25m arrival threshold can become roughly 41m under realistic GPS noise.
 
@@ -157,17 +156,21 @@ The monitor does not fire on the first plausible fix. It requires a short confir
 
 Current settings:
 
-- Retry interval: 5 seconds
-- Activation distance: 350m
-- Dwell time: 3 seconds
-- Confirmation timeout: 120 seconds
-- Reset hysteresis: 10m
+- Approach distance: 500m
+- Navigation-grade distance: 200m plus a bounded accuracy allowance
+- General dwell time: 1.5 seconds
+- Journey-end dwell time: 1 second
+- Candidate timeout: 30 seconds
+- Reset hysteresis: 15m
 
 Interpretation:
 
 - Once the user is plausibly near the destination, the confirmation state begins.
-- If subsequent fixes remain within threshold, the service confirms arrival.
-- If the user clearly moves back away from the dock, confirmation resets.
+- Two qualifying fixes confirm arrival after the dwell time.
+- A single accurate fix clearly inside the configured radius confirms immediately.
+- At a journey end, a recent qualifying closest approach followed by walking-speed movement also confirms arrival.
+- A fix in the hysteresis band preserves evidence instead of resetting it.
+- If the user clearly moves away from the dock, confirmation resets.
 
 Important design choice:
 
@@ -175,7 +178,7 @@ Important design choice:
 
 For this feature, long dwell windows caused more missed arrivals than they prevented false positives.
 
-## Continuous Tracking Beats Escalation-Only Tracking
+## Hybrid Tracking Beats Either Extreme
 
 An earlier design used:
 
@@ -188,12 +191,18 @@ That design still missed arrivals because:
 - region entry was sometimes absent
 - the user could reach the dock before high-power tracking had enough time to stabilize
 
-The successful approach is:
+The balanced approach is to combine the region monitor with a coarse destination-phase stream, then escalate twice. This preserves an independent approach signal without paying the battery cost of navigation-grade GPS throughout the journey.
 
-- start high-sensitivity tracking immediately when the session starts
-- keep it active until the session ends
+## Durable Arrival Delivery
 
-This is much more reliable for short, destination-specific sessions.
+Arrival detection and server acknowledgement are separate operations:
+
+1. Persist a unique arrival event ID.
+2. Stop location tracking and end the local Live Activity immediately.
+3. Deliver the event to the server.
+4. Retry pending events when the app next foregrounds, receives a background push, or obtains its APNs token.
+
+The delivery includes the original Live Activity push token so a delayed retry cannot end a newer activity for the same dock. The server stores successful event IDs for 24 hours and replays the original result for duplicates. A lost HTTP response therefore cannot turn an already-processed arrival into an apparent failure.
 
 ## When To Use This Strategy
 

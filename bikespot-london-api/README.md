@@ -114,8 +114,8 @@ Environment variables:
 - `APNS_TOPIC` - Live Activity APNS topic (for example `com.example.app.push-type.liveactivity`)
 - `APNS_BACKGROUND_TOPIC_MY_BORIS_BIKES` - App bundle topic for alert/background pushes (preferred)
 - `APNS_BACKGROUND_TOPIC` - Legacy alias still supported for backward compatibility
-- `MONGODB_URI_MY_BORIS_BIKES` - MongoDB connection string for scheduled journeys (preferred)
-- `MONGODB_URI` / `MONGO_URI` - Legacy MongoDB connection string fallbacks
+- `MONGODB_URI_BIKESPOT_LONDON` - MongoDB connection string for scheduled journeys (preferred)
+- `MONGODB_URI_MY_BORIS_BIKES` / `MONGODB_URI` / `MONGO_URI` - Legacy MongoDB connection string fallbacks
 - `MONGODB_DB_NAME` - Mongo database name (default: `my_boris_bikes`)
 - `SCHEDULED_JOURNEYS_COLLECTION` - Collection name (default: `scheduled_journeys`)
 

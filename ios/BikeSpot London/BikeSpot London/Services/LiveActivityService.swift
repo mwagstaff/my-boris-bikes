@@ -745,6 +745,12 @@ class LiveActivityService: ObservableObject {
         activeActivities[dockId] != nil
     }
 
+    func pushTokenForArrival(for dockId: String) -> String? {
+        activeActivities[dockId]?.pushToken.map {
+            $0.map { String(format: "%02x", $0) }.joined()
+        }
+    }
+
     func activeJourneyPhase(for dockId: String) -> ScheduledJourney.ActiveRun.Phase? {
         if let activity = activeActivities[dockId] {
             return ScheduledJourney.ActiveRun.Phase(
@@ -1598,6 +1604,18 @@ class LiveActivityService: ObservableObject {
         for activity in runningActivities {
             let dockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
             let dockName = activity.content.state.resolvedDockName ?? activity.attributes.dockName
+
+            if DockArrivalMonitoringService.shared.hasPendingArrival(for: dockId) {
+                logger.info("Ending restored live activity for dock \(dockId) because its arrival is pending delivery")
+                Task { [weak self] in
+                    await self?.endActivityInstance(
+                        activity,
+                        dockId: dockId,
+                        skipServerUnregister: true
+                    )
+                }
+                continue
+            }
 
             // End stale activities immediately rather than restoring them
             if activity.activityState == .stale {

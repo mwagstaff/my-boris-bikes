@@ -39,6 +39,7 @@ logs/
 *.seed
 *.tmp
 *.temp
+arrival-receipts.json
 
 ###############
 # macOS / Finder
