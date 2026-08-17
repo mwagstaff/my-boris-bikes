@@ -29,7 +29,7 @@ Practical issues:
 The working solution is therefore not "geofence only". It is:
 
 1. Use region monitoring as a secondary signal when available.
-2. Run a low-cost coarse stream during the destination phase so delayed geofence delivery cannot create a blind spot.
+2. Run a low-cost coarse stream during either active scheduled-journey phase so delayed geofence delivery cannot create a blind spot at the start or destination dock.
 3. Escalate location accuracy in stages as the user approaches the dock.
 4. Evaluate arrival using both raw distance and the reported horizontal accuracy envelope.
 
@@ -48,7 +48,7 @@ When a session starts, the service:
 
 1. Requests the right permissions if needed.
 2. Requests temporary full accuracy if the app only has Reduced Accuracy.
-3. Starts coarse `CLLocationManager` updates for a journey destination.
+3. Starts coarse `CLLocationManager` updates for an active scheduled-journey dock.
 4. Optionally starts `CLCircularRegion` monitoring if the platform supports it.
 5. Escalates to balanced near-dock updates and then navigation-grade updates for the final approach.
 6. Re-checks every fresh location, including batched updates, against an arrival heuristic.
@@ -73,7 +73,7 @@ This matters because Reduced Accuracy can make region monitoring ineffective and
 
 The monitor uses staged accuracy to limit battery use:
 
-- Far from a journey destination: `kCLLocationAccuracyHundredMeters`, a 100m distance filter, and automatic pausing.
+- Far from an active scheduled-journey dock: `kCLLocationAccuracyHundredMeters`, a 100m distance filter, and automatic pausing.
 - Inside the 500m approach region: `kCLLocationAccuracyNearestTenMeters` with a 20m distance filter.
 - Inside the final 200m, expanded by reported uncertainty: `kCLLocationAccuracyBestForNavigation` with no distance filter.
 
@@ -93,7 +93,9 @@ Important rule:
 
 - Do not rely on `didEnterRegion` as the only way to escalate monitoring.
 
-For journey destinations, keep a coarse stream active and let region events act as an additional escalation signal.
+For scheduled journey starts and destinations, keep a coarse stream active and let region events act as an additional escalation signal.
+
+Core Location also reports an authorization callback when a location manager is created, even if permission has not changed. Record the authorization level and accuracy mode used for the current monitoring configuration, and do not rebuild that configuration when both values are unchanged. This prevents a launch-time callback from resetting fresh arrival evidence.
 
 ## Arrival Heuristic
 
@@ -128,7 +130,9 @@ Current approach:
 - Add up to 80% of the excess GPS uncertainty.
 - Cap the general-policy expansion at 45m.
 
-Journey ends use a more conservative allowance: half the reported horizontal accuracy, capped at 25m, is added to the configured raw-distance threshold.
+Scheduled journey starts use a deliberately modest allowance: one quarter of the reported horizontal accuracy, capped at 15m, is added to the configured raw-distance threshold. They still require two qualifying fixes, so this closes the urban-GPS gap without making a single pass near the start dock sufficient.
+
+Journey ends use a larger allowance: half the reported horizontal accuracy, capped at 25m, is added to the configured raw-distance threshold.
 
 This means a nominal 25m arrival threshold can become roughly 41m under realistic GPS noise.
 
@@ -159,6 +163,7 @@ Current settings:
 - Approach distance: 500m
 - Navigation-grade distance: 200m plus a bounded accuracy allowance
 - General dwell time: 1.5 seconds
+- Journey-start dwell time: 3 seconds
 - Journey-end dwell time: 1 second
 - Candidate timeout: 30 seconds
 - Reset hysteresis: 15m
@@ -167,7 +172,7 @@ Interpretation:
 
 - Once the user is plausibly near the destination, the confirmation state begins.
 - Two qualifying fixes confirm arrival after the dwell time.
-- A single accurate fix clearly inside the configured radius confirms immediately.
+- A single accurate fix clearly inside the configured radius confirms a regular or journey-end arrival immediately; journey starts still require two fixes.
 - At a journey end, a recent qualifying closest approach followed by walking-speed movement also confirms arrival.
 - A fix in the hysteresis band preserves evidence instead of resetting it.
 - If the user clearly moves away from the dock, confirmation resets.
@@ -191,7 +196,7 @@ That design still missed arrivals because:
 - region entry was sometimes absent
 - the user could reach the dock before high-power tracking had enough time to stabilize
 
-The balanced approach is to combine the region monitor with a coarse destination-phase stream, then escalate twice. This preserves an independent approach signal without paying the battery cost of navigation-grade GPS throughout the journey.
+The balanced approach is to combine the region monitor with a coarse scheduled-journey stream, then escalate twice. This preserves an independent approach signal at both docks without paying the battery cost of navigation-grade GPS throughout the journey.
 
 ## Durable Arrival Delivery
 
@@ -236,7 +241,7 @@ When the user starts monitoring a destination:
 1. Persist the target destination.
 2. Request Always authorization if needed.
 3. Request temporary full accuracy if needed and possible.
-4. Start continuous high-sensitivity updates.
+4. Start low-power coarse updates with automatic pausing.
 5. Start region monitoring too if available.
 
 ### Each Location Update
@@ -248,7 +253,7 @@ For each new `CLLocation`:
 3. Compute raw distance to the target.
 4. Compute compensated distance.
 5. Compute the effective arrival threshold.
-6. If `min(rawDistance, compensatedDistance)` is within the threshold, enter or continue confirmation.
+6. Use the distance selected by the active arrival policy: raw distance with a bounded accuracy allowance for scheduled starts and ends, or compensated distance for the general policy.
 7. If confirmation stays valid long enough, fire arrival.
 
 ### Session End
@@ -304,6 +309,7 @@ For apps with a short-lived destination-monitoring session, this is usually acce
 - [`CLLocationManager.activityType`](https://developer.apple.com/documentation/corelocation/cllocationmanager/activitytype)
 - [`CLLocationManager.startMonitoring(for:)`](https://developer.apple.com/documentation/corelocation/cllocationmanager/startmonitoring(for:))
 - [`CLLocationManager.accuracyAuthorization`](https://developer.apple.com/documentation/corelocation/cllocationmanager/accuracyauthorization)
+- [`CLLocationManagerDelegate.locationManagerDidChangeAuthorization(_:)`](https://developer.apple.com/documentation/corelocation/cllocationmanagerdelegate/locationmanagerdidchangeauthorization(_:))
 - [`CLLocationManager.requestTemporaryFullAccuracyAuthorization(withPurposeKey:)`](https://developer.apple.com/documentation/corelocation/cllocationmanager/requesttemporaryfullaccuracyauthorization(withpurposekey:))
 - [Configuring your app to use location services](https://developer.apple.com/documentation/corelocation/configuring-your-app-to-use-location-services)
 - [Monitoring the user’s proximity to geographic regions](https://developer.apple.com/documentation/corelocation/monitoring-the-user-s-proximity-to-geographic-regions)
@@ -313,7 +319,7 @@ For apps with a short-lived destination-monitoring session, this is usually acce
 If you want small-destination arrival detection on iOS to be genuinely reliable:
 
 - do not rely on geofencing alone
-- run continuous navigation-grade updates during the active session
+- keep a low-power coarse stream active during scheduled-journey monitoring, then escalate accuracy near the dock
 - request full accuracy when possible
 - evaluate arrival using GPS uncertainty, not only the raw point estimate
 - keep confirmation short

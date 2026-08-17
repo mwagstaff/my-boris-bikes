@@ -148,7 +148,7 @@ struct BikeSpot_LondonTests {
         #expect(LiveActivityArrivalSettings.preferredMaximumRegionRadiusMeters == 500)
     }
 
-    @Test func testStartDockArrivalPolicyRequiresRawDistance() async throws {
+    @Test func testStartDockArrivalPolicyUsesConservativeAccuracyAllowance() async throws {
         let policy = DockArrivalHeuristics.arrivalPolicy(
             for: .start,
             configuredArrivalThreshold: CLLocationDistance(50),
@@ -159,10 +159,11 @@ struct BikeSpot_LondonTests {
         #expect(policy.arrivalThreshold == 50)
         #expect(policy.acceptableHorizontalAccuracy == 90)
         #expect(policy.usesCompensatedDistanceForConfirmation == false)
-        #expect(policy.confirmationDwellTime == 8)
+        #expect(policy.effectiveArrivalThreshold == 61.25)
+        #expect(policy.confirmationDwellTime == 3)
         #expect(
             policy.isInsideArrivalThreshold(
-                rawDistance: 35,
+                rawDistance: 60,
                 compensatedDistance: 0
             ) == true
         )
@@ -172,6 +173,103 @@ struct BikeSpot_LondonTests {
                 compensatedDistance: 30
             ) == false
         )
+    }
+
+    @Test func testStartDockArrivalConfirmsAfterTwoFixesAndShortDwell() async throws {
+        let policy = DockArrivalHeuristics.arrivalPolicy(
+            for: .start,
+            configuredArrivalThreshold: 50,
+            horizontalAccuracy: 40
+        )
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let firstDecision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: nil,
+            timestamp: startedAt,
+            rawDistance: 58,
+            compensatedDistance: 18,
+            horizontalAccuracy: 40,
+            speed: 1,
+            policy: policy
+        )
+        guard case .candidate(let evidence) = firstDecision else {
+            Issue.record("Expected the first start-dock fix to begin confirmation")
+            return
+        }
+
+        let secondDecision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: evidence,
+            timestamp: startedAt.addingTimeInterval(3),
+            rawDistance: 57,
+            compensatedDistance: 17,
+            horizontalAccuracy: 40,
+            speed: 1,
+            policy: policy
+        )
+
+        #expect(secondDecision == .confirmed)
+    }
+
+    @Test func testAccurateStartDockFixStillRequiresConfirmation() async throws {
+        let policy = DockArrivalHeuristics.arrivalPolicy(
+            for: .start,
+            configuredArrivalThreshold: 50,
+            horizontalAccuracy: 12
+        )
+        let decision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: nil,
+            timestamp: Date(),
+            rawDistance: 35,
+            compensatedDistance: 23,
+            horizontalAccuracy: 12,
+            speed: 1,
+            policy: policy
+        )
+
+        guard case .candidate = decision else {
+            Issue.record("Expected a single start-dock fix to remain a candidate")
+            return
+        }
+    }
+
+    @Test func testStrongRegularDockFixConfirmsImmediately() async throws {
+        let policy = DockArrivalHeuristics.arrivalPolicy(
+            for: nil,
+            configuredArrivalThreshold: 50,
+            horizontalAccuracy: 16.1
+        )
+        let decision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: nil,
+            timestamp: Date(),
+            rawDistance: 31.5,
+            compensatedDistance: 15.4,
+            horizontalAccuracy: 16.1,
+            speed: 0.23,
+            policy: policy
+        )
+
+        #expect(decision == .confirmed)
+    }
+
+    @Test func testRegularDockFixOutsideStrongAccuracyStillRequiresConfirmation() async throws {
+        let policy = DockArrivalHeuristics.arrivalPolicy(
+            for: nil,
+            configuredArrivalThreshold: 50,
+            horizontalAccuracy: 30
+        )
+        let decision = DockArrivalHeuristics.evaluateArrivalEvidence(
+            existingEvidence: nil,
+            timestamp: Date(),
+            rawDistance: 31.5,
+            compensatedDistance: 1.5,
+            horizontalAccuracy: 30,
+            speed: 0.23,
+            policy: policy
+        )
+
+        guard case .candidate = decision else {
+            Issue.record("Expected a regular-dock fix outside strong accuracy to remain a candidate")
+            return
+        }
     }
 
     @Test func testEndDockArrivalPolicyRequiresRawDistance() async throws {

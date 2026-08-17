@@ -125,13 +125,17 @@ enum DockArrivalHeuristics {
         switch phase {
         case .some(.start):
             let arrivalThreshold = configuredArrivalThreshold
+            let accuracyAllowance = min(
+                horizontalAccuracy * LiveActivityArrivalSettings.journeyStartAccuracyAllowanceMultiplier,
+                LiveActivityArrivalSettings.journeyStartMaximumAccuracyAllowanceMeters
+            )
             return ArrivalPolicy(
                 kind: .startDock,
                 arrivalThreshold: arrivalThreshold,
                 acceptableHorizontalAccuracy: acceptableHorizontalAccuracy(for: arrivalThreshold),
                 usesCompensatedDistanceForConfirmation: false,
-                confirmationDwellTime: 8,
-                maximumThresholdExpansion: 0
+                confirmationDwellTime: LiveActivityArrivalSettings.journeyStartConfirmationDwellTimeSeconds,
+                maximumThresholdExpansion: max(0, accuracyAllowance)
             )
         case .some(.end):
             let arrivalThreshold = configuredArrivalThreshold
@@ -183,7 +187,7 @@ enum DockArrivalHeuristics {
             rawDistance: rawDistance,
             compensatedDistance: compensatedDistance
         )
-        let isStrongFix = policy.kind == .endDock &&
+        let isStrongFix = policy.kind != .startDock &&
             horizontalAccuracy <= LiveActivityArrivalSettings.strongFixMaximumAccuracyMeters &&
             rawDistance <= policy.arrivalThreshold
 
@@ -276,6 +280,7 @@ final class DockArrivalMonitoringService: NSObject {
 
     private static let regionIdentifierPrefix = "live-activity-arrival-region-"
     private static let maximumPendingArrivalAge: TimeInterval = 24 * 60 * 60
+    private static let localRoutineLocationLogInterval: TimeInterval = 30
     private let monitoredDockStorageKey = "liveActivityArrivalMonitoredDock"
     private let pendingArrivalStorageKey = "liveActivityPendingArrivalEvent"
     private let logger = Logger(subsystem: "dev.skynolimit.myborisbikes", category: "DockArrival")
@@ -326,8 +331,12 @@ final class DockArrivalMonitoringService: NSObject {
     private var backgroundActivitySession: CLBackgroundActivitySession?
     private var isSendingArrivalRequest = false
     private var lastRoutineLocationLogAt: Date?
+    private var lastLocalRoutineLocationLogAt: Date?
     private var arrivalEvidence: DockArrivalHeuristics.ArrivalEvidence?
     private var trackingMode: TrackingMode = .passiveRegion
+    private var hasConfiguredMonitoringThisProcess = false
+    private var configuredAuthorizationStatus: CLAuthorizationStatus?
+    private var configuredAccuracyAuthorization: CLAccuracyAuthorization?
     private var isDeliveringPendingArrival = false
     private var hasRequestedAlwaysAuthorizationThisSession = false
     private var hasRequestedTemporaryFullAccuracyThisSession = false
@@ -394,6 +403,11 @@ final class DockArrivalMonitoringService: NSObject {
             latitude: bikePoint.lat,
             longitude: bikePoint.lon
         )
+        let isReusingConfiguredSession = hasConfiguredMonitoringThisProcess &&
+            monitoredDock == dock &&
+            self.scheduledJourneyId == scheduledJourneyId &&
+            self.scheduledJourneyPhase == phase &&
+            self.adHocJourneyId == adHocJourneyId
 
         self.scheduledJourneyId = scheduledJourneyId
         self.scheduledJourneyPhase = phase
@@ -401,8 +415,20 @@ final class DockArrivalMonitoringService: NSObject {
         self.scheduledDestinationDock = destinationDock
         monitoredDock = dock
         persistMonitoringState(for: dock)
+
+        if isReusingConfiguredSession {
+            logLocationEvent(
+                "monitor_begin_reused",
+                dock: dock,
+                message: "Reused active dock arrival monitoring without resetting confirmation state"
+            )
+            return
+        }
+
+        clearMonitoringConfigurationState()
         isSendingArrivalRequest = false
         lastRoutineLocationLogAt = nil
+        lastLocalRoutineLocationLogAt = nil
         arrivalEvidence = nil
         trackingMode = .passiveRegion
         destinationApproachSpaceAvailabilityRequested = false
@@ -437,6 +463,15 @@ final class DockArrivalMonitoringService: NSObject {
         }
 
         monitoredDock = dock
+        if hasConfiguredMonitoringThisProcess {
+            logLocationEvent(
+                "monitor_restore_reused",
+                dock: dock,
+                message: "Monitoring was already active; preserved current confirmation state"
+            )
+            return
+        }
+
         logLocationEvent("monitor_restore", dock: dock, message: "Restored dock arrival monitoring state")
         requestAuthorizationIfNeeded()
         startMonitoringIfPossible()
@@ -455,8 +490,10 @@ final class DockArrivalMonitoringService: NSObject {
         stopAllLocationUpdates()
         stopMonitoringDockRegion()
         stopBackgroundActivitySession()
+        clearMonitoringConfigurationState()
         isSendingArrivalRequest = false
         lastRoutineLocationLogAt = nil
+        lastLocalRoutineLocationLogAt = nil
         arrivalEvidence = nil
         trackingMode = .passiveRegion
         destinationApproachSpaceAvailabilityRequested = false
@@ -494,6 +531,7 @@ final class DockArrivalMonitoringService: NSObject {
         )
         monitoredDock = dock
         persistMonitoringState(for: dock)
+        clearMonitoringConfigurationState()
         logLocationEvent(
             "monitor_dock_updated",
             dock: dock,
@@ -644,6 +682,8 @@ final class DockArrivalMonitoringService: NSObject {
     private func startMonitoringIfPossible() {
         guard let dock = monitoredDock else { return }
 
+        clearMonitoringConfigurationState()
+
         guard shouldMonitorCurrentDock else {
             logger.info("Dock arrival monitoring skipped because holiday mode or preference is disabled")
             stopPreciseLocationUpdates()
@@ -693,6 +733,7 @@ final class DockArrivalMonitoringService: NSObject {
             // High-power tracking cannot improve fixes that iOS coarsens under
             // reduced accuracy, so use the low-power profile here.
             startContinuousLowSensitivityTracking(reason: "reduced_accuracy_authorization")
+            markMonitoringConfigurationActive()
             return
         }
 
@@ -704,10 +745,14 @@ final class DockArrivalMonitoringService: NSObject {
         if CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) {
             startMonitoringDockRegion(for: dock)
             logger.info("Starting region-based dock arrival monitoring")
-            if scheduledJourneyPhase == .end {
-                // A coarse standard stream is cheap and protects against a
-                // delayed region-entry event at the end of a journey.
-                startContinuousLowSensitivityTracking(reason: "journey_end_approach")
+            if let scheduledJourneyPhase {
+                // A coarse standard stream is cheap and protects both journey
+                // phases against delayed or missing region-entry delivery.
+                startContinuousLowSensitivityTracking(
+                    reason: scheduledJourneyPhase == .start
+                        ? "journey_start_watchdog"
+                        : "journey_end_approach"
+                )
             } else {
                 trackingMode = .passiveRegion
             }
@@ -720,6 +765,25 @@ final class DockArrivalMonitoringService: NSObject {
             )
             startContinuousLowSensitivityTracking(reason: "region_monitoring_unavailable")
         }
+        markMonitoringConfigurationActive()
+    }
+
+    private func clearMonitoringConfigurationState() {
+        hasConfiguredMonitoringThisProcess = false
+        configuredAuthorizationStatus = nil
+        configuredAccuracyAuthorization = nil
+    }
+
+    private func markMonitoringConfigurationActive() {
+        hasConfiguredMonitoringThisProcess = true
+        configuredAuthorizationStatus = locationManager.authorizationStatus
+        configuredAccuracyAuthorization = locationManager.accuracyAuthorization
+    }
+
+    private func isMonitoringConfiguredForCurrentAuthorization(_ manager: CLLocationManager) -> Bool {
+        hasConfiguredMonitoringThisProcess &&
+            configuredAuthorizationStatus == manager.authorizationStatus &&
+            configuredAccuracyAuthorization == manager.accuracyAuthorization
     }
 
     private func startBackgroundActivitySessionIfNeeded() {
@@ -1279,12 +1343,66 @@ final class DockArrivalMonitoringService: NSObject {
         message: String? = nil,
         raw: [String: Any] = [:]
     ) {
-        guard shouldUploadDebugEvent(event) else { return }
-
         let activeDock = dock ?? monitoredDock
+        let eventTimestamp = Date()
+        let shouldRecordLocally = shouldRecordLocationEventLocally(event, at: eventTimestamp)
+        let shouldUpload = shouldUploadDebugEvent(event)
+        guard shouldRecordLocally || shouldUpload else { return }
+
         let payloadDeviceId = debugDeviceIdentifier
-        let clientTimestamp = ISO8601DateFormatter().string(from: Date())
+        let clientTimestamp = ISO8601DateFormatter().string(from: eventTimestamp)
         let arrivalThresholdMeters = configuredArrivalDistanceMeters(for: scheduledJourneyPhase)
+
+        if shouldRecordLocally {
+            var metadata: [String: String] = [
+                "arrivalThresholdMeters": String(arrivalThresholdMeters),
+                "authorizationStatus": authorizationStatusLabel(locationManager.authorizationStatus),
+                "trackingMode": trackingModeLabel,
+            ]
+            if let activeDock {
+                metadata["dockId"] = activeDock.dockId
+                metadata["dockName"] = activeDock.dockName
+            }
+            if let scheduledJourneyId {
+                metadata["scheduledJourneyId"] = scheduledJourneyId
+            }
+            if let scheduledJourneyPhase {
+                metadata["scheduledJourneyPhase"] = scheduledJourneyPhase.rawValue
+            }
+            if let adHocJourneyId {
+                metadata["adHocJourneyId"] = adHocJourneyId
+            }
+            if let location {
+                metadata["horizontalAccuracyMeters"] = String(location.horizontalAccuracy)
+                metadata["latitude"] = String(location.coordinate.latitude)
+                metadata["longitude"] = String(location.coordinate.longitude)
+                metadata["locationTimestamp"] = ISO8601DateFormatter().string(from: location.timestamp)
+                metadata["speedMetersPerSecond"] = String(location.speed)
+            }
+            if let distanceMeters {
+                metadata["distanceMeters"] = String(distanceMeters)
+            }
+            for (key, value) in raw {
+                metadata[key] = String(describing: value)
+            }
+
+            let localMessage = message ?? event
+            Task { @MainActor [event, localMessage, metadata] in
+                var localMetadata = metadata.reduce(into: [String: Any?]()) { result, item in
+                    result[item.key] = item.value
+                }
+                localMetadata["appState"] = self.applicationStateLabel()
+                localMetadata["backgroundRefreshStatus"] = self.backgroundRefreshStatusLabel()
+                TroubleshootingLogStore.shared.record(
+                    category: "dock_arrival",
+                    event: event,
+                    message: localMessage,
+                    metadata: localMetadata
+                )
+            }
+        }
+
+        guard shouldUpload else { return }
 
         Task {
             var body: [String: Any] = [
@@ -1329,6 +1447,31 @@ final class DockArrivalMonitoringService: NSObject {
             } catch {
                 logger.error("Failed to send background location debug event: \(error.localizedDescription)")
             }
+        }
+    }
+
+    private func shouldRecordLocationEventLocally(_ event: String, at timestamp: Date) -> Bool {
+        guard event == "location_update" else { return true }
+
+        guard lastLocalRoutineLocationLogAt == nil ||
+            timestamp.timeIntervalSince(lastLocalRoutineLocationLogAt ?? .distantPast) >= Self.localRoutineLocationLogInterval else {
+            return false
+        }
+
+        lastLocalRoutineLocationLogAt = timestamp
+        return true
+    }
+
+    private var trackingModeLabel: String {
+        switch trackingMode {
+        case .passiveRegion:
+            return "passiveRegion"
+        case .coarseApproach:
+            return "coarseApproach"
+        case .approach:
+            return "approach"
+        case .precise:
+            return "precise"
         }
     }
 
@@ -1435,7 +1578,6 @@ final class DockArrivalMonitoringService: NSObject {
         region.notifyOnExit = true
 
         locationManager.startMonitoring(for: region)
-        locationManager.requestState(for: region)
         logLocationEvent(
             "region_monitoring_started",
             dock: dock,
@@ -1487,8 +1629,8 @@ final class DockArrivalMonitoringService: NSObject {
         stopBackgroundActivitySession()
     }
 
-    /// Drops back from continuous high-accuracy updates. Journey destinations
-    /// retain a coarse stream to protect against delayed geofence delivery.
+    /// Drops back from continuous high-accuracy updates. Scheduled journey
+    /// phases retain a coarse stream to protect against delayed geofence delivery.
     private func deEscalateTracking(reason: String) {
         guard !isSendingArrivalRequest else { return }
 
@@ -1496,7 +1638,7 @@ final class DockArrivalMonitoringService: NSObject {
             $0.identifier.hasPrefix(Self.regionIdentifierPrefix)
         }
 
-        if scheduledJourneyPhase == .end || !hasArmedDockRegion {
+        if scheduledJourneyPhase != nil || !hasArmedDockRegion {
             startContinuousLowSensitivityTracking(reason: reason)
         } else {
             stopAllLocationUpdates()
@@ -1630,6 +1772,21 @@ final class DockArrivalMonitoringService: NSObject {
 }
 
 extension DockArrivalMonitoringService: CLLocationManagerDelegate {
+    func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {
+        guard let dock = monitoredDock,
+              region.identifier == dockRegionIdentifier(for: dock.dockId) else {
+            return
+        }
+
+        logLocationEvent(
+            "region_monitoring_ready",
+            dock: dock,
+            message: "Core Location confirmed the dock region monitor is ready",
+            raw: ["regionIdentifier": region.identifier]
+        )
+        manager.requestState(for: region)
+    }
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard !isSendingArrivalRequest else { return }
         for location in locations.sorted(by: { $0.timestamp < $1.timestamp }) {
@@ -1711,9 +1868,20 @@ extension DockArrivalMonitoringService: CLLocationManagerDelegate {
 
         switch status {
         case .authorizedAlways, .authorizedWhenInUse:
+            if isMonitoringConfiguredForCurrentAuthorization(manager) {
+                logger.info("Preserving dock monitoring because authorization configuration is unchanged")
+                logLocationEvent(
+                    "authorization_configuration_reused",
+                    dock: monitoredDock,
+                    message: "Authorization callback did not require monitoring to restart",
+                    raw: ["accuracyAuthorization": accuracyAuthorizationLabel(manager)]
+                )
+                return
+            }
             startMonitoringIfPossible()
         case .denied, .restricted:
             logger.warning("Dock arrival monitoring disabled because location permission is unavailable")
+            clearMonitoringConfigurationState()
             stopPreciseLocationUpdates()
             stopMonitoringDockRegion()
             logLocationEvent(
@@ -1722,6 +1890,7 @@ extension DockArrivalMonitoringService: CLLocationManagerDelegate {
                 message: "Location permission unavailable after authorization change"
             )
         case .notDetermined:
+            clearMonitoringConfigurationState()
             hasRequestedAlwaysAuthorizationThisSession = false
             hasRequestedTemporaryFullAccuracyThisSession = false
             break
