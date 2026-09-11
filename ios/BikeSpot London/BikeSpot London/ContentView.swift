@@ -8,6 +8,8 @@
 import SwiftUI
 import UIKit
 import Combine
+import UserNotifications
+import os.log
 
 struct ContentView: View {
     @Binding var selectedTab: Int
@@ -22,6 +24,7 @@ struct ContentView: View {
     @State private var selectedTabIndex = 0
     @State private var selectedBikePointForMap: BikePoint?
     @State private var isServiceBannerDismissed = false
+    private let logger = Logger(subsystem: "dev.skynolimit.myborisbikes", category: "JourneyBadge")
     private let notificationStatusRefreshTimer = Timer.publish(every: 60, tolerance: 6, on: .main, in: .common).autoconnect()
 
     private var shouldShowLocationBanner: Bool {
@@ -38,6 +41,11 @@ struct ContentView: View {
     private var notificationSession: LiveActivityService.ActiveNotificationSession? {
         liveActivityService.currentNotificationSession
     }
+
+    private var hasActiveJourney: Bool {
+        scheduledJourneyService.journeys.contains { $0.isActive } ||
+        adHocJourneyService.recentJourneys.contains { $0.isActive }
+    }
     
     var body: some View {
         ZStack(alignment: .top) {
@@ -50,6 +58,9 @@ struct ContentView: View {
                     },
                     onShowServiceStatus: {
                         isServiceBannerDismissed = false
+                    },
+                    onJourneyStarted: {
+                        selectedTabIndex = 2
                     }
                 )
                 .tabItem {
@@ -80,6 +91,7 @@ struct ContentView: View {
                         Image(systemName: "figure.outdoor.cycle")
                         Text("Journeys")
                     }
+                    .badge(hasActiveJourney ? "" : nil)
                     .tag(2)
 
                 ProfileView()
@@ -193,12 +205,18 @@ struct ContentView: View {
                 selectedTabIndex = 1
             }
         }
+        .task(id: hasActiveJourney) {
+            await updateAppIconBadge()
+        }
     }
 
     private func handleNotificationBannerTap(_ session: LiveActivityService.ActiveNotificationSession) {
         Task {
             let didAdvance = session.scheduledJourneyPhase == .start
-                ? await liveActivityService.advanceJourneyFromStart(dockId: session.dockId)
+                ? await liveActivityService.advanceJourneyFromStart(
+                    dockId: session.dockId,
+                    source: "app_banner"
+                )
                 : false
             if didAdvance {
                 return
@@ -252,6 +270,14 @@ struct ContentView: View {
             return .profile
         default:
             return .unknown
+        }
+    }
+
+    private func updateAppIconBadge() async {
+        do {
+            try await UNUserNotificationCenter.current().setBadgeCount(hasActiveJourney ? 1 : 0)
+        } catch {
+            logger.warning("Failed to update journey app icon badge: \(error.localizedDescription)")
         }
     }
 }

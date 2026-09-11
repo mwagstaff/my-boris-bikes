@@ -16,6 +16,8 @@ struct BikeSpot_LondonApp: App {
     @State private var selectedDockId: String?
 
     init() {
+        // Observe dock preference edits even when the app opens directly into a journey.
+        _ = WidgetService.shared
         // Initialize WatchConnectivity
         #if os(iOS)
         FavoritesService.shared.setupWatchConnectivity()
@@ -43,6 +45,7 @@ struct BikeSpot_LondonApp: App {
                 // Schedule the next background refresh when entering background
                 BackgroundRefreshService.shared.scheduleAppRefresh()
             case .active:
+                DockArrivalMonitoringService.shared.handleApplicationDidBecomeActive()
                 // Reconcile local/server live activity state after foregrounding
                 LiveActivityService.shared.restoreActivities()
                 Task {

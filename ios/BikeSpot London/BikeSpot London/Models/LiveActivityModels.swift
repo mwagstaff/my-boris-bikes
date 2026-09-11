@@ -39,7 +39,7 @@ struct DockActivityAttributes: ActivityAttributes {
     ) {
         self.dockId = dockId
         self.dockName = dockName
-        self.alias = alias
+        self.alias = alias?.liveActivityDisplayText
         self.scheduledJourneyId = scheduledJourneyId
         self.scheduledJourneyPhase = scheduledJourneyPhase
         self.adHocJourneyId = adHocJourneyId
@@ -64,6 +64,9 @@ struct DockActivityAttributes: ActivityAttributes {
         let activeDockAlias: String?
         let activeJourneyPhase: String?
         let primaryDisplay: String?
+        /// Unix timestamp for the availability snapshot shown in this content state.
+        /// Older server payloads omit it, so it remains optional for compatibility.
+        let availabilityUpdatedAtEpochSeconds: Int?
 
         init(
             standardBikes: Int,
@@ -74,7 +77,8 @@ struct DockActivityAttributes: ActivityAttributes {
             activeDockName: String? = nil,
             activeDockAlias: String? = nil,
             activeJourneyPhase: String? = nil,
-            primaryDisplay: String? = nil
+            primaryDisplay: String? = nil,
+            availabilityUpdatedAtEpochSeconds: Int? = nil
         ) {
             self.standardBikes = standardBikes
             self.eBikes = eBikes
@@ -82,9 +86,10 @@ struct DockActivityAttributes: ActivityAttributes {
             self.alternatives = alternatives
             self.activeDockId = activeDockId
             self.activeDockName = activeDockName
-            self.activeDockAlias = activeDockAlias
+            self.activeDockAlias = activeDockAlias?.liveActivityDisplayText
             self.activeJourneyPhase = activeJourneyPhase
             self.primaryDisplay = primaryDisplay
+            self.availabilityUpdatedAtEpochSeconds = availabilityUpdatedAtEpochSeconds
         }
 
         // Custom decoding so push payloads that omit `alternatives` still decode successfully
@@ -96,9 +101,13 @@ struct DockActivityAttributes: ActivityAttributes {
             alternatives = try container.decodeIfPresent([AlternativeDock].self, forKey: .alternatives) ?? []
             activeDockId = try container.decodeIfPresent(String.self, forKey: .activeDockId)
             activeDockName = try container.decodeIfPresent(String.self, forKey: .activeDockName)
-            activeDockAlias = try container.decodeIfPresent(String.self, forKey: .activeDockAlias)
+            activeDockAlias = try container.decodeIfPresent(String.self, forKey: .activeDockAlias)?.liveActivityDisplayText
             activeJourneyPhase = try container.decodeIfPresent(String.self, forKey: .activeJourneyPhase)
             primaryDisplay = try container.decodeIfPresent(String.self, forKey: .primaryDisplay)
+            availabilityUpdatedAtEpochSeconds = try container.decodeIfPresent(
+                Int.self,
+                forKey: .availabilityUpdatedAtEpochSeconds
+            )
         }
 
         var resolvedDockId: String? {
@@ -116,15 +125,74 @@ struct DockActivityAttributes: ActivityAttributes {
 
     /// Compact representation of a nearby alternative dock for the watch Smart Stack
     struct AlternativeDock: Codable, Hashable {
+        /// Older activity payloads omit identity and alias; keep decoding them by name.
+        let id: String?
         let name: String
+        let alias: String?
         let standardBikes: Int
         let eBikes: Int
         let emptySpaces: Int
+
+        init(
+            name: String,
+            standardBikes: Int,
+            eBikes: Int,
+            emptySpaces: Int,
+            id: String? = nil,
+            alias: String? = nil
+        ) {
+            self.id = id
+            self.name = name.liveActivityDisplayText
+            self.alias = alias?.liveActivityDisplayText
+            self.standardBikes = standardBikes
+            self.eBikes = eBikes
+            self.emptySpaces = emptySpaces
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.init(
+                name: try container.decode(String.self, forKey: .name),
+                standardBikes: try container.decode(Int.self, forKey: .standardBikes),
+                eBikes: try container.decode(Int.self, forKey: .eBikes),
+                emptySpaces: try container.decode(Int.self, forKey: .emptySpaces),
+                id: try container.decodeIfPresent(String.self, forKey: .id),
+                alias: try container.decodeIfPresent(String.self, forKey: .alias)
+            )
+        }
+
+        var displayName: String { alias?.nilIfBlank ?? name }
+        var stableIdentifier: String { id?.nilIfBlank ?? name }
+
+        var serverPayload: [String: Any] {
+            var payload: [String: Any] = [
+                "name": name,
+                "standardBikes": standardBikes,
+                "eBikes": eBikes,
+                "emptySpaces": emptySpaces,
+            ]
+            payload["id"] = id
+            payload["alias"] = alias
+            return payload
+        }
     }
 }
 
 
 private extension String {
+    /// The complete name stays in dock preferences. Live Activity content has a 4KB budget.
+    var liveActivityDisplayText: String {
+        var result = ""
+        var byteCount = 0
+        for scalar in unicodeScalars {
+            let scalarBytes = String(scalar).utf8.count
+            guard byteCount + scalarBytes <= 120 else { break }
+            result.unicodeScalars.append(scalar)
+            byteCount += scalarBytes
+        }
+        return result
+    }
+
     var nilIfBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed

@@ -12,6 +12,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         BackgroundRefreshService.shared.register()
         BackgroundRefreshService.shared.scheduleAppRefresh()
         BackgroundRefreshService.shared.prewarmAllBikePointsIfStale(force: true)
+        DockArrivalMonitoringService.shared.handleApplicationLaunch()
 
         let notificationCenter = UNUserNotificationCenter.current()
         notificationCenter.delegate = self

@@ -7,6 +7,25 @@ const http2 = require("http2");
 const winston = require("winston");
 const promClient = require("prom-client");
 const { MongoClient, ObjectId } = require("mongodb");
+const {
+  fetchVerifiedDestinationAvailability,
+} = require("./destination-availability");
+const {
+  validateDockPreferences,
+  storeDockPreferences,
+  hasCustomAlternatives,
+  resolveAlternatives,
+  createDockSnapshotLoader,
+  compactPushDockText,
+} = require("./dock-preferences");
+const {
+  localDateParts,
+  manualScheduledJourneyRunKey,
+  scheduledWindowMinutes,
+  scheduledJourneyStartDecision,
+  scheduledRunKey,
+  shouldEndScheduledJourneyWindow,
+} = require("./scheduled-journey-scheduling");
 require("winston-daily-rotate-file");
 
 // Configuration (override via environment variables)
@@ -14,6 +33,17 @@ const PORT = parseInt(process.env.PORT || "3010", 10);
 const POLL_INTERVAL_MS = parseInt(
   process.env.POLL_INTERVAL_MS || "15000",
   10
+);
+const LIVE_ACTIVITY_STALE_AFTER_SECONDS = Math.max(
+  30,
+  parseInt(process.env.LIVE_ACTIVITY_STALE_AFTER_SECONDS || "120", 10)
+);
+const LIVE_ACTIVITY_HEARTBEAT_MS = Math.max(
+  POLL_INTERVAL_MS,
+  Math.min(
+    parseInt(process.env.LIVE_ACTIVITY_HEARTBEAT_MS || "60000", 10),
+    (LIVE_ACTIVITY_STALE_AFTER_SECONDS - 15) * 1000
+  )
 );
 const SESSION_TIMEOUT_MS = parseInt(
   process.env.SESSION_TIMEOUT_MS || "7200000",
@@ -502,6 +532,7 @@ const dockPollers = new Map();
 // ── Scheduled Journeys Persistence ───────────────────────────────────
 let mongoClient = null;
 let scheduledJourneysCollection = null;
+let deviceDockPreferencesCollection = null;
 
 async function connectMongoIfConfigured() {
   if (!MONGODB_URI) {
@@ -516,6 +547,8 @@ async function connectMongoIfConfigured() {
     await mongoClient.connect();
     const db = mongoClient.db(MONGODB_DB_NAME);
     scheduledJourneysCollection = db.collection(SCHEDULED_JOURNEYS_COLLECTION);
+    deviceDockPreferencesCollection = db.collection("device_dock_preferences");
+    await deviceDockPreferencesCollection.createIndex({ deviceId: 1 }, { unique: true });
     await scheduledJourneysCollection.createIndex({ deviceId: 1, deletedAt: 1 });
     await scheduledJourneysCollection.createIndex({ enabled: 1, deletedAt: 1 });
     logger.info(
@@ -523,6 +556,7 @@ async function connectMongoIfConfigured() {
     );
   } catch (err) {
     scheduledJourneysCollection = null;
+    deviceDockPreferencesCollection = null;
     logger.error(`MongoDB connection failed: ${err.message}`);
   }
 }
@@ -544,6 +578,66 @@ function deviceIdFromRequest(req) {
   return normalizeDeviceId(
     req.headers["x-device-id"] || req.body?.deviceId || req.query?.deviceId
   );
+}
+
+async function loadDeviceDockPreferences(deviceId, preferences) {
+  if (!deviceId) return null;
+  if (!deviceDockPreferencesCollection && MONGODB_URI) await connectMongoIfConfigured();
+  if (!deviceDockPreferencesCollection) return null;
+  return storeDockPreferences(deviceDockPreferencesCollection, deviceId, preferences);
+}
+
+async function refreshSessionDockPreferences(session, dockId, primaryData) {
+  const preferences = session.dockPreferences;
+  if (preferences) session.activeDockAlias = compactPushDockText(preferences.aliases[dockId]) || null;
+  let docksById = new Map();
+  const custom = hasCustomAlternatives(preferences, dockId);
+  const automaticAlternatives = session.automaticAlternatives || session.alternatives || [];
+  if ((custom && preferences.alternatives[dockId].length > 0) ||
+      automaticAlternatives.some((dock) => dock.id)) {
+    try {
+      docksById = await loadAlternativeDockSnapshots();
+    } catch (error) {
+      logger.warn(`Failed to refresh alternative docks for ${dockId}: ${error.message}`);
+      // Retain only the last known snapshots of the still-selected docks. The
+      // saved ordered ID list itself is never shortened by availability errors.
+      docksById = new Map((session.alternatives || [])
+        .filter((dock) => dock.id)
+        .map((dock) => [dock.id, { ...dock, isAvailable: true }]));
+    }
+  }
+  if (session.activeDockId && session.activeDockId !== dockId) return;
+  if (session.dockPreferences !== preferences) {
+    return refreshSessionDockPreferences(session, dockId, primaryData);
+  }
+  session.alternatives = resolveAlternatives({
+    dockId,
+    preferences,
+    primaryData,
+    primaryDisplay: sanitizePrimaryDisplay(session.primaryDisplay),
+    docksById,
+    automaticAlternatives,
+  });
+}
+
+async function updateDeviceSessionDockPreferences(deviceId, preferences) {
+  if (!deviceId || !preferences) return;
+  const changedPollers = new Set();
+  for (const [dockId, poller] of dockPollers) {
+    for (const session of poller.tokens.values()) {
+      if (session.deviceId !== deviceId ||
+          (session.dockPreferences?.revision ?? -1) >= preferences.revision) continue;
+      session.dockPreferences = preferences;
+      changedPollers.add(dockId);
+    }
+  }
+  // Reset the heartbeat so preferences reach active displays immediately even
+  // when the primary dock's availability has not changed.
+  for (const dockId of changedPollers) {
+    const poller = dockPollers.get(dockId);
+    if (poller) poller.lastLiveActivityPushAt = 0;
+    await pollDock(dockId);
+  }
 }
 
 async function completeScheduledJourneyFromArrivalSession(session, dockId) {
@@ -636,21 +730,6 @@ function sanitizeWeekdays(rawWeekdays) {
     )
   ).sort((a, b) => a - b);
   return unique.length > 0 ? unique : null;
-}
-
-function parseMinutesSinceMidnight(rawValue) {
-  if (typeof rawValue !== "string") return null;
-  const match = rawValue.trim().match(/^([01]\d|2[0-3]):([0-5]\d)$/);
-  if (!match) return null;
-  return Number(match[1]) * 60 + Number(match[2]);
-}
-
-function scheduledWindowMinutes(startTime, endTime) {
-  const startMinutes = parseMinutesSinceMidnight(startTime);
-  const endMinutes = parseMinutesSinceMidnight(endTime);
-  if (startMinutes === null || endMinutes === null) return null;
-  const diff = (endMinutes - startMinutes + 24 * 60) % (24 * 60);
-  return diff === 0 ? 24 * 60 : diff;
 }
 
 function sanitizeTimeZone(rawValue) {
@@ -746,76 +825,8 @@ function sanitizeArrivalSettings(rawValue) {
   };
 }
 
-function localDateParts(date, timeZone) {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    weekday: "short",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(date);
-  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const weekdayMap = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
-  return {
-    weekday: weekdayMap[lookup.weekday],
-    dateKey: `${lookup.year}-${lookup.month}-${lookup.day}`,
-    time: `${lookup.hour}:${lookup.minute}`,
-  };
-}
-
-function scheduledRunKey(journey, date = new Date()) {
-  const parts = localDateParts(date, journey.timezone || "Europe/London");
-  return `${parts.dateKey}:${journey.startTime}`;
-}
-
 function shouldStartScheduledJourney(journey, date = new Date()) {
   return scheduledJourneyStartDecision(journey, date).canStart;
-}
-
-function scheduledJourneyStartDecision(journey, date = new Date()) {
-  if (journey.enabled === false) {
-    return { canStart: false, reason: "disabled" };
-  }
-  if (journey.deletedAt) {
-    return { canStart: false, reason: "deleted" };
-  }
-
-  const parts = localDateParts(date, journey.timezone || "Europe/London");
-  const runKey = `${parts.dateKey}:${journey.startTime}`;
-  const base = { parts, runKey };
-  if (!journey.weekdays?.includes(parts.weekday)) {
-    return { canStart: false, reason: "weekday_mismatch", ...base };
-  }
-  if (parts.time !== journey.startTime) {
-    return { canStart: false, reason: "time_mismatch", ...base };
-  }
-
-  if (journey.activeRun?.phase) {
-    if (journey.activeRun.runKey === runKey) {
-      return { canStart: false, reason: "already_active_for_run", ...base };
-    }
-    const activeStartedAt = journey.activeRun.startedAt
-      ? new Date(journey.activeRun.startedAt)
-      : null;
-    if (activeStartedAt && !Number.isNaN(activeStartedAt.getTime())) {
-      const activeParts = localDateParts(
-        activeStartedAt,
-        journey.timezone || "Europe/London"
-      );
-      if (activeParts.dateKey === parts.dateKey) {
-        return { canStart: false, reason: "already_active_today", activeParts, ...base };
-      }
-    }
-  }
-
-  if (Array.isArray(journey.pausedRunKeys) && journey.pausedRunKeys.includes(runKey)) {
-    return { canStart: false, reason: "run_paused", ...base };
-  }
-
-  return { canStart: true, reason: "eligible", ...base };
 }
 
 function appendScheduledJourneyCheckDiagnostic(kind, journey, decision, extra = {}) {
@@ -842,24 +853,6 @@ function appendScheduledJourneyCheckDiagnostic(kind, journey, decision, extra = 
     pausedRunKeys: journey.pausedRunKeys || [],
     ...extra,
   });
-}
-
-function shouldEndScheduledJourneyWindow(journey, date = new Date()) {
-  if (!journey.activeRun?.phase) return false;
-  const parts = localDateParts(date, journey.timezone || "Europe/London");
-  if (parts.time === journey.endTime) return true;
-
-  const activeStartedAt = journey.activeRun.startedAt
-    ? new Date(journey.activeRun.startedAt)
-    : null;
-  if (!activeStartedAt || Number.isNaN(activeStartedAt.getTime())) return false;
-
-  const windowMinutes = scheduledWindowMinutes(journey.startTime, journey.endTime);
-  if (windowMinutes === null) {
-    return false;
-  }
-
-  return date.getTime() - activeStartedAt.getTime() >= windowMinutes * 60 * 1000;
 }
 
 // ── Dock Value Overrides ─────────────────────────────────────────────
@@ -1191,6 +1184,20 @@ function effectiveDockDataForDock(dockId, bikePointData) {
     emptySpaces: override.emptySpaces,
   };
 }
+
+const loadAlternativeDockSnapshots = createDockSnapshotLoader(async () => {
+  const bikePoints = await fetchTflJson("/BikePoint", { cb: Date.now() });
+  if (!Array.isArray(bikePoints)) throw new Error("Unexpected TfL BikePoint catalogue");
+  return bikePoints.filter((dock) => typeof dock?.id === "string").map((dock) => {
+    const properties = dock.additionalProperties || [];
+    return {
+      id: dock.id,
+      ...effectiveDockDataForDock(dock.id, dock),
+      isAvailable: properties.some((item) => item.key === "Installed" && item.value === "true") &&
+        !properties.some((item) => item.key === "Locked" && item.value === "true"),
+    };
+  });
+}, POLL_INTERVAL_MS);
 
 const scheduledStartArrivalDestinationAlerts = new Map();
 
@@ -1589,7 +1596,7 @@ function sanitizeAlternatives(rawAlternatives) {
   return rawAlternatives
     .slice(0, MAX_LIVE_ACTIVITY_ALTERNATIVES)
     .map((alt) => {
-      const name = typeof alt?.name === "string" ? alt.name.trim() : "";
+      const name = typeof alt?.name === "string" ? compactPushDockText(alt.name.trim()) : "";
       if (!name) {
         return null;
       }
@@ -1604,7 +1611,13 @@ function sanitizeAlternatives(rawAlternatives) {
         ? Math.max(0, Math.trunc(alt.emptySpaces))
         : 0;
 
-      return { name, standardBikes, eBikes, emptySpaces };
+      const id = typeof alt?.id === "string" && /^BikePoints_\d+$/.test(alt.id) ? alt.id : null;
+      const alias = typeof alt?.alias === "string" ? compactPushDockText(alt.alias.trim()) : null;
+      return {
+        ...(id ? { id } : {}),
+        ...(alias ? { alias } : {}),
+        name, standardBikes, eBikes, emptySpaces,
+      };
     })
     .filter(Boolean);
 }
@@ -1622,7 +1635,7 @@ function contentStateWithAlternatives(data, session) {
         : null;
   const activeDockAlias =
     typeof session?.activeDockAlias === "string" && session.activeDockAlias.trim()
-      ? session.activeDockAlias.trim()
+      ? compactPushDockText(session.activeDockAlias.trim())
       : null;
 
   return {
@@ -1635,6 +1648,7 @@ function contentStateWithAlternatives(data, session) {
     activeDockAlias,
     activeJourneyPhase: session?.scheduledJourneyPhase || null,
     primaryDisplay: sanitizePrimaryDisplay(session?.primaryDisplay),
+    availabilityUpdatedAtEpochSeconds: Math.floor(Date.now() / 1000),
   };
 }
 
@@ -1804,16 +1818,19 @@ async function sendApnsRequestWithFallback(
 }
 
 async function sendApnsPush(pushToken, contentState, event, buildType) {
+  const timestamp = Math.floor(Date.now() / 1000);
   const aps = {
-    timestamp: Math.floor(Date.now() / 1000),
+    timestamp,
     event: event,
     "content-state": contentState,
   };
 
   // For "end" events, add dismissal-date to immediately dismiss the activity
   if (event === "end") {
-    aps["dismissal-date"] = Math.floor(Date.now() / 1000);
+    aps["dismissal-date"] = timestamp;
     logger.info(`Sending "end" push with dismissal-date to ${pushToken.substring(0, 8)}...`);
+  } else {
+    aps["stale-date"] = timestamp + LIVE_ACTIVITY_STALE_AFTER_SECONDS;
   }
 
   const payload = JSON.stringify({ aps });
@@ -1883,21 +1900,37 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
       `Failed to fetch initial scheduled journey dock data for ${startDock.id}: ${err.message}`
     );
   }
-  const contentState = {
+  const dockPreferences = await loadDeviceDockPreferences(journey.deviceId);
+  const primaryDisplay = journey.bikeDataFilter === "bikesOnly" ? "bikes"
+    : journey.bikeDataFilter === "eBikesOnly" ? "eBikes" : "allBikes";
+  const initialSession = { dockPreferences, primaryDisplay, alternatives: [], automaticAlternatives: [] };
+  const initialData = {
     standardBikes: sanitizeThresholdValue(startDockData?.standardBikes),
     eBikes: sanitizeThresholdValue(startDockData?.eBikes),
     emptySpaces: sanitizeThresholdValue(startDockData?.emptySpaces),
-    alternatives: [],
   };
+  await refreshSessionDockPreferences(initialSession, startDock.id, initialData);
+  const contentState = {
+    ...initialData,
+    alternatives: initialSession.alternatives,
+    activeDockId: startDock.id,
+    activeDockName: startDock.name,
+    activeDockAlias: initialSession.activeDockAlias || null,
+    activeJourneyPhase: "start",
+    primaryDisplay,
+    availabilityUpdatedAtEpochSeconds: Math.floor(Date.now() / 1000),
+  };
+  const timestamp = Math.floor(Date.now() / 1000);
   const aps = {
-    timestamp: Math.floor(Date.now() / 1000),
+    timestamp,
     event: "start",
     "content-state": contentState,
+    "stale-date": timestamp + LIVE_ACTIVITY_STALE_AFTER_SECONDS,
     "attributes-type": "DockActivityAttributes",
     attributes: {
       dockId: startDock.id,
       dockName: startDock.name,
-      alias: null,
+      alias: initialSession.activeDockAlias || null,
       scheduledJourneyId: journey._id.toString(),
       scheduledJourneyPhase: "start",
       latitude: startDock.latitude,
@@ -2465,98 +2498,113 @@ async function pollDock(dockId) {
 
   try {
     const data = await fetchDockData(dockId);
+    let alternativesChanged = false;
+    for (const session of poller.tokens.values()) {
+      const previousAlternatives = JSON.stringify([session.alternatives, session.activeDockAlias]);
+      await refreshSessionDockPreferences(session, dockId, data);
+      if (previousAlternatives !== JSON.stringify([session.alternatives, session.activeDockAlias])) {
+        alternativesChanged = true;
+      }
+    }
     const previousData = poller.lastData;
     const hasChanged =
       !previousData ||
       previousData.standardBikes !== data.standardBikes ||
       previousData.eBikes !== data.eBikes ||
       previousData.emptySpaces !== data.emptySpaces;
+    const heartbeatDue =
+      !hasChanged &&
+      now - (poller.lastLiveActivityPushAt || 0) >= LIVE_ACTIVITY_HEARTBEAT_MS;
 
-    if (hasChanged) {
-      logger.info(
-        `Dock ${dockId} changed: bikes=${data.standardBikes}, eBikes=${data.eBikes}, spaces=${data.emptySpaces}`
-      );
+    if (hasChanged || heartbeatDue || alternativesChanged) {
       const availabilityAlertPromises = [];
       const staleLiveActivityTokens = new Set();
-      if (previousData) {
-        const sentAlerts = new Set();
-        for (const [pushToken, session] of poller.tokens) {
-          const primaryDisplay = sanitizePrimaryDisplay(session.primaryDisplay);
-          const previousValue = primaryValueForDisplay(previousData, primaryDisplay);
-          const currentValue = primaryValueForDisplay(data, primaryDisplay);
-          const minimumThreshold = minimumThresholdForDisplay(
-            session.minimumThresholds,
-            primaryDisplay
-          );
-          const alertMessage = buildAvailabilityAlertMessage(
-            data.dockName,
-            primaryDisplay,
-            previousValue,
-            currentValue,
-            minimumThreshold
-          );
-
-          if (!alertMessage) continue;
-          if (
-            session.genericAvailabilityAlertSuppressedUntil &&
-            Date.now() < session.genericAvailabilityAlertSuppressedUntil
-          ) {
-            appendDiagnosticJsonLine("availability_alert_suppressed", {
-              dockId,
-              dockName: data.dockName,
-              pushToken: shortenIdentifier(pushToken),
-              deviceToken: shortenIdentifier(session.deviceToken),
-              primaryDisplay,
-              alertMessage,
-              suppressedUntil: new Date(
-                session.genericAvailabilityAlertSuppressedUntil
-              ).toISOString(),
-              reason: "recent_destination_availability_snapshot",
-            });
-            continue;
-          }
-          if (!session.deviceToken) {
-            logger.info(
-              `Skipped availability alert for ${pushToken.substring(0, 8)}... (no device token registered)`
+      if (hasChanged) {
+        logger.info(
+          `Dock ${dockId} changed: bikes=${data.standardBikes}, eBikes=${data.eBikes}, spaces=${data.emptySpaces}`
+        );
+        if (previousData) {
+          const sentAlerts = new Set();
+          for (const [pushToken, session] of poller.tokens) {
+            const primaryDisplay = sanitizePrimaryDisplay(session.primaryDisplay);
+            const previousValue = primaryValueForDisplay(previousData, primaryDisplay);
+            const currentValue = primaryValueForDisplay(data, primaryDisplay);
+            const minimumThreshold = minimumThresholdForDisplay(
+              session.minimumThresholds,
+              primaryDisplay
             );
-            continue;
+            const alertMessage = buildAvailabilityAlertMessage(
+              data.dockName,
+              primaryDisplay,
+              previousValue,
+              currentValue,
+              minimumThreshold
+            );
+
+            if (!alertMessage) continue;
+            if (
+              session.genericAvailabilityAlertSuppressedUntil &&
+              Date.now() < session.genericAvailabilityAlertSuppressedUntil
+            ) {
+              appendDiagnosticJsonLine("availability_alert_suppressed", {
+                dockId,
+                dockName: data.dockName,
+                pushToken: shortenIdentifier(pushToken),
+                deviceToken: shortenIdentifier(session.deviceToken),
+                primaryDisplay,
+                alertMessage,
+                suppressedUntil: new Date(
+                  session.genericAvailabilityAlertSuppressedUntil
+                ).toISOString(),
+                reason: "recent_destination_availability_snapshot",
+              });
+              continue;
+            }
+            if (!session.deviceToken) {
+              logger.info(
+                `Skipped availability alert for ${pushToken.substring(0, 8)}... (no device token registered)`
+              );
+              continue;
+            }
+            const sessionDeviceToken = session.deviceToken;
+
+            const dedupeKey = `${sessionDeviceToken}:${primaryDisplay}:${alertMessage}`;
+            if (sentAlerts.has(dedupeKey)) continue;
+            sentAlerts.add(dedupeKey);
+
+            availabilityAlertPromises.push(
+              sendAvailabilityAlertPush(
+                sessionDeviceToken,
+                session.buildType,
+                alertMessage,
+                dockId,
+                data.dockName
+              )
+                .then((result) => {
+                  if (result.buildType !== session.buildType) {
+                    session.buildType = result.buildType;
+                    logger.info(
+                      `Updated live activity session environment to ${result.buildType} for alert token ${sessionDeviceToken.substring(0, 8)}...`
+                    );
+                  }
+                })
+                .catch((err) => {
+                  if (isApnsTokenInvalidError(err)) {
+                    session.deviceToken = null;
+                    logger.info(
+                      `Cleared stale availability alert token: ${sessionDeviceToken.substring(0, 8)}...`
+                    );
+                  }
+                  logger.error(
+                    `Failed to send availability alert to ${sessionDeviceToken.substring(0, 8)}...:`,
+                    err.message
+                  );
+                })
+            );
           }
-          const sessionDeviceToken = session.deviceToken;
-
-          const dedupeKey = `${sessionDeviceToken}:${primaryDisplay}:${alertMessage}`;
-          if (sentAlerts.has(dedupeKey)) continue;
-          sentAlerts.add(dedupeKey);
-
-          availabilityAlertPromises.push(
-            sendAvailabilityAlertPush(
-              sessionDeviceToken,
-              session.buildType,
-              alertMessage,
-              dockId,
-              data.dockName
-            )
-              .then((result) => {
-                if (result.buildType !== session.buildType) {
-                  session.buildType = result.buildType;
-                  logger.info(
-                    `Updated live activity session environment to ${result.buildType} for alert token ${sessionDeviceToken.substring(0, 8)}...`
-                  );
-                }
-              })
-              .catch((err) => {
-                if (isApnsTokenInvalidError(err)) {
-                  session.deviceToken = null;
-                  logger.info(
-                    `Cleared stale availability alert token: ${sessionDeviceToken.substring(0, 8)}...`
-                  );
-                }
-                logger.error(
-                  `Failed to send availability alert to ${sessionDeviceToken.substring(0, 8)}...:`,
-                  err.message
-                );
-              })
-          );
         }
+      } else {
+        logger.info(`Sending live activity freshness heartbeat for dock ${dockId}`);
       }
 
       // Send update to all registered live activity tokens for this dock
@@ -2588,6 +2636,7 @@ async function pollDock(dockId) {
 
       poller.lastData = data;
       await Promise.all([...pushPromises, ...availabilityAlertPromises]);
+      poller.lastLiveActivityPushAt = Date.now();
 
       if (staleLiveActivityTokens.size > 0) {
         let removedCount = 0;
@@ -3777,6 +3826,18 @@ app.post("/scheduled-journeys/device/register", async (req, res) => {
     return res.status(400).json({ error: "Missing required deviceId" });
   }
 
+  const validatedPreferences = req.body?.dockPreferences === undefined ? {}
+    : validateDockPreferences(req.body.dockPreferences);
+  if (validatedPreferences.error) return res.status(400).json({ error: validatedPreferences.error });
+  let dockPreferences;
+  try {
+    dockPreferences = await loadDeviceDockPreferences(deviceId, validatedPreferences.value);
+    await updateDeviceSessionDockPreferences(deviceId, dockPreferences);
+  } catch (error) {
+    logger.error(`Failed to save dock preferences: ${error.message}`);
+    return res.status(503).json({ error: "Dock preferences could not be saved; please retry" });
+  }
+
   const pushToStartToken = normalizeApnsDeviceToken(req.body?.pushToStartToken);
   const deviceToken = normalizeApnsDeviceToken(req.body?.deviceToken);
   const buildType = req.body?.buildType === "production" ? "production" : "development";
@@ -3820,7 +3881,20 @@ app.post("/scheduled-journeys/device/register", async (req, res) => {
     }
   }
 
-  res.json({ success: true, deviceId, hasPushToStartToken: !!pushToStartToken });
+  const hasEnabledJourneys =
+    (await collection.countDocuments({
+      deviceId,
+      enabled: true,
+      deletedAt: { $exists: false },
+    })) > 0;
+
+  res.json({
+    success: true,
+    deviceId,
+    hasPushToStartToken: !!pushToStartToken,
+    hasEnabledJourneys,
+    dockPreferencesRevision: dockPreferences?.revision ?? null,
+  });
 });
 
 app.get("/scheduled-journeys", async (req, res) => {
@@ -3960,7 +4034,9 @@ app.post("/scheduled-journeys/:id/activate", async (req, res) => {
     });
   }
 
-  const runKey = scheduledRunKey(journey);
+  // Keep "Start now" separate from the recurring occurrence. If this run
+  // finishes early, completing it must not pause a later scheduled start.
+  const runKey = manualScheduledJourneyRunKey();
   if (req.body?.remoteStart !== false) {
     try {
       const arbitration = await prepareScheduledJourneyStart(journey, "manual");
@@ -4135,7 +4211,7 @@ app.post("/scheduled-journeys/:id/complete", async (req, res) => {
   res.json({ success: true, journey: serializeScheduledJourney(result) });
 });
 
-app.post("/live-activity/start", (req, res) => {
+app.post("/live-activity/start", async (req, res) => {
   const {
     dockId,
     dockName,
@@ -4168,6 +4244,19 @@ app.post("/live-activity/start", (req, res) => {
     return res
       .status(400)
       .json({ error: 'buildType must be "development" or "production"' });
+  }
+
+  const deviceId = deviceIdFromRequest(req);
+  const validatedPreferences = req.body?.dockPreferences === undefined ? {}
+    : validateDockPreferences(req.body.dockPreferences);
+  if (validatedPreferences.error) return res.status(400).json({ error: validatedPreferences.error });
+  let dockPreferences;
+  try {
+    dockPreferences = await loadDeviceDockPreferences(deviceId, validatedPreferences.value);
+    await updateDeviceSessionDockPreferences(deviceId, dockPreferences);
+  } catch (error) {
+    logger.error(`Failed to load dock preferences for live activity: ${error.message}`);
+    return res.status(503).json({ error: "Dock preferences could not be loaded; please retry" });
   }
 
   // Use client-provided expiry or fall back to default timeout, but always cap the window.
@@ -4214,6 +4303,9 @@ app.post("/live-activity/start", (req, res) => {
     );
   }
   const existingSessionForPushToken = poller.tokens.get(normalizedPushToken);
+  if ((existingSessionForPushToken?.dockPreferences?.revision ?? -1) > (dockPreferences?.revision ?? -1)) {
+    dockPreferences = existingSessionForPushToken.dockPreferences;
+  }
   let startedAt = now;
   let hardStopAt = startedAt + HARD_NOTIFICATION_CUTOFF_MS;
 
@@ -4284,6 +4376,9 @@ app.post("/live-activity/start", (req, res) => {
     expiryMs,
     dockName: normalizedDockName,
     alternatives: normalizedAlternatives,
+    automaticAlternatives: hasCustomAlternatives(dockPreferences, dockId) ? [] : normalizedAlternatives,
+    dockPreferences,
+    deviceId,
     primaryDisplay: normalizedPrimaryDisplay,
     minimumThresholds: normalizedMinimumThresholds,
     deviceToken,
@@ -4420,6 +4515,7 @@ app.post("/live-activity/start", (req, res) => {
     primaryDisplay: normalizedPrimaryDisplay,
     minimumThreshold: activeMinimumThreshold,
     hasDeviceToken: !!deviceToken,
+    dockPreferencesRevision: dockPreferences?.revision ?? null,
     message: "Live activity started",
     expiresIn: `${effectiveRemainingSeconds} seconds`,
   });
@@ -4467,6 +4563,25 @@ app.post("/live-activity/session/update", async (req, res) => {
     return res.status(404).json({ error: "Live activity session token not found" });
   }
 
+  const deviceId = deviceIdFromRequest(req) || session.deviceId;
+  const validatedPreferences = req.body?.dockPreferences === undefined ? {}
+    : validateDockPreferences(req.body.dockPreferences);
+  if (validatedPreferences.error) return res.status(400).json({ error: validatedPreferences.error });
+  try {
+    const dockPreferences = await loadDeviceDockPreferences(deviceId, validatedPreferences.value);
+    await updateDeviceSessionDockPreferences(deviceId, dockPreferences);
+    if (dockPreferences && (session.dockPreferences?.revision ?? -1) <= dockPreferences.revision) {
+      session.dockPreferences = dockPreferences;
+    }
+    if (deviceId) session.deviceId = deviceId;
+  } catch (error) {
+    logger.error(`Failed to load dock preferences for session update: ${error.message}`);
+    return res.status(503).json({ error: "Dock preferences could not be loaded; please retry" });
+  }
+  if (sourcePoller.tokens.get(normalizedPushToken) !== session) {
+    return res.status(404).json({ error: "Live activity session ended while preferences were updating" });
+  }
+
   if (primaryDisplay !== undefined) {
     session.primaryDisplay = sanitizePrimaryDisplay(primaryDisplay);
   }
@@ -4477,6 +4592,11 @@ app.post("/live-activity/session/update", async (req, res) => {
 
   if (alternatives !== undefined) {
     session.alternatives = sanitizeAlternatives(alternatives);
+    session.automaticAlternatives = hasCustomAlternatives(session.dockPreferences, resolvedTargetDockId)
+      ? [] : session.alternatives;
+  } else if (resolvedTargetDockId !== dockId) {
+    session.alternatives = [];
+    session.automaticAlternatives = [];
   }
 
   if (dockName !== undefined) {
@@ -4520,7 +4640,8 @@ app.post("/live-activity/session/update", async (req, res) => {
   };
 
   let targetPoller = sourcePoller;
-  if (resolvedTargetDockId !== dockId) {
+  const migrated = resolvedTargetDockId !== dockId;
+  if (migrated) {
     sourcePoller.tokens.delete(normalizedPushToken);
     if (!dockPollers.has(resolvedTargetDockId)) {
       dockPollers.set(resolvedTargetDockId, {
@@ -4534,12 +4655,40 @@ app.post("/live-activity/session/update", async (req, res) => {
     if (sourcePoller.tokens.size === 0) {
       stopPollingForDock(dockId);
     }
-    startPollingForDock(resolvedTargetDockId);
   }
 
-  if (hasSeededAvailability) {
-    targetPoller.lastData = seededData;
+  const isDestinationMigration =
+    migrated && session.scheduledJourneyPhase === "end";
+  let verifiedDestinationData = null;
+  if (isDestinationMigration) {
+    const verification = await fetchVerifiedDestinationAvailability(
+      fetchDockData,
+      resolvedTargetDockId
+    );
+    verifiedDestinationData = verification.data;
+    if (verification.error) {
+      logger.warn(
+        `Skipped unverified destination availability snapshot for ${resolvedTargetDockId}: ${verification.error.message}`
+      );
+      appendDiagnosticJsonLine("scheduled_journey_destination_availability_unverified", {
+        dockId: resolvedTargetDockId,
+        dockName: session.activeDockName || session.dockName || resolvedTargetDockId,
+        scheduledJourneyId: session.scheduledJourneyId || null,
+        error: verification.error.message,
+      });
+    }
   }
+
+  const effectiveAvailabilityData =
+    verifiedDestinationData || (hasSeededAvailability ? seededData : null);
+  if (effectiveAvailabilityData) {
+    targetPoller.lastData = effectiveAvailabilityData;
+  }
+  await refreshSessionDockPreferences(
+    session,
+    resolvedTargetDockId,
+    effectiveAvailabilityData || targetPoller.lastData || seededData
+  );
 
   const resolvedPrimaryDisplay = sanitizePrimaryDisplay(session.primaryDisplay);
   const resolvedMinimumThreshold = minimumThresholdForDisplay(
@@ -4558,13 +4707,14 @@ app.post("/live-activity/session/update", async (req, res) => {
     pushToken: shortenIdentifier(normalizedPushToken),
     primaryDisplay: resolvedPrimaryDisplay,
     scheduledJourneyPhase: session.scheduledJourneyPhase || null,
-    migrated: resolvedTargetDockId !== dockId,
+    migrated,
     seededAvailability: hasSeededAvailability ? seededData : null,
+    verifiedDestinationAvailability: verifiedDestinationData,
   });
 
-  if (hasSeededAvailability) {
+  if (effectiveAvailabilityData) {
     try {
-      const contentState = contentStateWithAlternatives(seededData, session);
+      const contentState = contentStateWithAlternatives(effectiveAvailabilityData, session);
       const result = await sendApnsPush(
         normalizedPushToken,
         contentState,
@@ -4583,9 +4733,8 @@ app.post("/live-activity/session/update", async (req, res) => {
   }
 
   if (
-    resolvedTargetDockId !== dockId &&
-    session.scheduledJourneyPhase === "end" &&
-    hasSeededAvailability &&
+    isDestinationMigration &&
+    verifiedDestinationData &&
     !session.destinationAvailabilitySentAt
   ) {
     try {
@@ -4593,7 +4742,7 @@ app.post("/live-activity/session/update", async (req, res) => {
         session,
         resolvedTargetDockId,
         session.activeDockName || session.dockName || resolvedTargetDockId,
-        seededData
+        verifiedDestinationData
       );
       session.destinationAvailabilitySentAt = Date.now();
       session.genericAvailabilityAlertSuppressedUntil =
@@ -4603,6 +4752,12 @@ app.post("/live-activity/session/update", async (req, res) => {
         `Failed to send scheduled journey destination availability push: ${err.message}`
       );
     }
+  }
+
+  if (migrated) {
+    // Seed and notify before the first poll so an unverified client fallback
+    // cannot race a fresh server value and produce contradictory alerts.
+    startPollingForDock(resolvedTargetDockId);
   }
 
   updateLiveActivitiesActiveGauge();
@@ -4620,6 +4775,7 @@ app.post("/live-activity/session/update", async (req, res) => {
     primaryDisplay: resolvedPrimaryDisplay,
     minimumThreshold: resolvedMinimumThreshold,
     migrated: resolvedTargetDockId !== dockId,
+    dockPreferencesRevision: session.dockPreferences?.revision ?? null,
   });
 });
 
@@ -5182,6 +5338,8 @@ app.get("/status", (_req, res) => {
     config: {
       port: PORT,
       pollIntervalMs: POLL_INTERVAL_MS,
+      liveActivityStaleAfterSeconds: LIVE_ACTIVITY_STALE_AFTER_SECONDS,
+      liveActivityHeartbeatMs: LIVE_ACTIVITY_HEARTBEAT_MS,
       sessionTimeoutHours: SESSION_TIMEOUT_MS / 1000 / 60 / 60,
       maxNotificationWindowHours:
         EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS / 1000 / 60 / 60,
@@ -5572,6 +5730,9 @@ async function processScheduledJourneyStarts() {
 app.listen(PORT, () => {
   logger.info(`BikeSpot London Live Activity server running on port ${PORT}`);
   logger.info(`Poll interval: ${POLL_INTERVAL_MS}ms`);
+  logger.info(
+    `Live Activity freshness: stale after ${LIVE_ACTIVITY_STALE_AFTER_SECONDS}s, heartbeat every ${LIVE_ACTIVITY_HEARTBEAT_MS}ms`
+  );
   logger.info(`Session timeout: ${SESSION_TIMEOUT_MS / 1000 / 60 / 60} hours`);
   logger.info(
     `Max notification window: ${EFFECTIVE_MAX_NOTIFICATION_WINDOW_MS / 1000 / 60 / 60} hours`

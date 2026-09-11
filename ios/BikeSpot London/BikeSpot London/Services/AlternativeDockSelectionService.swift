@@ -9,13 +9,33 @@ enum AlternativeDockPurpose {
 }
 
 struct AlternativeDockSelectionService {
+    static let favoritePreviewCount = 3
+
+    /// The editable Favourites list keeps saved positions, even when availability is zero or unknown.
+    /// Availability-based recommendations for widgets and Live Activities use `alternatives` instead.
+    static func savedAlternativesForFavorites(
+        for primaryDockID: String,
+        savedDocks: [ScheduledJourneyDock],
+        allBikePoints: [BikePoint],
+        showAll: Bool
+    ) -> [BikePoint] {
+        let byID = Dictionary(allBikePoints.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        var seen: Set<String> = [primaryDockID]
+        let ordered = savedDocks.filter { seen.insert($0.id).inserted }.map { dock in
+            byID[dock.id] ?? BikePoint(id: dock.id, commonName: dock.name, lat: dock.latitude, lon: dock.longitude)
+        }
+        return showAll ? ordered : Array(ordered.prefix(favoritePreviewCount))
+    }
+
     static func alternatives(
         for bikePoint: BikePoint,
         allBikePoints: [BikePoint],
         favorites: [FavoriteBikePoint],
         userLocation: CLLocation?,
         purpose: AlternativeDockPurpose,
-        forceShow: Bool = false
+        forceShow: Bool = false,
+        maximumCount: Int? = nil,
+        filterCustomDocksByAvailability: Bool = true
     ) -> [BikePoint] {
         let settings = settingsSnapshot()
         guard settings.enabled else { return [] }
@@ -24,22 +44,43 @@ struct AlternativeDockSelectionService {
             return []
         }
 
-        let favoriteIds = Set(favorites.map(\.id))
-        let candidates = allBikePoints.filter { candidate in
-            candidate.id != bikePoint.id &&
-                !favoriteIds.contains(candidate.id) &&
-                candidate.isAvailable &&
-                meetsRequirement(candidate, purpose: purpose, settings: settings)
+        let customDockIDs = DockPreferencesService.shared.customDockIDs(for: bikePoint.id)
+        let candidates = orderedCandidates(
+            for: bikePoint,
+            allBikePoints: allBikePoints,
+            excludingFavoriteIDs: Set(favorites.map(\.id)),
+            customDockIDs: customDockIDs
+        )
+        let displayedCandidates = customDockIDs != nil && !filterCustomDocksByAvailability
+            ? candidates
+            : candidates.filter { meetsRequirement($0, purpose: purpose, settings: settings) }
+
+        return Array(displayedCandidates.prefix(max(1, maximumCount ?? settings.maxCount)))
+    }
+
+    /// Apply availability filtering and display limits after this shared membership/order policy.
+    static func orderedCandidates(
+        for bikePoint: BikePoint,
+        allBikePoints: [BikePoint],
+        excludingFavoriteIDs: Set<String>,
+        customDockIDs: [String]?
+    ) -> [BikePoint] {
+        if let customDockIDs {
+            let byID = Dictionary(allBikePoints.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+            var seen: Set<String> = [bikePoint.id]
+            return customDockIDs.compactMap { id in
+                guard seen.insert(id).inserted, let candidate = byID[id], candidate.isAvailable else { return nil }
+                return candidate
+            }
         }
 
         let sourceLocation = CLLocation(latitude: bikePoint.lat, longitude: bikePoint.lon)
-        let sorted = candidates.sorted { first, second in
-            let firstLocation = CLLocation(latitude: first.lat, longitude: first.lon)
-            let secondLocation = CLLocation(latitude: second.lat, longitude: second.lon)
-            return sourceLocation.distance(from: firstLocation) < sourceLocation.distance(from: secondLocation)
+        return allBikePoints.filter { candidate in
+            candidate.id != bikePoint.id && !excludingFavoriteIDs.contains(candidate.id) && candidate.isAvailable
+        }.sorted { first, second in
+            sourceLocation.distance(from: CLLocation(latitude: first.lat, longitude: first.lon))
+                < sourceLocation.distance(from: CLLocation(latitude: second.lat, longitude: second.lon))
         }
-
-        return Array(sorted.prefix(max(1, settings.maxCount)))
     }
 
     private struct Settings {
@@ -123,4 +164,3 @@ struct AlternativeDockSelectionService {
         }
     }
 }
-

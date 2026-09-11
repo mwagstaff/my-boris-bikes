@@ -1,12 +1,21 @@
 import ActivityKit
 import Foundation
+import UIKit
 import os.log
 
 @MainActor
 final class ScheduledJourneyService: ObservableObject {
     static let shared = ScheduledJourneyService()
 
-    @Published private(set) var journeys: [ScheduledJourney] = []
+    @Published private(set) var journeys: [ScheduledJourney] = [] {
+        didSet {
+            AppConstants.UserDefaults.sharedDefaults.set(
+                journeys.contains { $0.enabled },
+                forKey: AppConstants.UserDefaults.hasEnabledScheduledJourneysKey
+            )
+            DockArrivalMonitoringService.shared.handleFeatureStateChange()
+        }
+    }
     @Published private(set) var isLoading = false
     @Published private(set) var isHolidayModeEnabled: Bool
     @Published var errorMessage: String?
@@ -19,11 +28,19 @@ final class ScheduledJourneyService: ObservableObject {
         let journey: ScheduledJourney
     }
 
+    private struct DeviceRegistrationResponse: Decodable {
+        let hasEnabledJourneys: Bool?
+        let dockPreferencesRevision: Int64?
+    }
+
     private let logger = Logger(subsystem: "dev.skynolimit.myborisbikes", category: "ScheduledJourneys")
     private let pushToStartTokenStorageKey = "scheduled_journey_push_to_start_token"
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
     private var pushToStartTask: Task<Void, Never>?
+    private var dockPreferencesSyncTask: Task<Void, Never>?
+    private var dockPreferencesObserver: NSObjectProtocol?
+    private var foregroundObserver: NSObjectProtocol?
 
     private init() {
         // Stored in the shared app-group defaults (rather than .standard) so
@@ -49,10 +66,43 @@ final class ScheduledJourneyService: ObservableObject {
         }
         encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
+        dockPreferencesObserver = NotificationCenter.default.addObserver(
+            forName: .dockPreferencesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.scheduleDockPreferencesSync() }
+        }
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.scheduleDockPreferencesSync() }
+        }
     }
 
     deinit {
         pushToStartTask?.cancel()
+        dockPreferencesSyncTask?.cancel()
+        if let dockPreferencesObserver { NotificationCenter.default.removeObserver(dockPreferencesObserver) }
+        if let foregroundObserver { NotificationCenter.default.removeObserver(foregroundObserver) }
+    }
+
+    private func scheduleDockPreferencesSync() {
+        guard DockPreferencesService.shared.hasPendingSync else { return }
+        dockPreferencesSyncTask?.cancel()
+        dockPreferencesSyncTask = Task { [weak self] in
+            for attempt in 0..<3 {
+                guard let self, !Task.isCancelled, DockPreferencesService.shared.hasPendingSync else { return }
+                if attempt > 0 {
+                    do { try await Task.sleep(nanoseconds: UInt64(attempt * 2) * 1_000_000_000) }
+                    catch { return }
+                }
+                guard !Task.isCancelled else { return }
+                await self.registerDevice()
+            }
+        }
     }
 
     var deviceId: String {
@@ -66,6 +116,7 @@ final class ScheduledJourneyService: ObservableObject {
     func setHolidayMode(_ enabled: Bool) async {
         isHolidayModeEnabled = enabled
         AppConstants.UserDefaults.sharedDefaults.set(enabled, forKey: AppConstants.UserDefaults.holidayModeEnabledKey)
+        DockArrivalMonitoringService.shared.handleFeatureStateChange()
         TroubleshootingLogStore.shared.record(
             category: "scheduled_journey",
             event: enabled ? "holiday_mode_enabled" : "holiday_mode_disabled",
@@ -104,6 +155,7 @@ final class ScheduledJourneyService: ObservableObject {
             "bikeDataFilter": currentBikeDataFilterRawValue(),
             "arrivalSettings": currentArrivalSettingsPayload(),
             "holidayMode": isHolidayModeEnabled,
+            "dockPreferences": DockPreferencesService.shared.serverPayload,
         ]
         if let deviceToken = DeviceTokenHelper.apnsDeviceToken {
             body["deviceToken"] = deviceToken
@@ -115,12 +167,22 @@ final class ScheduledJourneyService: ObservableObject {
         }
 
         do {
-            _ = try await request(
+            let response = try await request(
                 path: "/scheduled-journeys/device/register",
                 method: "POST",
                 body: body,
-                responseType: EmptyResponse.self
+                responseType: DeviceRegistrationResponse.self
             )
+            if let revision = response.dockPreferencesRevision {
+                DockPreferencesService.shared.markSynced(revision: revision)
+            }
+            if let hasEnabledJourneys = response.hasEnabledJourneys {
+                AppConstants.UserDefaults.sharedDefaults.set(
+                    hasEnabledJourneys,
+                    forKey: AppConstants.UserDefaults.hasEnabledScheduledJourneysKey
+                )
+                DockArrivalMonitoringService.shared.handleFeatureStateChange()
+            }
             TroubleshootingLogStore.shared.record(
                 category: "scheduled_journey",
                 event: "device_registered",
@@ -231,6 +293,7 @@ final class ScheduledJourneyService: ObservableObject {
             "bikeDataFilter": currentBikeDataFilterRawValue(),
             "arrivalSettings": currentArrivalSettingsPayload(),
             "holidayMode": isHolidayModeEnabled,
+            "dockPreferences": DockPreferencesService.shared.serverPayload,
         ]
     }
 

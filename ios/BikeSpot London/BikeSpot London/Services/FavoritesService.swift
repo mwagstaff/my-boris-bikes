@@ -13,6 +13,7 @@ class FavoritesService: NSObject, ObservableObject {
     @Published var recentlyAddedBikePoint: BikePoint?
     
     private let userDefaults: UserDefaults
+    private var dockPreferencesObserver: AnyCancellable?
     
     private override init() {
         let suiteName = AppConstants.App.appGroup
@@ -31,6 +32,11 @@ class FavoritesService: NSObject, ObservableObject {
         
         loadFavorites()
         loadSortMode()
+        // Keep legacy favourite payloads compatible while names are now shared by dock ID.
+        applyDockPreferences()
+        dockPreferencesObserver = NotificationCenter.default.publisher(for: .dockPreferencesDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.applyDockPreferences() }
     }
     
     private func loadFavorites() {
@@ -131,7 +137,7 @@ class FavoritesService: NSObject, ObservableObject {
     func addFavorite(_ bikePoint: BikePoint) {
         guard !isFavorite(bikePoint.id) else { return }
         
-        let favorite = FavoriteBikePoint(bikePoint: bikePoint, sortOrder: favorites.count)
+        let favorite = FavoriteBikePoint(bikePoint: bikePoint, sortOrder: favorites.count, alias: DockPreferencesService.shared.alias(for: bikePoint.id))
         favorites.append(favorite)
         saveFavorites()
         
@@ -163,27 +169,26 @@ class FavoritesService: NSObject, ObservableObject {
     }
     
     func alias(for id: String) -> String? {
-        guard let rawAlias = favorites.first(where: { $0.id == id })?.alias?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !rawAlias.isEmpty else {
-            return nil
-        }
-        return rawAlias
+        DockPreferencesService.shared.alias(for: id)
     }
-    
+
     func displayName(for bikePoint: BikePoint) -> String {
         alias(for: bikePoint.id) ?? bikePoint.commonName
     }
-    
+
     func updateAlias(for id: String, alias: String?) {
-        guard let index = favorites.firstIndex(where: { $0.id == id }) else { return }
-        
-        let trimmedAlias = alias?.trimmingCharacters(in: .whitespacesAndNewlines)
-        favorites[index].alias = (trimmedAlias?.isEmpty == false) ? trimmedAlias : nil
-        
+        DockPreferencesService.shared.updateAlias(for: id, alias: alias)
+    }
+
+    private func applyDockPreferences() {
+        favorites = favorites.map { favorite in
+            var updated = favorite
+            updated.alias = DockPreferencesService.shared.alias(for: favorite.id)
+            return updated
+        }
         saveFavorites()
     }
-    
+
     func updateSortMode(_ mode: SortMode) {
         sortMode = mode
         saveSortMode()
@@ -199,9 +204,7 @@ class FavoritesService: NSObject, ObservableObject {
     #if os(iOS)
     private func sendFavoritesToWatch() {
         
-        guard WCSession.default.isReachable else {
-            return
-        }
+        guard WCSession.default.activationState == .activated else { return }
         
         do {
             // Convert FavoriteBikePoint to format expected by watch
@@ -215,9 +218,11 @@ class FavoritesService: NSObject, ObservableObject {
             }
             
             let data = try JSONEncoder().encode(watchCompatibleFavorites)
-            let message = ["favorites": data]
-            
-            
+            var message: [String: Any] = ["favorites": data]
+            message["dockPreferences"] = DockPreferencesService.shared.encodedPayload
+            // Application context delivers the latest complete preferences when Watch reconnects.
+            try WCSession.default.updateApplicationContext(message)
+            guard WCSession.default.isReachable else { return }
             WCSession.default.sendMessage(message, replyHandler: { reply in
             }) { error in
             }
@@ -251,7 +256,8 @@ struct WatchCompatibleFavorite: Codable {
 #if os(iOS)
 extension FavoritesService: WCSessionDelegate {
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
-        if let error = error {
+        if activationState == .activated {
+            DispatchQueue.main.async { self.sendFavoritesToWatch() }
         }
     }
     
@@ -279,13 +285,14 @@ extension FavoritesService: WCSessionDelegate {
                 }
                 
                 let data = try JSONEncoder().encode(watchCompatibleFavorites)
-                let response = [
+                var response = [
                     "favorites": data,
                     "status": "success",
                     "count": favorites.count,
                     "timestamp": Date().timeIntervalSince1970
                 ] as [String : Any]
                 
+                response["dockPreferences"] = DockPreferencesService.shared.encodedPayload
                 replyHandler(response)
                 
             } catch {

@@ -19,12 +19,14 @@ private enum CurrentActiveJourney {
 struct JourneysView: View {
     @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
     @StateObject private var adHocJourneyService = AdHocJourneyService.shared
+    @StateObject private var favoriteJourneyService = FavoriteJourneyService.shared
     @StateObject private var dockAvailabilityStore = JourneyDockAvailabilityStore()
+    @ObservedObject private var dockPreferences = DockPreferencesService.shared
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var locationService: LocationService
     @State private var journeyEditorPresentation: JourneyEditorPresentation?
-    @State private var adHocDraftPresentation: AdHocJourneyDraftPresentation?
     @State private var journeyToDelete: ScheduledJourney?
+    @State private var favoriteJourneyToDelete: FavoriteJourney?
     private let onDockSelected: (String) -> Void
     private let dockAvailabilityRefreshTimer = Timer.publish(
         every: AppConstants.App.refreshInterval,
@@ -39,6 +41,25 @@ struct JourneysView: View {
 
     private var scheduledJourneysByStartDistance: [ScheduledJourney] {
         journeysByStartDistance(scheduledJourneyService.journeys.filter { !$0.isActive }) { $0.startDock }
+    }
+
+    private var favoriteJourneysByClosestDockDistance: [FavoriteJourney] {
+        guard let userLocation = locationService.location else {
+            return favoriteJourneyService.journeys
+        }
+
+        return favoriteJourneyService.journeys.sorted { first, second in
+            let firstDistance = first.closestDockDistance(from: userLocation)
+            let secondDistance = second.closestDockDistance(from: userLocation)
+
+            if firstDistance == secondDistance {
+                let firstDock = first.docksOrderedByDistance(from: userLocation).first
+                let secondDock = second.docksOrderedByDistance(from: userLocation).first
+                return firstDock.name.localizedCaseInsensitiveCompare(secondDock.name) == .orderedAscending
+            }
+
+            return firstDistance < secondDistance
+        }
     }
 
     private var adHocJourneysByStartDistance: [AdHocJourney] {
@@ -57,14 +78,17 @@ struct JourneysView: View {
     }
 
     private var activeDockIDs: [String] {
+        let primaryIDs: [String]
         switch currentActiveJourney {
         case .scheduled(let journey):
-            return [journey.startDock.id, journey.endDock.id]
+            primaryIDs = [journey.startDock.id, journey.endDock.id]
         case .adHoc(let journey):
-            return [journey.startDock.id, journey.endDock.id]
+            primaryIDs = [journey.startDock.id, journey.endDock.id]
         case nil:
-            return []
+            primaryIDs = []
         }
+        let customIDs = primaryIDs.flatMap { dockPreferences.customDockIDs(for: $0) ?? [] }
+        return Array(Set(primaryIDs + customIDs)).sorted()
     }
 
     var body: some View {
@@ -77,25 +101,6 @@ struct JourneysView: View {
                 }
             }
             .navigationTitle("Journeys")
-            .toolbar {
-                if currentActiveJourney == nil {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Menu {
-                            Button { journeyEditorPresentation = .add } label: {
-                                Label("Scheduled journey", systemImage: "calendar.badge.plus")
-                            }
-                            .disabled(scheduledJourneyService.journeys.count >= 5)
-
-                            Button { adHocDraftPresentation = .new } label: {
-                                Label("Ad-hoc journey", systemImage: "figure.outdoor.cycle")
-                            }
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .accessibilityLabel("Add journey")
-                    }
-                }
-            }
             .task {
                 locationService.startLocationUpdates()
                 await scheduledJourneyService.refresh()
@@ -123,9 +128,6 @@ struct JourneysView: View {
             .sheet(item: $journeyEditorPresentation) { presentation in
                 AddJourneyView(presentation: presentation)
             }
-            .sheet(item: $adHocDraftPresentation) { _ in
-                AdHocJourneyStartFlowView()
-            }
             .alert("Delete scheduled journey?", isPresented: Binding(
                 get: { journeyToDelete != nil },
                 set: { if !$0 { journeyToDelete = nil } }
@@ -142,6 +144,22 @@ struct JourneysView: View {
             } message: {
                 Text("This removes the journey from your scheduled journeys.")
             }
+            .alert("Delete favourite journey?", isPresented: Binding(
+                get: { favoriteJourneyToDelete != nil },
+                set: { if !$0 { favoriteJourneyToDelete = nil } }
+            )) {
+                Button("Delete", role: .destructive) {
+                    if let favoriteJourneyToDelete {
+                        favoriteJourneyService.remove(favoriteJourneyToDelete)
+                    }
+                    favoriteJourneyToDelete = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    favoriteJourneyToDelete = nil
+                }
+            } message: {
+                Text("This removes the route from your favourite journeys.")
+            }
         }
     }
 
@@ -149,13 +167,24 @@ struct JourneysView: View {
         List {
             Section {
                 Button { journeyEditorPresentation = .add } label: {
-                    Label("Add scheduled journey", systemImage: "calendar.badge.plus")
+                    Label("New journey", systemImage: "plus.circle.fill")
                 }
-                .disabled(scheduledJourneyService.journeys.count >= 5)
+            }
 
-                Button { adHocDraftPresentation = .new } label: {
-                    Label("Start ad-hoc journey", systemImage: "figure.outdoor.cycle")
+            Section {
+                if favoriteJourneysByClosestDockDistance.isEmpty {
+                    ContentUnavailableView(
+                        "No favourite journeys",
+                        systemImage: "star",
+                        description: Text("Save routes here for quick access.")
+                    )
+                } else {
+                    ForEach(favoriteJourneysByClosestDockDistance) { journey in
+                        favoriteJourneyRow(journey)
+                    }
                 }
+            } header: {
+                Text("Favourite journeys")
             }
 
             Section {
@@ -179,7 +208,7 @@ struct JourneysView: View {
                     ContentUnavailableView(
                         "No ad-hoc journeys",
                         systemImage: "clock.arrow.circlepath",
-                        description: Text("Start a one-off journey and the latest 10 will appear here.")
+                        description: Text("Save or start a one-off journey and the latest 10 will appear here.")
                     )
                 } else {
                     ForEach(adHocJourneysByStartDistance) { journey in
@@ -225,10 +254,17 @@ struct JourneysView: View {
             isRefreshingAvailability: dockAvailabilityStore.isRefreshing,
             showsCreateReturn: !hasReturnJourney(for: journey),
             canCreateReturn: scheduledJourneyService.journeys.count < 5,
+            isFavorite: favoriteJourneyService.isFavorite(
+                startDock: journey.startDock,
+                endDock: journey.endDock
+            ),
             onStop: { Task { await scheduledJourneyService.stop(journey) } },
             onActivate: { Task { await scheduledJourneyService.activate(journey) } },
             onEdit: { journeyEditorPresentation = .edit(journey) },
             onDelete: { journeyToDelete = journey },
+            onToggleFavorite: {
+                favoriteJourneyService.toggle(startDock: journey.startDock, endDock: journey.endDock)
+            },
             onDockSelected: onDockSelected,
             onCreateReturn: {
                 guard scheduledJourneyService.journeys.count < 5 else { return }
@@ -236,6 +272,33 @@ struct JourneysView: View {
                 draft.timezone = TimeZone.current.identifier
                 journeyEditorPresentation = .addReturn(draft)
             }
+        )
+    }
+
+    private func favoriteJourneyRow(_ journey: FavoriteJourney) -> some View {
+        let docks = journey.docksOrderedByDistance(from: locationService.location)
+
+        return FavoriteJourneyRow(
+            startDock: docks.first,
+            endDock: docks.second,
+            distanceString: locationService.distanceString(to: docks.first.coordinate),
+            onStart: {
+                Task {
+                    await adHocJourneyService.createAndStart(
+                        startDock: docks.first,
+                        endDock: docks.second
+                    )
+                }
+            },
+            onStartReturn: {
+                Task {
+                    await adHocJourneyService.createAndStart(
+                        startDock: docks.second,
+                        endDock: docks.first
+                    )
+                }
+            },
+            onDelete: { favoriteJourneyToDelete = journey }
         )
     }
 
@@ -247,9 +310,16 @@ struct JourneysView: View {
             endBikePoint: dockAvailabilityStore.bikePointsByID[journey.endDock.id],
             allBikePoints: dockAvailabilityStore.allBikePoints,
             isRefreshingAvailability: dockAvailabilityStore.isRefreshing,
+            isFavorite: favoriteJourneyService.isFavorite(
+                startDock: journey.startDock,
+                endDock: journey.endDock
+            ),
             onStart: { Task { await adHocJourneyService.start(journey) } },
             onStartReturn: { Task { await adHocJourneyService.startReturn(journey) } },
             onStop: { Task { await adHocJourneyService.stop(journey) } },
+            onToggleFavorite: {
+                favoriteJourneyService.toggle(startDock: journey.startDock, endDock: journey.endDock)
+            },
             onDockSelected: onDockSelected
         )
     }
@@ -293,30 +363,6 @@ private extension ScheduledJourneyDock {
     }
 }
 
-enum AdHocJourneyDraftPresentation: Identifiable {
-    case new
-    var id: String { "new" }
-}
-
-private struct AdHocJourneyStartFlowView: View {
-    @State private var startDock: ScheduledJourneyDock?
-    @State private var endDock: ScheduledJourneyDock?
-
-    var body: some View {
-        if let startDock, let endDock {
-            AdHocJourneySetupView(initialStartDock: startDock, initialEndDock: endDock)
-        } else if let startDock {
-            DockPickerView(title: "End Dock", availabilityMode: .end, dismissOnSelect: false) { dock in
-                endDock = dock
-            }
-        } else {
-            DockPickerView(title: "Start Dock", availabilityMode: .start, dismissOnSelect: false) { dock in
-                startDock = dock
-            }
-        }
-    }
-}
-
 private struct AdHocJourneyRow: View {
     let journey: AdHocJourney
     let distanceString: String
@@ -324,9 +370,11 @@ private struct AdHocJourneyRow: View {
     let endBikePoint: BikePoint?
     let allBikePoints: [BikePoint]
     let isRefreshingAvailability: Bool
+    let isFavorite: Bool
     let onStart: () -> Void
     let onStartReturn: () -> Void
     let onStop: () -> Void
+    let onToggleFavorite: () -> Void
     let onDockSelected: (String) -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
     @EnvironmentObject private var locationService: LocationService
@@ -363,10 +411,21 @@ private struct AdHocJourneyRow: View {
                         Text("Last started \(lastStartedAt.formatted(date: .abbreviated, time: .shortened))")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                    } else {
+                        Text("Saved \(journey.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
                 Spacer(minLength: 8)
+
+                Button(action: onToggleFavorite) {
+                    Image(systemName: isFavorite ? "star.fill" : "star")
+                        .foregroundStyle(isFavorite ? AppConstants.Colors.favoriteHighlight : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(isFavorite ? "Remove from favourite journeys" : "Add to favourite journeys")
 
                 DistanceIndicator(
                     distance: numericDistance,
@@ -411,7 +470,7 @@ private struct AdHocJourneyRow: View {
 
     private var adHocStartActions: some View {
         Group {
-            Button("Start again", action: onStart)
+            Button(journey.lastStartedAt == nil ? "Start now" : "Start again", action: onStart)
                 .buttonStyle(.borderedProminent)
 
             Button("Start return journey", action: onStartReturn)
@@ -420,65 +479,69 @@ private struct AdHocJourneyRow: View {
     }
 }
 
-struct AdHocJourneySetupView: View {
-    @Environment(\.dismiss) private var dismiss
-    @StateObject private var adHocJourneyService = AdHocJourneyService.shared
-    @State private var startDock: ScheduledJourneyDock?
-    @State private var endDock: ScheduledJourneyDock?
-    @State private var selectedDockField: AddJourneyView.DockField?
-    @State private var isStarting = false
+private struct FavoriteJourneyRow: View {
+    let startDock: ScheduledJourneyDock
+    let endDock: ScheduledJourneyDock
+    let distanceString: String
+    let onStart: () -> Void
+    let onStartReturn: () -> Void
+    let onDelete: () -> Void
+    @EnvironmentObject private var favoritesService: FavoritesService
+    @EnvironmentObject private var locationService: LocationService
 
-    init(initialStartDock: ScheduledJourneyDock? = nil, initialEndDock: ScheduledJourneyDock? = nil) {
-        _startDock = State(initialValue: initialStartDock)
-        _endDock = State(initialValue: initialEndDock)
+    private var numericDistance: CLLocationDistance? {
+        locationService.distance(to: startDock.coordinate)
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Docks") {
-                    DockSelectionButton(title: "Start", dock: startDock) { selectedDockField = .start }
-                    DockSelectionButton(title: "End", dock: endDock) { selectedDockField = .end }
-                }
-            }
-            .navigationTitle("Ad-hoc Journey")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(isStarting ? "Starting..." : "Start") {
-                        Task { await start() }
+        ActiveJourneyCard(isActive: false) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "figure.outdoor.cycle")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24)
+
+                    Text("\(startDock.displayName(using: favoritesService)) → \(endDock.displayName(using: favoritesService))")
+                        .font(.headline)
+                        .lineLimit(2)
+
+                    Spacer(minLength: 8)
+
+                    DistanceIndicator(
+                        distance: numericDistance,
+                        distanceString: distanceString
+                    )
+
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .foregroundStyle(.red)
                     }
-                    .disabled(!canStart || isStarting)
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Delete favourite journey")
                 }
-            }
-            .sheet(item: $selectedDockField) { field in
-                DockPickerView(
-                    title: field == .start ? "Start Dock" : "End Dock",
-                    availabilityMode: field == .start ? .start : .end
-                ) { dock in
-                    switch field {
-                    case .start: startDock = dock
-                    case .end: endDock = dock
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        startActions
                     }
-                    selectedDockField = nil
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        startActions
+                    }
                 }
             }
         }
+        .journeyListStyle(isActive: false)
     }
 
-    private var canStart: Bool {
-        startDock != nil && endDock != nil && startDock?.id != endDock?.id
-    }
+    private var startActions: some View {
+        Group {
+            Button("Start now", action: onStart)
+                .buttonStyle(.borderedProminent)
 
-    private func start() async {
-        guard let startDock, let endDock, canStart else { return }
-        isStarting = true
-        await adHocJourneyService.createAndStart(startDock: startDock, endDock: endDock)
-        isStarting = false
-        dismiss()
+            Button("Start return journey", action: onStartReturn)
+                .buttonStyle(.bordered)
+        }
     }
 }
 
@@ -518,7 +581,9 @@ enum JourneyEditorPresentation: Identifiable {
 
     var navigationTitle: String {
         switch self {
-        case .add, .addReturn:
+        case .add:
+            return "New Journey"
+        case .addReturn:
             return "Add Journey"
         case .edit:
             return "Edit Journey"
@@ -527,6 +592,13 @@ enum JourneyEditorPresentation: Identifiable {
 
     var isEditing: Bool {
         editedJourney != nil
+    }
+
+    var isNewJourney: Bool {
+        if case .add = self {
+            return true
+        }
+        return false
     }
 }
 
@@ -539,10 +611,12 @@ private struct ScheduledJourneyRow: View {
     let isRefreshingAvailability: Bool
     let showsCreateReturn: Bool
     let canCreateReturn: Bool
+    let isFavorite: Bool
     let onStop: () -> Void
     let onActivate: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
+    let onToggleFavorite: () -> Void
     let onDockSelected: (String) -> Void
     let onCreateReturn: () -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
@@ -583,6 +657,13 @@ private struct ScheduledJourneyRow: View {
                 }
 
                 Spacer(minLength: 8)
+
+                Button(action: onToggleFavorite) {
+                    Image(systemName: isFavorite ? "star.fill" : "star")
+                        .foregroundStyle(isFavorite ? AppConstants.Colors.favoriteHighlight : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(isFavorite ? "Remove from favourite journeys" : "Add to favourite journeys")
 
                 DistanceIndicator(
                     distance: numericDistance,
@@ -665,78 +746,6 @@ private struct ScheduledJourneyRow: View {
     }
 }
 
-@MainActor
-private final class JourneyDockAvailabilityStore: ObservableObject {
-    @Published private(set) var bikePointsByID: [String: BikePoint]
-    @Published private(set) var allBikePoints: [BikePoint]
-    @Published private(set) var isRefreshing = false
-    private var cancellable: AnyCancellable?
-    private var refreshID = UUID()
-
-    init() {
-        let cachedBikePoints = AllBikePointsCache.shared.load()
-        allBikePoints = cachedBikePoints
-        bikePointsByID = [:]
-    }
-
-    func refresh(dockIDs: [String], cacheBusting: Bool = false) {
-        let refreshID = UUID()
-        self.refreshID = refreshID
-        cancellable?.cancel()
-
-        guard !dockIDs.isEmpty else {
-            bikePointsByID = [:]
-            isRefreshing = false
-            return
-        }
-
-        let requestedIDs = Set(dockIDs)
-        let uniqueDockIDs = Array(requestedIDs).sorted()
-
-        let cachedBikePoints = allBikePoints.filter { requestedIDs.contains($0.id) }
-        var availableBikePoints = bikePointsByID.filter { requestedIDs.contains($0.key) }
-        for bikePoint in cachedBikePoints where availableBikePoints[bikePoint.id] == nil {
-            availableBikePoints[bikePoint.id] = bikePoint
-        }
-        bikePointsByID = availableBikePoints
-        isRefreshing = true
-
-        cancellable = TfLAPIService.shared
-            .fetchMultipleBikePoints(ids: uniqueDockIDs, cacheBusting: cacheBusting)
-            .sink(
-                receiveCompletion: { [weak self] _ in
-                    guard self?.refreshID == refreshID else { return }
-                    self?.isRefreshing = false
-                },
-                receiveValue: { [weak self] bikePoints in
-                    guard let self else { return }
-                    guard self.refreshID == refreshID else { return }
-                    self.bikePointsByID = Dictionary(
-                        uniqueKeysWithValues: bikePoints.map { ($0.id, $0) }
-                    )
-                    self.mergeIntoCache(bikePoints)
-                    for bikePoint in bikePoints {
-                        DockArrivalMonitoringService.shared.updateMonitoredDockIfNeeded(using: bikePoint)
-                    }
-                    Task {
-                        await LiveActivityService.shared.updateActiveActivitiesIfNeeded(using: bikePoints)
-                    }
-                }
-            )
-    }
-
-    private func mergeIntoCache(_ updatedBikePoints: [BikePoint]) {
-        guard !updatedBikePoints.isEmpty else { return }
-
-        var bikePointsByID = Dictionary(uniqueKeysWithValues: allBikePoints.map { ($0.id, $0) })
-        for bikePoint in updatedBikePoints {
-            bikePointsByID[bikePoint.id] = bikePoint
-        }
-        allBikePoints = Array(bikePointsByID.values)
-        AllBikePointsCache.shared.save(allBikePoints, savedAt: Date())
-    }
-}
-
 private struct ActiveJourneyDockIndicators: View {
     let startDock: ScheduledJourneyDock?
     let endDock: ScheduledJourneyDock
@@ -747,6 +756,7 @@ private struct ActiveJourneyDockIndicators: View {
     let onDockSelected: (String) -> Void
 
     @EnvironmentObject private var favoritesService: FavoritesService
+    @ObservedObject private var dockPreferences = DockPreferencesService.shared
 
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue = BikeDataFilter.both.rawValue
@@ -870,6 +880,14 @@ private struct ActiveJourneyDockIndicators: View {
                 count.map { "\($0) \(availabilityLabel) available" } ?? "Availability updating"
             )
 
+            AlternativeDocksEditButton(
+                dock: dock,
+                availabilityMode: mode == .bikes ? .start : .end
+            )
+            .font(.footnote)
+            .padding(.horizontal, 10)
+            .accessibilityLabel("Edit alternative docks for \(dock.displayName(using: favoritesService))")
+
             if !alternatives.isEmpty {
                 JourneyAlternativeDockGrid(
                     alternatives: alternatives,
@@ -892,8 +910,16 @@ private struct ActiveJourneyDockIndicators: View {
             allBikePoints: allBikePoints,
             favorites: favoritesService.favorites,
             userLocation: nil,
-            purpose: alternativePurpose(for: mode)
+            purpose: alternativePurpose(for: mode),
+            maximumCount: maximumAlternativeCount(for: bikePoint),
+            filterCustomDocksByAvailability: false
         )
+    }
+
+    private func maximumAlternativeCount(for bikePoint: BikePoint) -> Int {
+        let configuredCount = dockPreferences.customDockIDs(for: bikePoint.id)?.count
+            ?? dockPreferences.snapshot.settings.maxCount
+        return max(ActiveJourneyAlternativeDisplay.previewCount, configuredCount)
     }
 
     private func alternativePurpose(
@@ -919,6 +945,9 @@ private struct ActiveJourneyDockIndicators: View {
 }
 
 private struct JourneyAlternativeDockGrid: View {
+    @ObservedObject private var dockPreferences = DockPreferencesService.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isShowingAllAlternatives = false
     let alternatives: [BikePoint]
     let mode: SimplifiedDonutChart.DisplayMode
     let bikeDataFilter: BikeDataFilter
@@ -929,6 +958,18 @@ private struct JourneyAlternativeDockGrid: View {
         GridItem(.flexible(), spacing: 8)
     ]
 
+    private var displayedAlternatives: ArraySlice<BikePoint> {
+        alternatives.prefix(
+            isShowingAllAlternatives
+                ? alternatives.count
+                : ActiveJourneyAlternativeDisplay.previewCount
+        )
+    }
+
+    private var hasMoreAlternatives: Bool {
+        alternatives.count > ActiveJourneyAlternativeDisplay.previewCount
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(mode == .bikes ? "Nearby bikes" : "Nearby spaces")
@@ -936,7 +977,7 @@ private struct JourneyAlternativeDockGrid: View {
                 .foregroundStyle(.secondary)
 
             LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(alternatives.prefix(3)) { alternative in
+                ForEach(displayedAlternatives) { alternative in
                     Button {
                         onDockSelected(alternative.id)
                     } label: {
@@ -951,7 +992,7 @@ private struct JourneyAlternativeDockGrid: View {
                             )
 
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(shortName(alternative.commonName))
+                                Text(dockPreferences.alias(for: alternative.id) ?? shortName(alternative.commonName))
                                     .font(.caption2.weight(.semibold))
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
@@ -969,8 +1010,26 @@ private struct JourneyAlternativeDockGrid: View {
                         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("View alternative dock \(alternative.commonName) on the map")
+                    .accessibilityLabel("View alternative dock \(dockPreferences.alias(for: alternative.id) ?? alternative.commonName) on the map")
                 }
+            }
+
+            if hasMoreAlternatives {
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                        isShowingAllAlternatives.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(isShowingAllAlternatives ? "View fewer alternate docks" : "View more alternate docks")
+                        Image(systemName: isShowingAllAlternatives ? "chevron.up" : "chevron.down")
+                    }
+                    .font(.caption.weight(.semibold))
+                    .frame(minHeight: 44, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tint)
+                .accessibilityValue(isShowingAllAlternatives ? "Expanded" : "Collapsed")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -992,6 +1051,10 @@ private struct JourneyAlternativeDockGrid: View {
     private func shortName(_ name: String) -> String {
         name.split(separator: ",", maxSplits: 1).first.map(String.init) ?? name
     }
+}
+
+private enum ActiveJourneyAlternativeDisplay {
+    static let previewCount = 9
 }
 
 private enum JourneyProgressEstimator {
@@ -1204,8 +1267,13 @@ private struct LiveJourneyProgressView: View {
 struct AddJourneyView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
+    @StateObject private var favoriteJourneyService = FavoriteJourneyService.shared
+    @StateObject private var adHocJourneyService = AdHocJourneyService.shared
     private let presentation: JourneyEditorPresentation
     @State private var draft: ScheduledJourneyDraft
+    @State private var addToFavorites = false
+    @State private var addAsScheduledJourney = false
+    @State private var startJourneyImmediately = false
     @State private var selectedDockField: DockField?
     @State private var isSaving = false
     @State private var errorMessage: String?
@@ -1230,26 +1298,61 @@ struct AddJourneyView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Docks") {
+                Section {
                     DockSelectionButton(title: "Start", dock: draft.startDock) {
                         selectedDockField = .start
+                    }
+                    if let startDock = draft.startDock {
+                        AlternativeDocksEditButton(dock: startDock, title: "Start dock alternatives", availabilityMode: .start)
                     }
                     DockSelectionButton(title: "End", dock: draft.endDock) {
                         selectedDockField = .end
                     }
+                    if let endDock = draft.endDock {
+                        AlternativeDocksEditButton(dock: endDock, title: "End dock alternatives", availabilityMode: .end)
+                    }
+                } header: {
+                    Text("Docks")
                 }
 
-                Section("Days") {
-                    WeekdayPicker(selectedWeekdays: $draft.weekdays)
+                if presentation.isNewJourney {
+                    Section {
+                        Toggle(isOn: $addToFavorites) {
+                            Label("Add to favourites", systemImage: "star")
+                        }
+                        .disabled(!hasValidDocks || favoriteJourneyAlreadyExists)
+
+                        Toggle(isOn: $addAsScheduledJourney) {
+                            Label("Add as a scheduled journey", systemImage: "calendar.badge.clock")
+                        }
+                        .disabled(!hasValidDocks || scheduledJourneyService.journeys.count >= 5)
+                    } footer: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if favoriteJourneyAlreadyExists {
+                                Text("This route is already in your favourite journeys, so there’s no need to add it again.")
+                            } else if addToFavorites {
+                                Text("No return journey needed — we’ll automatically show the closest dock first.")
+                            }
+                            if scheduledJourneyService.journeys.count >= 5 {
+                                Text("You already have the maximum of 5 scheduled journeys.")
+                            }
+                        }
+                    }
                 }
 
-                Section("Time Window") {
-                    TimePickerRow(title: "Start", time: $draft.startTime)
-                    TimePickerRow(title: "End", time: $draft.endTime)
-                    if let windowMessage {
-                        Text(windowMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                if showsSchedule {
+                    Section("Days") {
+                        WeekdayPicker(selectedWeekdays: $draft.weekdays)
+                    }
+
+                    Section("Time Window") {
+                        TimePickerRow(title: "Start", time: $draft.startTime)
+                        TimePickerRow(title: "End", time: $draft.endTime)
+                        if let windowMessage {
+                            Text(windowMessage)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
@@ -1259,6 +1362,22 @@ struct AddJourneyView: View {
                             .foregroundStyle(.red)
                     }
                 }
+
+                if presentation.isNewJourney && canSave {
+                    Section {
+                        Toggle(isOn: $startJourneyImmediately) {
+                            Label("Start journey now", systemImage: "play.circle.fill")
+                        }
+
+                        Button {
+                            Task { await save() }
+                        } label: {
+                            Text(isSaving ? "Saving..." : "Save journey")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(isSaving)
+                    }
+                }
             }
             .navigationTitle(presentation.navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
@@ -1266,11 +1385,13 @@ struct AddJourneyView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "Saving..." : "Save") {
-                        Task { await save() }
+                if !presentation.isNewJourney {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(isSaving ? "Saving..." : "Save") {
+                            Task { await save() }
+                        }
+                        .disabled(!canSave || isSaving)
                     }
-                    .disabled(!canSave || isSaving)
                 }
             }
             .sheet(item: $selectedDockField) { field in
@@ -1287,16 +1408,46 @@ struct AddJourneyView: View {
                     selectedDockField = nil
                 }
             }
+            .onChange(of: favoriteJourneyAlreadyExists) { _, alreadyExists in
+                if alreadyExists {
+                    addToFavorites = false
+                }
+            }
+            .onChange(of: scheduledJourneyService.journeys.count) { _, journeyCount in
+                if journeyCount >= 5 {
+                    addAsScheduledJourney = false
+                }
+            }
         }
     }
 
     private var canSave: Bool {
+        hasValidDocks && (!showsSchedule || hasValidSchedule)
+    }
+
+    private var hasValidDocks: Bool {
         draft.startDock != nil &&
-        draft.endDock != nil &&
-        draft.startDock?.id != draft.endDock?.id &&
+            draft.endDock != nil &&
+            draft.startDock?.id != draft.endDock?.id
+    }
+
+    private var hasValidSchedule: Bool {
         !draft.weekdays.isEmpty &&
-        windowMinutes.map { $0 <= 12 * 60 } == true &&
-        (presentation.isEditing || scheduledJourneyService.journeys.count < 5)
+            windowMinutes.map { $0 <= 12 * 60 } == true &&
+            (presentation.isEditing || scheduledJourneyService.journeys.count < 5)
+    }
+
+    private var showsSchedule: Bool {
+        !presentation.isNewJourney || addAsScheduledJourney
+    }
+
+    private var favoriteJourneyAlreadyExists: Bool {
+        guard let startDock = draft.startDock,
+              let endDock = draft.endDock,
+              startDock.id != endDock.id else {
+            return false
+        }
+        return favoriteJourneyService.isFavorite(startDock: startDock, endDock: endDock)
     }
 
     private var windowMinutes: Int? {
@@ -1318,11 +1469,38 @@ struct AddJourneyView: View {
         guard canSave else { return }
         isSaving = true
         defer { isSaving = false }
+
+        if presentation.isNewJourney {
+            await saveNewJourney(startImmediately: startJourneyImmediately)
+            return
+        }
+
         do {
             if let editedJourney = presentation.editedJourney {
                 _ = try await scheduledJourneyService.update(editedJourney, from: draft)
             } else {
                 _ = try await scheduledJourneyService.createJourney(from: draft)
+            }
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func saveNewJourney(startImmediately: Bool) async {
+        guard let startDock = draft.startDock, let endDock = draft.endDock else { return }
+
+        do {
+            if addAsScheduledJourney {
+                _ = try await scheduledJourneyService.createJourney(from: draft)
+            }
+            if addToFavorites && !favoriteJourneyAlreadyExists {
+                favoriteJourneyService.add(startDock: startDock, endDock: endDock)
+            }
+            if startImmediately {
+                await adHocJourneyService.createAndStart(startDock: startDock, endDock: endDock)
+            } else {
+                adHocJourneyService.save(startDock: startDock, endDock: endDock)
             }
             dismiss()
         } catch {
@@ -1414,559 +1592,9 @@ private struct TimePickerRow: View {
     }
 }
 
-private struct DockPickerView: View {
-    enum AvailabilityMode {
-        case start
-        case end
-    }
-
-    enum Mode: String, CaseIterable, Identifiable {
-        case favourites = "Favourites"
-        case recents = "Recents"
-        case map = "Map"
-        case search = "Search"
-
-        var id: String { rawValue }
-    }
-
-    let title: String
-    var availabilityMode: AvailabilityMode
-    var dismissOnSelect = true
-    let onSelect: (ScheduledJourneyDock) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var favoritesService: FavoritesService
-    @EnvironmentObject private var locationService: LocationService
-    @EnvironmentObject private var scheduledJourneyService: ScheduledJourneyService
-    @EnvironmentObject private var adHocJourneyService: AdHocJourneyService
-    @State private var mode: Mode = .favourites
-    @State private var searchText = ""
-    @State private var allBikePoints: [BikePoint] = []
-    @State private var cancellable: AnyCancellable?
-    @State private var hasCenteredOnInitialLocation = false
-    @State private var currentMapCenter = CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278)
-    @State private var mapPosition: MapCameraPosition = .region(
-        MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278),
-            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-        )
-    )
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Picker("Dock source", selection: $mode) {
-                    ForEach(Mode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding()
-
-                switch mode {
-                case .favourites:
-                    List {
-                        Section {
-                            ForEach(favouriteBikePoints) { bikePoint in
-                                DockPickerRow(
-                                    bikePoint: bikePoint,
-                                    availabilityMode: availabilityMode,
-                                    showsDistance: true
-                                ) {
-                                    onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
-                                    dismissIfNeeded()
-                                }
-                            }
-                        } header: {
-                            Text("Favourite docks")
-                        }
-
-                        Section {
-                            if locationService.location == nil {
-                                Label("Current location unavailable", systemImage: "location.slash")
-                                    .foregroundStyle(.secondary)
-                            } else if allBikePoints.isEmpty {
-                                Label("Loading nearby docks...", systemImage: "location")
-                                    .foregroundStyle(.secondary)
-                            } else if nearbyBikePoints.isEmpty {
-                                Label("No nearby docks found", systemImage: "bicycle")
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                ForEach(nearbyBikePoints) { bikePoint in
-                                    DockPickerRow(
-                                        bikePoint: bikePoint,
-                                        availabilityMode: availabilityMode,
-                                        showsDistance: true
-                                    ) {
-                                        onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
-                                        dismissIfNeeded()
-                                    }
-                                }
-                            }
-                        } header: {
-                            Text("Nearby docks")
-                        }
-                    }
-                case .recents:
-                    if recentBikePoints.isEmpty {
-                        ContentUnavailableView(
-                            "No recent docks",
-                            systemImage: "clock.arrow.circlepath",
-                            description: Text("Docks from journeys you start will appear here.")
-                        )
-                    } else {
-                        List(recentBikePoints) { recent in
-                            DockPickerRow(
-                                bikePoint: recent.bikePoint,
-                                availabilityMode: availabilityMode,
-                                detailText: "Last used \(recent.lastUsedAt.formatted(date: .abbreviated, time: .shortened))",
-                                showsDistance: true
-                            ) {
-                                onSelect(ScheduledJourneyDock(bikePoint: recent.bikePoint))
-                                dismissIfNeeded()
-                            }
-                        }
-                    }
-                case .map:
-                    ZStack {
-                        Map(position: $mapPosition) {
-                            ForEach(mapBikePoints) { bikePoint in
-                                Annotation("", coordinate: bikePoint.coordinate) {
-                                    Button {
-                                        onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
-                                        dismissIfNeeded()
-                                    } label: {
-                                        DockPickerMapMarker(bikePoint: bikePoint)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("Select \(bikePoint.commonName)")
-                                }
-                            }
-
-                            if let userLocation = locationService.location {
-                                Annotation("", coordinate: userLocation.coordinate) {
-                                    UserLocationIndicator(heading: locationService.heading)
-                                }
-                            }
-                        }
-                        .onMapCameraChange(frequency: .onEnd) { context in
-                            currentMapCenter = context.region.center
-                        }
-
-                        VStack {
-                            Spacer()
-                            HStack {
-                                Spacer()
-                                DockPickerMapControls(
-                                    hasLocation: locationService.location != nil,
-                                    hasBikePoints: !allBikePoints.isEmpty,
-                                    onCenterNearestDock: centerOnNearestBikePoint,
-                                    onCenterUserLocation: centerOnUserLocation
-                                )
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.bottom, 20)
-                        }
-                    }
-                case .search:
-                    List(filteredBikePoints) { bikePoint in
-                        DockPickerRow(
-                            bikePoint: bikePoint,
-                            availabilityMode: availabilityMode,
-                            showsDistance: true
-                        ) {
-                            onSelect(ScheduledJourneyDock(bikePoint: bikePoint))
-                            dismissIfNeeded()
-                        }
-                    }
-                    .searchable(text: $searchText, prompt: "Search dock name")
-                }
-            }
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-            .onAppear {
-                loadBikePoints()
-                startLocationServices()
-                if let location = locationService.location {
-                    centerMap(on: location.coordinate)
-                    hasCenteredOnInitialLocation = true
-                }
-            }
-            .onDisappear {
-                locationService.stopHeadingUpdates()
-            }
-            .onReceive(locationService.$location.compactMap { $0 }) { location in
-                guard !hasCenteredOnInitialLocation else { return }
-                centerMap(on: location.coordinate)
-                hasCenteredOnInitialLocation = true
-            }
-        }
-    }
-
-    private func dismissIfNeeded() {
-        guard dismissOnSelect else { return }
-        dismiss()
-    }
-
-    private var favouriteBikePoints: [BikePoint] {
-        let byId = Dictionary(uniqueKeysWithValues: allBikePoints.map { ($0.id, $0) })
-        return favoritesService.favorites.compactMap { favorite in
-            byId[favorite.id]
-        }
-    }
-
-    private var nearbyBikePoints: [BikePoint] {
-        let favouriteIds = Set(favoritesService.favorites.map(\.id))
-        return sortedByDistance(allBikePoints.filter { !favouriteIds.contains($0.id) })
-            .prefix(5)
-            .map { $0 }
-    }
-
-    private var recentBikePoints: [RecentDockUsage] {
-        let byId = Dictionary(uniqueKeysWithValues: allBikePoints.map { ($0.id, $0) })
-        var usagesByDockId: [String: RecentDockUsage] = [:]
-
-        func record(_ dock: ScheduledJourneyDock, lastUsedAt: Date) {
-            guard let bikePoint = byId[dock.id] else { return }
-            if let existing = usagesByDockId[dock.id],
-               existing.lastUsedAt >= lastUsedAt {
-                return
-            }
-
-            usagesByDockId[dock.id] = RecentDockUsage(
-                bikePoint: bikePoint,
-                lastUsedAt: lastUsedAt
-            )
-        }
-
-        for journey in adHocJourneyService.recentJourneys {
-            let lastUsedAt = journey.lastStartedAt ?? journey.createdAt
-            record(journey.startDock, lastUsedAt: lastUsedAt)
-            record(journey.endDock, lastUsedAt: lastUsedAt)
-        }
-
-        for journey in scheduledJourneyService.journeys {
-            guard let activeRun = journey.activeRun,
-                  let startedAt = activeRun.startedAt else {
-                continue
-            }
-
-            record(journey.startDock, lastUsedAt: startedAt)
-            record(journey.endDock, lastUsedAt: startedAt)
-        }
-
-        return usagesByDockId.values.sorted { $0.lastUsedAt > $1.lastUsedAt }
-    }
-
-    private var filteredBikePoints: [BikePoint] {
-        let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matchingBikePoints: [BikePoint]
-
-        if trimmedSearchText.isEmpty {
-            matchingBikePoints = allBikePoints
-        } else {
-            matchingBikePoints = allBikePoints.filter {
-                $0.commonName.localizedCaseInsensitiveContains(trimmedSearchText) ||
-                    ($0.alias(using: favoritesService)?.localizedCaseInsensitiveContains(trimmedSearchText) == true)
-            }
-        }
-
-        return sortedByDistance(matchingBikePoints)
-            .prefix(80)
-            .map { $0 }
-    }
-
-    private var mapBikePoints: [BikePoint] {
-        return allBikePoints
-            .sorted {
-                squaredDistanceMeters(from: currentMapCenter, to: $0.coordinate)
-                    < squaredDistanceMeters(from: currentMapCenter, to: $1.coordinate)
-            }
-            .prefix(250)
-            .map { $0 }
-    }
-
-    private func startLocationServices() {
-        locationService.startLocationUpdates()
-        locationService.startHeadingUpdates()
-    }
-
-    private func centerOnUserLocation() {
-        guard let location = locationService.location else { return }
-        centerMap(on: location.coordinate)
-    }
-
-    private func centerOnNearestBikePoint() {
-        guard let userCoordinate = locationService.location?.coordinate,
-              let nearestBikePoint = allBikePoints.min(by: {
-                  squaredDistanceMeters(from: userCoordinate, to: $0.coordinate)
-                      < squaredDistanceMeters(from: userCoordinate, to: $1.coordinate)
-              }) else {
-            return
-        }
-
-        centerMap(on: nearestBikePoint.coordinate)
-    }
-
-    private func sortedByDistance(_ bikePoints: [BikePoint]) -> [BikePoint] {
-        guard let userCoordinate = locationService.location?.coordinate else {
-            return bikePoints
-        }
-
-        return bikePoints.sorted {
-            squaredDistanceMeters(from: userCoordinate, to: $0.coordinate)
-                < squaredDistanceMeters(from: userCoordinate, to: $1.coordinate)
-        }
-    }
-
-    private func centerMap(on coordinate: CLLocationCoordinate2D) {
-        currentMapCenter = coordinate
-
-        withAnimation(.easeInOut(duration: 1.0)) {
-            mapPosition = .region(
-                MKCoordinateRegion(
-                    center: coordinate,
-                    span: MKCoordinateSpan(latitudeDelta: 0.008, longitudeDelta: 0.008)
-                )
-            )
-        }
-    }
-
-    private func squaredDistanceMeters(
-        from source: CLLocationCoordinate2D,
-        to destination: CLLocationCoordinate2D
-    ) -> Double {
-        let metersPerDegreeLatitude = 111_320.0
-        let averageLatitudeRadians = ((source.latitude + destination.latitude) * 0.5) * .pi / 180
-        let metersPerDegreeLongitude = max(1, cos(averageLatitudeRadians) * metersPerDegreeLatitude)
-
-        let deltaLatitudeMeters = (destination.latitude - source.latitude) * metersPerDegreeLatitude
-        let deltaLongitudeMeters = (destination.longitude - source.longitude) * metersPerDegreeLongitude
-        return (deltaLatitudeMeters * deltaLatitudeMeters) + (deltaLongitudeMeters * deltaLongitudeMeters)
-    }
-
-    private func loadBikePoints() {
-        let cached = AllBikePointsCache.shared.load()
-        if !cached.isEmpty {
-            allBikePoints = cached
-        }
-
-        cancellable = TfLAPIService.shared.fetchAllBikePoints(cacheBusting: false)
-            .sink(
-                receiveCompletion: { _ in },
-                receiveValue: { bikePoints in
-                    allBikePoints = bikePoints.filter(\.isInstalled)
-                    AllBikePointsCache.shared.save(allBikePoints, savedAt: Date())
-                }
-            )
-    }
-}
-
-private struct DockPickerMapMarker: View {
-    let bikePoint: BikePoint
-    @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
-    private var bikeDataFilterRawValue = BikeDataFilter.both.rawValue
-
-    private var bikeDataFilter: BikeDataFilter {
-        BikeDataFilter(rawValue: bikeDataFilterRawValue) ?? .both
-    }
-
-    var body: some View {
-        VStack(spacing: 4) {
-            ZStack {
-                SimplifiedDonutChart(
-                    standardBikes: bikePoint.standardBikes,
-                    eBikes: bikePoint.eBikes,
-                    emptySpaces: bikePoint.emptyDocks,
-                    size: 40,
-                    bikeDataFilter: bikeDataFilter
-                )
-
-                if !bikePoint.isAvailable {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 15))
-                        .foregroundColor(.orange)
-                        .background(Color.black.opacity(0.0))
-                        .clipShape(Circle())
-                        .offset(x: -10, y: -10)
-                }
-            }
-            .contentShape(Circle())
-
-            Text(label)
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundColor(.primary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .frame(maxWidth: 128)
-                .background(Color(.systemBackground).opacity(0.95))
-                .clipShape(Capsule())
-                .shadow(color: .black.opacity(0.15), radius: 2, x: 0, y: 1)
-                .allowsHitTesting(false)
-        }
-    }
-
-    private var label: String {
-        bikePoint.commonName
-            .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true)
-            .first
-            .map(String.init) ?? bikePoint.commonName
-    }
-}
-
-private struct DockPickerMapControls: View {
-    let hasLocation: Bool
-    let hasBikePoints: Bool
-    let onCenterNearestDock: () -> Void
-    let onCenterUserLocation: () -> Void
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Button(action: onCenterNearestDock) {
-                Image(systemName: "bicycle")
-                    .font(.title2)
-                    .foregroundColor(.accentColor)
-                    .padding(12)
-                    .background(Color(.systemBackground))
-                    .clipShape(Circle())
-                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
-            }
-            .disabled(!hasLocation || !hasBikePoints)
-            .opacity(hasLocation && hasBikePoints ? 1.0 : 0.5)
-            .accessibilityLabel("Center on nearest dock")
-
-            Button(action: onCenterUserLocation) {
-                Image(systemName: "location.fill")
-                    .font(.title2)
-                    .foregroundColor(.accentColor)
-                    .padding(12)
-                    .background(Color(.systemBackground))
-                    .clipShape(Circle())
-                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
-            }
-            .disabled(!hasLocation)
-            .opacity(hasLocation ? 1.0 : 0.5)
-            .accessibilityLabel("Center on current location")
-        }
-    }
-}
-
-private struct RecentDockUsage: Identifiable {
-    let bikePoint: BikePoint
-    let lastUsedAt: Date
-
-    var id: String { bikePoint.id }
-}
-
-private struct DockPickerRow: View {
-    let bikePoint: BikePoint
-    let availabilityMode: DockPickerView.AvailabilityMode
-    var detailText: String?
-    var showsDistance = false
-    let action: () -> Void
-    @EnvironmentObject private var favoritesService: FavoritesService
-    @EnvironmentObject private var locationService: LocationService
-    @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
-    private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
-
-    private var numericDistance: CLLocationDistance? {
-        locationService.distance(to: bikePoint.coordinate)
-    }
-
-    var body: some View {
-        Button(action: action) {
-            HStack(alignment: .center, spacing: 12) {
-                SimplifiedDonutChart(
-                    standardBikes: bikePoint.standardBikes,
-                    eBikes: bikePoint.eBikes,
-                    emptySpaces: bikePoint.emptyDocks,
-                    size: 38,
-                    displayMode: availabilityMode == .start ? .bikes : .spaces,
-                    bikeDataFilter: bikeDataFilter
-                )
-
-                VStack(alignment: .leading, spacing: 4) {
-                    if let alias = bikePoint.alias(using: favoritesService) {
-                        Text(alias)
-                            .foregroundStyle(.primary)
-                        Text(bikePoint.commonName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text(bikePoint.commonName)
-                            .foregroundStyle(.primary)
-                    }
-                    Text(availabilityText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if let detailText {
-                        Text(detailText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if showsDistance {
-                    Spacer(minLength: 12)
-
-                    DistanceIndicator(
-                        distance: numericDistance,
-                        distanceString: locationService.distanceString(to: bikePoint.coordinate)
-                    )
-                }
-            }
-        }
-    }
-
-    private var availabilityText: String {
-        switch availabilityMode {
-        case .start:
-            return bikeAvailabilityText
-        case .end:
-            return "\(bikePoint.emptyDocks) \(bikePoint.emptyDocks == 1 ? "space" : "spaces")"
-        }
-    }
-
-    private var bikeDataFilter: BikeDataFilter {
-        BikeDataFilter(rawValue: bikeDataFilterRawValue) ?? .both
-    }
-
-    private var bikeAvailabilityText: String {
-        let counts = bikeDataFilter.filteredCounts(
-            standardBikes: bikePoint.standardBikes,
-            eBikes: bikePoint.eBikes,
-            emptySpaces: bikePoint.emptyDocks
-        )
-        var parts: [String] = []
-
-        if bikeDataFilter.showsStandardBikes {
-            parts.append("\(counts.standardBikes) \(counts.standardBikes == 1 ? "bike" : "bikes")")
-        }
-
-        if bikeDataFilter.showsEBikes {
-            parts.append("\(counts.eBikes) \(counts.eBikes == 1 ? "e-bike" : "e-bikes")")
-        }
-
-        return parts.joined(separator: " • ")
-    }
-}
-
 private extension ScheduledJourneyDock {
     func displayName(using favoritesService: FavoritesService) -> String {
         favoritesService.alias(for: id) ?? name
-    }
-}
-
-private extension BikePoint {
-    func alias(using favoritesService: FavoritesService) -> String? {
-        favoritesService.alias(for: id)
     }
 }
 

@@ -192,7 +192,7 @@ struct Provider: TimelineProvider {
 
     /// Merges fresh API data with cached metadata (display names, distances, etc.)
     private func buildEntry(from freshBikePoints: [BikePoint], cachedEntry: SimpleEntry) -> SimpleEntry {
-        let cachedById = Dictionary(uniqueKeysWithValues: cachedEntry.bikePoints.map { ($0.id, $0) })
+        let cachedFavoriteIDs = Set(cachedEntry.bikePoints.filter { !$0.isAlternative }.map(\.id))
         let favorites = loadFavorites()
         let favoritesById = Dictionary(uniqueKeysWithValues: favorites.map { ($0.id, $0) })
         let freshById = Dictionary(uniqueKeysWithValues: freshBikePoints.map { ($0.id, $0) })
@@ -252,7 +252,7 @@ struct Provider: TimelineProvider {
                 ))
             }
 
-            for bikePoint in freshBikePoints where cachedById[bikePoint.id] == nil {
+            for bikePoint in freshBikePoints where !cachedFavoriteIDs.contains(bikePoint.id) {
                 let displayName: String
                 if let favorite = favoritesById[bikePoint.id] {
                     displayName = favorite.displayName

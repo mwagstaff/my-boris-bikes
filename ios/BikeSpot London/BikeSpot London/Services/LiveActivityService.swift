@@ -11,6 +11,244 @@ import UIKit
 import UserNotifications
 import os.log
 
+struct DockActivityMonitoringConfiguration: Equatable {
+    let bikePoint: BikePoint
+    let scheduledJourneyId: String?
+    let phase: ScheduledJourney.ActiveRun.Phase?
+    let adHocJourneyId: String?
+    let destinationDock: ScheduledJourneyDock?
+}
+
+struct DockActivityMonitoringRecoveryContext: Equatable {
+    let activeDockId: String
+    let activeDockName: String?
+    let scheduledJourneyId: String?
+    let phase: ScheduledJourney.ActiveRun.Phase?
+    let adHocJourneyId: String?
+    let destinationDockId: String?
+    let destinationDockName: String?
+}
+
+enum DockActivityMonitoringResolver {
+    private struct ResolutionContext {
+        let primaryDockId: String
+        let destinationDockId: String?
+        let activeDockId: String
+        let activeDockName: String?
+        let destinationDockName: String?
+        let phase: ScheduledJourney.ActiveRun.Phase?
+    }
+
+    static func resolve(
+        attributes: DockActivityAttributes,
+        state: DockActivityAttributes.ContentState,
+        fallbackActiveDock: BikePoint? = nil,
+        fallbackDestinationDock: ScheduledJourneyDock? = nil
+    ) -> DockActivityMonitoringConfiguration? {
+        guard let context = resolutionContext(attributes: attributes, state: state) else {
+            return nil
+        }
+
+        let activeDock: BikePoint?
+        if context.activeDockId == context.primaryDockId,
+           let latitude = attributes.latitude,
+           let longitude = attributes.longitude,
+           isValidCoordinate(latitude: latitude, longitude: longitude),
+           let dockName = context.activeDockName {
+            activeDock = BikePoint(
+                id: context.activeDockId,
+                commonName: dockName,
+                lat: latitude,
+                lon: longitude
+            )
+        } else if context.activeDockId == context.destinationDockId,
+                  let latitude = attributes.destinationLatitude,
+                  let longitude = attributes.destinationLongitude,
+                  isValidCoordinate(latitude: latitude, longitude: longitude),
+                  let dockName = context.activeDockName {
+            activeDock = BikePoint(
+                id: context.activeDockId,
+                commonName: dockName,
+                lat: latitude,
+                lon: longitude
+            )
+        } else if let fallbackActiveDock,
+                  fallbackActiveDock.id == context.activeDockId,
+                  isValidCoordinate(latitude: fallbackActiveDock.lat, longitude: fallbackActiveDock.lon),
+                  !fallbackActiveDock.commonName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            activeDock = fallbackActiveDock
+        } else {
+            activeDock = nil
+        }
+
+        guard let activeDock else { return nil }
+
+        let destinationDock: ScheduledJourneyDock?
+        if context.phase == .start {
+            guard let destinationDockId = context.destinationDockId else { return nil }
+
+            if let destinationDockName = context.destinationDockName,
+               let latitude = attributes.destinationLatitude,
+               let longitude = attributes.destinationLongitude,
+               isValidCoordinate(latitude: latitude, longitude: longitude) {
+                destinationDock = ScheduledJourneyDock(
+                    id: destinationDockId,
+                    name: destinationDockName,
+                    latitude: latitude,
+                    longitude: longitude
+                )
+            } else if let fallbackDestinationDock,
+                      fallbackDestinationDock.id == destinationDockId,
+                      isValidCoordinate(
+                          latitude: fallbackDestinationDock.latitude,
+                          longitude: fallbackDestinationDock.longitude
+                      ),
+                      !fallbackDestinationDock.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                destinationDock = fallbackDestinationDock
+            } else {
+                return nil
+            }
+        } else {
+            destinationDock = nil
+        }
+
+        return DockActivityMonitoringConfiguration(
+            bikePoint: activeDock,
+            scheduledJourneyId: attributes.scheduledJourneyId,
+            phase: context.phase,
+            adHocJourneyId: attributes.adHocJourneyId,
+            destinationDock: destinationDock
+        )
+    }
+
+    static func recoveryContext(
+        attributes: DockActivityAttributes,
+        state: DockActivityAttributes.ContentState
+    ) -> DockActivityMonitoringRecoveryContext? {
+        guard let context = resolutionContext(attributes: attributes, state: state) else {
+            return nil
+        }
+        return DockActivityMonitoringRecoveryContext(
+            activeDockId: context.activeDockId,
+            activeDockName: context.activeDockName,
+            scheduledJourneyId: attributes.scheduledJourneyId,
+            phase: context.phase,
+            adHocJourneyId: attributes.adHocJourneyId,
+            destinationDockId: context.destinationDockId,
+            destinationDockName: context.destinationDockName
+        )
+    }
+
+    private static func resolutionContext(
+        attributes: DockActivityAttributes,
+        state: DockActivityAttributes.ContentState
+    ) -> ResolutionContext? {
+        guard let primaryDockId = nonBlank(attributes.dockId) else { return nil }
+
+        let mutablePhaseValue = nonBlank(state.activeJourneyPhase)
+        let immutablePhaseValue = nonBlank(attributes.scheduledJourneyPhase)
+        let phase: ScheduledJourney.ActiveRun.Phase?
+        if let mutablePhaseValue {
+            guard let parsed = ScheduledJourney.ActiveRun.Phase(rawValue: mutablePhaseValue) else {
+                return nil
+            }
+            phase = parsed
+        } else if let immutablePhaseValue {
+            guard let parsed = ScheduledJourney.ActiveRun.Phase(rawValue: immutablePhaseValue) else {
+                return nil
+            }
+            phase = parsed
+        } else {
+            phase = nil
+        }
+
+        let creationPhase: ScheduledJourney.ActiveRun.Phase?
+        if let immutablePhaseValue {
+            guard let parsed = ScheduledJourney.ActiveRun.Phase(rawValue: immutablePhaseValue) else {
+                return nil
+            }
+            creationPhase = parsed
+        } else {
+            creationPhase = nil
+        }
+
+        let mutableDockId = state.resolvedDockId
+        let destinationDockId = nonBlank(attributes.destinationDockId)
+        let activeDockId = mutableDockId ?? primaryDockId
+
+        switch (phase, creationPhase) {
+        case (.some(.start), .some(.start)):
+            guard activeDockId == primaryDockId, destinationDockId != nil else { return nil }
+        case (.some(.end), .some(.start)):
+            guard activeDockId == destinationDockId else { return nil }
+        case (.some(.end), .some(.end)):
+            guard activeDockId == primaryDockId else { return nil }
+        case (nil, nil):
+            guard activeDockId == primaryDockId else { return nil }
+        default:
+            return nil
+        }
+
+        let attributeDockName = activeDockId == destinationDockId
+            ? nonBlank(attributes.destinationDockName)
+            : nonBlank(attributes.dockName)
+        let activeDockName = mutableDockId == nil
+            ? attributeDockName
+            : state.resolvedDockName ?? attributeDockName
+
+        return ResolutionContext(
+            primaryDockId: primaryDockId,
+            destinationDockId: destinationDockId,
+            activeDockId: activeDockId,
+            activeDockName: activeDockName,
+            destinationDockName: nonBlank(attributes.destinationDockName),
+            phase: phase
+        )
+    }
+
+    private static func nonBlank(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func isValidCoordinate(latitude: Double, longitude: Double) -> Bool {
+        latitude.isFinite &&
+            longitude.isFinite &&
+            (-90...90).contains(latitude) &&
+            (-180...180).contains(longitude) &&
+            (latitude != 0 || longitude != 0)
+    }
+}
+
+struct LiveActivityTokenRegistrationKey: Hashable {
+    let activityId: String
+    let pushToken: String
+}
+
+struct LiveActivityTokenRegistrationTracker {
+    private(set) var inFlight: Set<LiveActivityTokenRegistrationKey> = []
+    private(set) var completed: Set<LiveActivityTokenRegistrationKey> = []
+
+    mutating func begin(_ key: LiveActivityTokenRegistrationKey, force: Bool = false) -> Bool {
+        guard !inFlight.contains(key) else { return false }
+        guard force || !completed.contains(key) else { return false }
+        inFlight.insert(key)
+        return true
+    }
+
+    mutating func finish(_ key: LiveActivityTokenRegistrationKey, succeeded: Bool) {
+        inFlight.remove(key)
+        if succeeded {
+            completed.insert(key)
+        }
+    }
+
+    mutating func remove(activityId: String) {
+        inFlight = Set(inFlight.filter { $0.activityId != activityId })
+        completed = Set(completed.filter { $0.activityId != activityId })
+    }
+}
+
 @MainActor
 class LiveActivityService: ObservableObject {
     struct ActiveNotificationSession: Equatable {
@@ -51,6 +289,7 @@ class LiveActivityService: ObservableObject {
 
     static let shared = LiveActivityService()
     private let serverSessionTokensKey = "liveActivityServerSessionTokensByDock"
+    private let availabilityFreshnessSeconds: TimeInterval = 120
 
     private let logger = Logger(subsystem: "dev.skynolimit.myborisbikes", category: "LiveActivity")
 
@@ -82,7 +321,7 @@ class LiveActivityService: ObservableObject {
 
     private func activeJourneyActivitySummary() -> ActiveJourneyActivitySummary? {
         let activityCandidates = Array(activeActivities.values) +
-            Activity<DockActivityAttributes>.activities.filter { $0.activityState == .active }
+            Activity<DockActivityAttributes>.activities.filter { isTrackableActivityState($0.activityState) }
 
         for activity in activityCandidates {
             let state = activity.content.state
@@ -122,7 +361,15 @@ class LiveActivityService: ObservableObject {
 
     /// Track observation tasks to cancel them when activities end
     private var observationTasks: [String: [Task<Void, Never>]] = [:]
+    private var observedActivityIdsByDock: [String: String] = [:]
+    private var activityObservedAtById: [String: Date] = [:]
+    private var tokenRegistrationTracker = LiveActivityTokenRegistrationTracker()
     private var activityUpdatesTask: Task<Void, Never>?
+    private var arrivalMonitoringRecoveryTask: Task<Void, Never>?
+    private var arrivalMonitoringRecoveryGeneration: UUID?
+    private var arrivalMonitoringAuthorityActivityId: String?
+    private var dockPreferencesObserver: NSObjectProtocol?
+    private var dockPreferencesRefreshTask: Task<Void, Never>?
 
     /// Server base URL for the live activity API
     var serverBaseURL: String {
@@ -134,7 +381,24 @@ class LiveActivityService: ObservableObject {
         PushEnvironment.buildType
     }
 
-    private init() {}
+    private init() {
+        dockPreferencesObserver = NotificationCenter.default.addObserver(
+            forName: .dockPreferencesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.dockPreferencesRefreshTask?.cancel()
+                self.dockPreferencesRefreshTask = Task { [weak self] in
+                    guard let self else { return }
+                    let bikePoints = await self.fetchAllBikePointsForAlternatives()
+                    guard !Task.isCancelled else { return }
+                    await self.updateActiveActivitiesIfNeeded(using: bikePoints, refreshPreferences: true)
+                }
+            }
+        }
+    }
 
     deinit {
         // Cancel all observation tasks when service is deallocated
@@ -145,6 +409,9 @@ class LiveActivityService: ObservableObject {
             logger.info("Deinit: Cancelled \(tasks.count) observation task(s) for dock \(dockId)")
         }
         activityUpdatesTask?.cancel()
+        arrivalMonitoringRecoveryTask?.cancel()
+        dockPreferencesRefreshTask?.cancel()
+        if let dockPreferencesObserver { NotificationCenter.default.removeObserver(dockPreferencesObserver) }
     }
 
     // MARK: - Helper Methods
@@ -157,6 +424,10 @@ class LiveActivityService: ObservableObject {
             }
             observationTasks.removeValue(forKey: dockId)
             logger.info("Cancelled \(tasks.count) observation task(s) for dock \(dockId)")
+        }
+        if let activityId = observedActivityIdsByDock.removeValue(forKey: dockId) {
+            activityObservedAtById.removeValue(forKey: activityId)
+            tokenRegistrationTracker.remove(activityId: activityId)
         }
     }
 
@@ -346,6 +617,227 @@ class LiveActivityService: ObservableObject {
         logger.info("Ended extra live activity for dock \(dockId)")
     }
 
+    private func scheduledJourneyPhase(
+        for activity: Activity<DockActivityAttributes>
+    ) -> ScheduledJourney.ActiveRun.Phase? {
+        ScheduledJourney.ActiveRun.Phase(
+            rawValue: activity.content.state.activeJourneyPhase
+                ?? activity.attributes.scheduledJourneyPhase
+                ?? ""
+        )
+    }
+
+    private func isTrackableActivityState(_ state: ActivityState) -> Bool {
+        state == .active || state == .stale
+    }
+
+    private func registerActivityTokenIfNeeded(
+        for activity: Activity<DockActivityAttributes>,
+        pushToken: Data,
+        source: String,
+        force: Bool = false,
+        alternatives: [DockActivityAttributes.AlternativeDock]? = nil,
+        attempt: Int = 1
+    ) async {
+        let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
+        let key = LiveActivityTokenRegistrationKey(
+            activityId: activity.id,
+            pushToken: tokenString
+        )
+        guard tokenRegistrationTracker.begin(key, force: force) else {
+            logLiveActivityDiagnosticEvent(
+                "live_activity_server_registration_deduplicated",
+                dockId: activity.content.state.resolvedDockId ?? activity.attributes.dockId,
+                scheduledJourneyId: activity.attributes.scheduledJourneyId,
+                scheduledJourneyPhase: scheduledJourneyPhase(for: activity),
+                message: "Skipped a duplicate ActivityKit token registration",
+                raw: [
+                    "activityId": activity.id,
+                    "pushTokenPrefix": String(tokenString.prefix(8)),
+                    "source": source,
+                ]
+            )
+            return
+        }
+
+        let state = activity.content.state
+        let dockId = state.resolvedDockId ?? activity.attributes.dockId
+        let dockName = state.resolvedDockName ?? activity.attributes.dockName
+        let phase = scheduledJourneyPhase(for: activity)
+        let observedAt = activityObservedAtById[activity.id] ?? Date()
+        let tokenLatencySeconds = max(0, Date().timeIntervalSince(observedAt))
+        logLiveActivityDiagnosticEvent(
+            "live_activity_push_token_registration_started",
+            dockId: dockId,
+            dockName: dockName,
+            scheduledJourneyId: activity.attributes.scheduledJourneyId,
+            scheduledJourneyPhase: phase,
+            message: "Registering an ActivityKit update token without blocking on availability enrichment",
+            raw: [
+                "activityId": activity.id,
+                "pushTokenPrefix": String(tokenString.prefix(8)),
+                "source": source,
+                "tokenLatencySeconds": tokenLatencySeconds,
+                "attempt": attempt,
+            ]
+        )
+
+        let succeeded = await registerWithServer(
+            dockId: dockId,
+            pushToken: tokenString,
+            dockName: dockName,
+            alternatives: alternatives ?? state.alternatives,
+            currentState: state,
+            scheduledJourneyId: activity.attributes.scheduledJourneyId,
+            scheduledJourneyPhase: phase,
+            adHocJourneyId: activity.attributes.adHocJourneyId
+        )
+        tokenRegistrationTracker.finish(key, succeeded: succeeded)
+        guard !succeeded,
+              attempt < 3,
+              isTrackableActivityState(activity.activityState) else {
+            return
+        }
+
+        let retryDelayNanoseconds = UInt64(attempt * 2) * 1_000_000_000
+        try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
+        guard !Task.isCancelled else { return }
+        await registerActivityTokenIfNeeded(
+            for: activity,
+            pushToken: pushToken,
+            source: "\(source)_retry",
+            force: force,
+            alternatives: alternatives,
+            attempt: attempt + 1
+        )
+    }
+
+    private func ensureActivityObservation(
+        for activity: Activity<DockActivityAttributes>,
+        source: String
+    ) {
+        let dockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
+        guard observedActivityIdsByDock[dockId] != activity.id || observationTasks[dockId] == nil else {
+            if let pushToken = activity.pushToken {
+                Task { [weak self] in
+                    await self?.registerActivityTokenIfNeeded(
+                        for: activity,
+                        pushToken: pushToken,
+                        source: "\(source)_existing_observer"
+                    )
+                }
+            }
+            return
+        }
+
+        cancelObservationTasks(for: dockId)
+        observedActivityIdsByDock[dockId] = activity.id
+        activityObservedAtById[activity.id] = activityObservedAtById[activity.id] ?? Date()
+        let phase = scheduledJourneyPhase(for: activity)
+        logLiveActivityDiagnosticEvent(
+            "live_activity_observation_started",
+            dockId: dockId,
+            dockName: activity.content.state.resolvedDockName ?? activity.attributes.dockName,
+            scheduledJourneyId: activity.attributes.scheduledJourneyId,
+            scheduledJourneyPhase: phase,
+            message: "Started ActivityKit token and state observation",
+            raw: [
+                "activityId": activity.id,
+                "pushTokenAvailable": activity.pushToken != nil,
+                "source": source,
+            ]
+        )
+
+        let pushTokenTask = Task { [weak self] in
+            for await pushToken in activity.pushTokenUpdates {
+                guard let self else { break }
+                await self.registerActivityTokenIfNeeded(
+                    for: activity,
+                    pushToken: pushToken,
+                    source: "\(source)_push_token_update"
+                )
+            }
+        }
+
+        let stateTask = Task { [weak self] in
+            for await state in activity.activityStateUpdates {
+                guard let self else { break }
+                let currentDockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
+                if state == .stale {
+                    self.logLiveActivityDiagnosticEvent(
+                        "live_activity_content_stale",
+                        dockId: currentDockId,
+                        dockName: activity.content.state.resolvedDockName ?? activity.attributes.dockName,
+                        scheduledJourneyId: activity.attributes.scheduledJourneyId,
+                        scheduledJourneyPhase: self.scheduledJourneyPhase(for: activity),
+                        message: "Activity availability content is stale; keeping the journey active while awaiting a refresh",
+                        raw: ["activityId": activity.id]
+                    )
+                } else if state == .dismissed || state == .ended {
+                    if let adHocJourneyId = activity.attributes.adHocJourneyId {
+                        AdHocJourneyService.shared.complete(journeyId: adHocJourneyId)
+                    }
+                    self.clearLocallyTrackedActivity(for: currentDockId)
+                    self.notifyPrimaryDisplayChanged()
+                    if let pushToken = activity.pushToken {
+                        let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
+                        await self.unregisterFromServer(dockId: currentDockId, pushToken: tokenString)
+                    }
+                    break
+                }
+            }
+        }
+
+        let contentTask = Task { [weak self] in
+            for await content in activity.contentUpdates {
+                guard let self else { break }
+                let currentDockId = content.state.resolvedDockId ?? activity.attributes.dockId
+                self.staleDates[currentDockId] = content.staleDate
+                self.logLiveActivityDiagnosticEvent(
+                    "live_activity_content_update_received",
+                    dockId: currentDockId,
+                    dockName: content.state.resolvedDockName ?? activity.attributes.dockName,
+                    scheduledJourneyId: activity.attributes.scheduledJourneyId,
+                    scheduledJourneyPhase: self.scheduledJourneyPhase(for: activity),
+                    message: "Received updated Live Activity availability content",
+                    raw: [
+                        "activityId": activity.id,
+                        "standardBikes": content.state.standardBikes,
+                        "eBikes": content.state.eBikes,
+                        "emptySpaces": content.state.emptySpaces,
+                        "availabilityUpdatedAtEpochSeconds": content.state.availabilityUpdatedAtEpochSeconds ?? -1,
+                        "staleDate": content.staleDate?.ISO8601Format() ?? "none",
+                    ]
+                )
+            }
+        }
+
+        observationTasks[dockId] = [pushTokenTask, stateTask, contentTask]
+
+        if let pushToken = activity.pushToken {
+            Task { [weak self] in
+                await self?.registerActivityTokenIfNeeded(
+                    for: activity,
+                    pushToken: pushToken,
+                    source: "\(source)_initial_token"
+                )
+            }
+        } else {
+            logLiveActivityDiagnosticEvent(
+                "live_activity_initial_push_token_missing",
+                dockId: dockId,
+                dockName: activity.content.state.resolvedDockName ?? activity.attributes.dockName,
+                scheduledJourneyId: activity.attributes.scheduledJourneyId,
+                scheduledJourneyPhase: phase,
+                message: "ActivityKit update token was not yet available; the async observer remains armed",
+                raw: [
+                    "activityId": activity.id,
+                    "source": source,
+                ]
+            )
+        }
+    }
+
     // MARK: - Public API
 
     func startLiveActivity(
@@ -358,6 +850,7 @@ class LiveActivityService: ObservableObject {
         destinationDock: ScheduledJourneyDock? = nil
     ) {
         let dockId = bikePoint.id
+        let alias = DockPreferencesService.shared.alias(for: dockId) ?? alias
 
         if scheduledJourneyPhase == nil,
            let activeJourney = activeJourneyActivitySummary() {
@@ -434,15 +927,32 @@ class LiveActivityService: ObservableObject {
             destinationLongitude: destinationDock?.longitude
         )
 
-        // Store up to 5 nearby alternatives; the watch view caps display at 2–3 based on filter preference
-        let alternativeDocks = alternatives.prefix(5).map {
-            DockActivityAttributes.AlternativeDock(
-                name: $0.commonName,
-                standardBikes: $0.standardBikes,
-                eBikes: $0.eBikes,
-                emptySpaces: $0.emptyDocks
+        let selectedAlternatives: [BikePoint]
+        if DockPreferencesService.shared.customDockIDs(for: dockId) != nil {
+            let candidates = Dictionary(
+                (AllBikePointsCache.shared.load() + alternatives + [bikePoint]).map { ($0.id, $0) },
+                uniquingKeysWith: { _, latest in latest }
             )
+            let purpose: AlternativeDockPurpose
+            switch scheduledJourneyPrimaryDisplay(dockId: dockId, scheduledJourneyPhase: scheduledJourneyPhase) {
+            case "spaces": purpose = .spaces
+            case "eBikes": purpose = .eBikes
+            case "allBikes": purpose = .allBikes
+            default: purpose = .bikes
+            }
+            selectedAlternatives = AlternativeDockSelectionService.alternatives(
+                for: bikePoint,
+                allBikePoints: Array(candidates.values),
+                favorites: FavoritesService.shared.favorites,
+                userLocation: nil,
+                purpose: purpose
+            )
+        } else {
+            selectedAlternatives = alternatives
         }
+
+        // Store up to 5 nearby alternatives; the watch view caps display at 2–3 based on filter preference.
+        let alternativeDocks = selectedAlternatives.prefix(5).map(alternativeSnapshot)
 
         let initialState = DockActivityAttributes.ContentState(
             standardBikes: bikePoint.standardBikes,
@@ -456,12 +966,14 @@ class LiveActivityService: ObservableObject {
             primaryDisplay: scheduledJourneyPrimaryDisplay(
                 dockId: dockId,
                 scheduledJourneyPhase: scheduledJourneyPhase
-            )
+            ),
+            availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970)
         )
 
-        // Calculate stale date based on configured duration, capped to notification window max.
+        // `staleDate` represents availability freshness. The server separately owns
+        // the configured session expiry and sends an explicit end event at that time.
         let finalExpirySeconds = configuredLiveActivityExpirySeconds()
-        let staleDate = Date().addingTimeInterval(finalExpirySeconds)
+        let staleDate = Date().addingTimeInterval(availabilityFreshnessSeconds)
 
         let content = ActivityContent(state: initialState, staleDate: staleDate)
 
@@ -545,110 +1057,7 @@ class LiveActivityService: ObservableObject {
                 DockArrivalMonitoringService.shared.beginMonitoring(for: bikePoint)
             }
 
-            // Register immediately if the token is already available.
-            // In some launches the first push token can be present synchronously and
-            // we should not rely solely on the async updates sequence.
-            if let pushToken = activity.pushToken {
-                let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
-                logger.info("Initial push token for dock \(dockId): \(tokenString)")
-                logLiveActivityDiagnosticEvent(
-                    "live_activity_initial_push_token_available",
-                    dockId: dockId,
-                    dockName: bikePoint.commonName,
-                    scheduledJourneyId: scheduledJourneyId,
-                    scheduledJourneyPhase: scheduledJourneyPhase,
-                    message: "Initial ActivityKit push token was available synchronously",
-                    raw: ["pushTokenPrefix": String(tokenString.prefix(8))]
-                )
-                Task { [weak self] in
-                    guard let self else { return }
-                    await self.registerWithServer(
-                        dockId: dockId,
-                        pushToken: tokenString,
-                        dockName: bikePoint.commonName,
-                        alternatives: activity.content.state.alternatives,
-                        currentState: initialState,
-                        scheduledJourneyId: scheduledJourneyId,
-                        scheduledJourneyPhase: scheduledJourneyPhase,
-                        adHocJourneyId: adHocJourneyId
-                    )
-                }
-            }
-
-            // Cancel any existing observation tasks for this dock
-            cancelObservationTasks(for: dockId)
-
-            // Observe push token updates
-            let pushTokenTask = Task { [weak self] in
-                for await pushToken in activity.pushTokenUpdates {
-                    guard let self = self else { break }
-                    let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
-                    self.logger.info("Push token for dock \(dockId): \(tokenString)")
-                    self.logLiveActivityDiagnosticEvent(
-                        "live_activity_push_token_update",
-                        dockId: dockId,
-                        dockName: bikePoint.commonName,
-                        scheduledJourneyId: scheduledJourneyId,
-                        scheduledJourneyPhase: scheduledJourneyPhase,
-                        message: "Received ActivityKit push token update",
-                        raw: ["pushTokenPrefix": String(tokenString.prefix(8))]
-                    )
-                    await self.registerWithServer(
-                        dockId: dockId,
-                        pushToken: tokenString,
-                        dockName: bikePoint.commonName,
-                        alternatives: activity.content.state.alternatives,
-                        currentState: activity.content.state,
-                        scheduledJourneyId: scheduledJourneyId,
-                        scheduledJourneyPhase: scheduledJourneyPhase,
-                        adHocJourneyId: adHocJourneyId
-                    )
-                }
-            }
-
-            // Observe activity state changes (e.g., user dismisses, activity goes stale)
-            let stateTask = Task { [weak self] in
-                for await state in activity.activityStateUpdates {
-                    guard let self = self else { break }
-                    if state == .stale {
-                        self.logger.info("Activity for dock \(dockId) is stale — ending immediately")
-                        AnalyticsService.shared.track(
-                            action: .liveActivityEnd,
-                            screen: .unknown,
-                            dock: AnalyticsDockInfo(id: dockId),
-                            metadata: ["reason": "stale"]
-                        )
-                        await MainActor.run { self.endLiveActivity(for: dockId) }
-                        break
-                    } else if state == .dismissed || state == .ended {
-                        self.logger.info("Activity for dock \(dockId) ended (state: \(String(describing: state)))")
-                        AnalyticsService.shared.track(
-                            action: .liveActivityEnd,
-                            screen: .unknown,
-                            dock: AnalyticsDockInfo(id: dockId),
-                            metadata: [
-                                "reason": state == .dismissed ? "dismissed" : "ended"
-                            ]
-                        )
-                        await MainActor.run {
-                            if let adHocJourneyId = activity.attributes.adHocJourneyId {
-                                AdHocJourneyService.shared.complete(journeyId: adHocJourneyId)
-                            }
-                            self.clearLocallyTrackedActivity(for: dockId)
-                            self.notifyPrimaryDisplayChanged()
-                        }
-                        // Notify server to stop polling
-                        if let pushToken = activity.pushToken {
-                            let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
-                            await self.unregisterFromServer(dockId: dockId, pushToken: tokenString)
-                        }
-                        break
-                    }
-                }
-            }
-
-            // Store tasks so they can be cancelled later
-            observationTasks[dockId] = [pushTokenTask, stateTask]
+            ensureActivityObservation(for: activity, source: "local_start")
         } catch {
             logger.error("Failed to start live activity: \(error.localizedDescription)")
             TroubleshootingLogStore.shared.record(
@@ -765,8 +1174,8 @@ class LiveActivityService: ObservableObject {
         return nil
     }
 
-    func updateActiveActivitiesIfNeeded(using bikePoints: [BikePoint]) async {
-        guard !bikePoints.isEmpty else { return }
+    func updateActiveActivitiesIfNeeded(using bikePoints: [BikePoint], refreshPreferences: Bool = false) async {
+        guard refreshPreferences || !bikePoints.isEmpty else { return }
 
         let bikePointsById = Dictionary(
             bikePoints.map { ($0.id, $0) },
@@ -776,18 +1185,28 @@ class LiveActivityService: ObservableObject {
             bikePoints.map { ($0.commonName, $0) },
             uniquingKeysWith: { first, _ in first }
         )
+        var selectionBikePointsById = Dictionary(
+            AllBikePointsCache.shared.load().map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        selectionBikePointsById.merge(bikePointsById, uniquingKeysWith: { _, latest in latest })
 
         var activitiesById: [String: Activity<DockActivityAttributes>] = activeActivities
-        for activity in Activity<DockActivityAttributes>.activities where activity.activityState == .active {
+        for activity in Activity<DockActivityAttributes>.activities where isTrackableActivityState(activity.activityState) {
             let dockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
             activitiesById[dockId] = activity
         }
 
         for (dockId, activity) in activitiesById {
+            guard !Task.isCancelled else { return }
             let currentState = activity.content.state
             let activeDockId = currentState.resolvedDockId ?? activity.attributes.dockId
-            guard let bikePoint = bikePointsById[activeDockId] else { continue }
-            if let incomingModifiedAt = bikePoint.availabilityDataModifiedAt,
+            let fallbackBikePoint = refreshPreferences
+                ? DockActivityMonitoringResolver.resolve(attributes: activity.attributes, state: currentState)?.bikePoint
+                : nil
+            guard let bikePoint = bikePointsById[activeDockId] ?? fallbackBikePoint else { continue }
+            if !refreshPreferences,
+               let incomingModifiedAt = bikePoint.availabilityDataModifiedAt,
                let appliedModifiedAt = localActivityAvailabilityModifiedAt[activeDockId],
                incomingModifiedAt < appliedModifiedAt {
                 logger.info(
@@ -796,17 +1215,24 @@ class LiveActivityService: ObservableObject {
                 continue
             }
 
-            let refreshedAlternatives = currentState.alternatives.map { alternative in
-                guard let refreshed = bikePointsByName[alternative.name] else {
-                    return alternative
-                }
-
-                return DockActivityAttributes.AlternativeDock(
-                    name: alternative.name,
-                    standardBikes: refreshed.standardBikes,
-                    eBikes: refreshed.eBikes,
-                    emptySpaces: refreshed.emptyDocks
+            let refreshedAlternatives: [DockActivityAttributes.AlternativeDock]
+            if refreshPreferences || DockPreferencesService.shared.customDockIDs(for: activeDockId) != nil {
+                refreshedAlternatives = AlternativeDockSelectionService.alternatives(
+                    for: bikePoint,
+                    allBikePoints: Array(selectionBikePointsById.values),
+                    favorites: FavoritesService.shared.favorites,
+                    userLocation: nil,
+                    purpose: alternativePurpose(for: activity)
                 )
+                .prefix(5)
+                .map(alternativeSnapshot)
+            } else {
+                refreshedAlternatives = currentState.alternatives.map { alternative in
+                    // Only legacy snapshots without IDs may fall back to matching official names.
+                    let refreshed = alternative.id.map { bikePointsById[$0] } ?? bikePointsByName[alternative.name]
+                    guard let refreshed else { return alternative }
+                    return alternativeSnapshot(for: refreshed)
+                }
             }
 
             let availabilityChanged =
@@ -815,20 +1241,27 @@ class LiveActivityService: ObservableObject {
                 currentState.emptySpaces != bikePoint.emptyDocks
             let alternativesChanged = refreshedAlternatives != currentState.alternatives
 
-            guard availabilityChanged || alternativesChanged else { continue }
-
+            let alias = DockPreferencesService.shared.alias(for: activeDockId)
             let updatedState = DockActivityAttributes.ContentState(
-                standardBikes: bikePoint.standardBikes,
-                eBikes: bikePoint.eBikes,
-                emptySpaces: bikePoint.emptyDocks,
+                standardBikes: refreshPreferences ? currentState.standardBikes : bikePoint.standardBikes,
+                eBikes: refreshPreferences ? currentState.eBikes : bikePoint.eBikes,
+                emptySpaces: refreshPreferences ? currentState.emptySpaces : bikePoint.emptyDocks,
                 alternatives: refreshedAlternatives,
                 activeDockId: currentState.activeDockId ?? activeDockId,
                 activeDockName: currentState.activeDockName ?? bikePoint.commonName,
-                activeDockAlias: currentState.activeDockAlias,
+                activeDockAlias: alias,
                 activeJourneyPhase: currentState.activeJourneyPhase,
-                primaryDisplay: currentState.primaryDisplay
+                primaryDisplay: currentState.primaryDisplay,
+                availabilityUpdatedAtEpochSeconds: refreshPreferences
+                    ? currentState.availabilityUpdatedAtEpochSeconds
+                    : Int(Date().timeIntervalSince1970)
             )
-            let staleDate = staleDates[dockId] ?? activity.content.staleDate
+            guard refreshPreferences || availabilityChanged || alternativesChanged || updatedState.resolvedAlias != currentState.resolvedAlias else {
+                continue
+            }
+            let staleDate = refreshPreferences
+                ? activity.content.staleDate
+                : Date().addingTimeInterval(availabilityFreshnessSeconds)
 
             await activity.update(ActivityContent(state: updatedState, staleDate: staleDate))
             if dockId != activeDockId {
@@ -838,8 +1271,19 @@ class LiveActivityService: ObservableObject {
             }
             activeActivities[activeDockId] = activity
             staleDates[activeDockId] = staleDate
-            if let incomingModifiedAt = bikePoint.availabilityDataModifiedAt {
+            if !refreshPreferences, let incomingModifiedAt = bikePoint.availabilityDataModifiedAt {
                 localActivityAvailabilityModifiedAt[activeDockId] = incomingModifiedAt
+            }
+            if refreshPreferences, let pushToken = activity.pushToken {
+                await updateSessionConfigurationOnServer(
+                    dockId: activeDockId,
+                    pushToken: pushToken.map { String(format: "%02x", $0) }.joined(),
+                    dockName: updatedState.resolvedDockName ?? bikePoint.commonName,
+                    primaryDisplay: getPrimaryDisplay(for: activeDockId),
+                    alternatives: refreshedAlternatives,
+                    currentState: updatedState,
+                    scheduledJourneyPhase: scheduledJourneyPhase(for: activity)
+                )
             }
             logger.info(
                 "Locally refreshed live activity for dock \(activeDockId): bikes=\(bikePoint.standardBikes), eBikes=\(bikePoint.eBikes), spaces=\(bikePoint.emptyDocks)"
@@ -890,7 +1334,7 @@ class LiveActivityService: ObservableObject {
 
         switch trimmedAction {
         case "advance":
-            return await advanceJourneyFromStart(dockId: trimmedDockId)
+            return await advanceJourneyFromStart(dockId: trimmedDockId, source: "watch")
         case "end":
             if currentNotificationSession == nil {
                 await refreshNotificationStatusFromServer()
@@ -1034,7 +1478,7 @@ class LiveActivityService: ObservableObject {
         )
     }
 
-    func advanceJourneyFromStart(dockId: String) async -> Bool {
+    func advanceJourneyFromStart(dockId: String, source: String = "unknown") async -> Bool {
         guard let activity = activeActivities[dockId] ?? activeActivities.values.first(where: {
             $0.attributes.scheduledJourneyPhase == ScheduledJourney.ActiveRun.Phase.start.rawValue
         }),
@@ -1052,6 +1496,30 @@ class LiveActivityService: ObservableObject {
             latitude: destinationLatitude,
             longitude: destinationLongitude
         )
+        TroubleshootingLogStore.shared.record(
+            category: "scheduled_journey",
+            event: "manual_advance",
+            message: "Manually advanced the journey from its start dock to its destination.",
+            metadata: [
+                "source": source,
+                "fromDockId": activity.content.state.resolvedDockId ?? activity.attributes.dockId,
+                "toDockId": endDock.id,
+                "scheduledJourneyId": activity.attributes.scheduledJourneyId,
+                "adHocJourneyId": activity.attributes.adHocJourneyId,
+            ]
+        )
+        logLiveActivityDiagnosticEvent(
+            "scheduled_journey_manual_advance",
+            dockId: activity.content.state.resolvedDockId ?? activity.attributes.dockId,
+            dockName: activity.content.state.resolvedDockName ?? activity.attributes.dockName,
+            scheduledJourneyId: activity.attributes.scheduledJourneyId,
+            scheduledJourneyPhase: .start,
+            message: "Journey manually advanced to its destination dock",
+            raw: [
+                "source": source,
+                "destinationDockId": endDock.id,
+            ]
+        )
         await transitionScheduledJourneyToEndDock(
             journeyId: activity.attributes.scheduledJourneyId,
             adHocJourneyId: activity.attributes.adHocJourneyId,
@@ -1062,7 +1530,7 @@ class LiveActivityService: ObservableObject {
     }
 
     func advanceScheduledJourneyFromStart(dockId: String) async -> Bool {
-        await advanceJourneyFromStart(dockId: dockId)
+        await advanceJourneyFromStart(dockId: dockId, source: "scheduled_journey_action")
     }
 
     private func scheduledStartActivity(
@@ -1092,7 +1560,7 @@ class LiveActivityService: ObservableObject {
             candidates.append(activity)
         }
 
-        for activity in Activity<DockActivityAttributes>.activities where activity.activityState == .active {
+        for activity in Activity<DockActivityAttributes>.activities where isTrackableActivityState(activity.activityState) {
             guard seenActivityIds.insert(activity.id).inserted else { continue }
             candidates.append(activity)
         }
@@ -1147,14 +1615,7 @@ class LiveActivityService: ObservableObject {
 
         let endBikePoint = await fetchBikePointIfPossible(dock: endDock)
         let alternatives = await scheduledJourneyAlternatives(for: endBikePoint, phase: .end)
-        let alternativeDocks = alternatives.prefix(5).map {
-            DockActivityAttributes.AlternativeDock(
-                name: $0.commonName,
-                standardBikes: $0.standardBikes,
-                eBikes: $0.eBikes,
-                emptySpaces: $0.emptyDocks
-            )
-        }
+        let alternativeDocks = alternatives.prefix(5).map(alternativeSnapshot)
         let updatedState = DockActivityAttributes.ContentState(
             standardBikes: endBikePoint.standardBikes,
             eBikes: endBikePoint.eBikes,
@@ -1162,11 +1623,12 @@ class LiveActivityService: ObservableObject {
             alternatives: Array(alternativeDocks),
             activeDockId: endBikePoint.id,
             activeDockName: endBikePoint.commonName,
-            activeDockAlias: nil,
+            activeDockAlias: DockPreferencesService.shared.alias(for: endBikePoint.id),
             activeJourneyPhase: ScheduledJourney.ActiveRun.Phase.end.rawValue,
-            primaryDisplay: LiveActivityPrimaryDisplay.spaces.rawValue
+            primaryDisplay: LiveActivityPrimaryDisplay.spaces.rawValue,
+            availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970)
         )
-        let staleDate = current?.content.staleDate ?? Date().addingTimeInterval(configuredLiveActivityExpirySeconds())
+        let staleDate = Date().addingTimeInterval(availabilityFreshnessSeconds)
 
         if let current {
             let originalDockId = current.attributes.dockId
@@ -1193,6 +1655,9 @@ class LiveActivityService: ObservableObject {
             staleDates[endBikePoint.id] = staleDate
             if let tasks = observationTasks.removeValue(forKey: originalDockId) {
                 observationTasks[endBikePoint.id] = tasks
+            }
+            if let observedActivityId = observedActivityIdsByDock.removeValue(forKey: originalDockId) {
+                observedActivityIdsByDock[endBikePoint.id] = observedActivityId
             }
             LiveActivityDockSettings.clearPrimaryDisplay(for: originalDockId)
             LiveActivityDockSettings.setPrimaryDisplay(.spaces, for: endBikePoint.id)
@@ -1260,62 +1725,279 @@ class LiveActivityService: ObservableObject {
         )
     }
 
+    private func applyArrivalMonitoringConfiguration(
+        _ configuration: DockActivityMonitoringConfiguration,
+        source: DockArrivalMonitoringReconciliationSource
+    ) {
+        DockArrivalMonitoringService.shared.reconcileMonitoring(
+            for: configuration.bikePoint,
+            scheduledJourneyId: configuration.scheduledJourneyId,
+            phase: configuration.phase,
+            adHocJourneyId: configuration.adHocJourneyId,
+            destinationDock: configuration.destinationDock,
+            source: source
+        )
+    }
+
+    private func reconcileArrivalMonitoring(
+        for activity: Activity<DockActivityAttributes>,
+        source: DockArrivalMonitoringReconciliationSource
+    ) {
+        arrivalMonitoringRecoveryTask?.cancel()
+        arrivalMonitoringRecoveryTask = nil
+        arrivalMonitoringRecoveryGeneration = nil
+        arrivalMonitoringAuthorityActivityId = activity.id
+
+        if let configuration = DockActivityMonitoringResolver.resolve(
+            attributes: activity.attributes,
+            state: activity.content.state
+        ) {
+            applyArrivalMonitoringConfiguration(configuration, source: source)
+            return
+        }
+
+        guard let recoveryContext = DockActivityMonitoringResolver.recoveryContext(
+            attributes: activity.attributes,
+            state: activity.content.state
+        ) else {
+            DockArrivalMonitoringService.shared.stopMonitoring(
+                reason: "invalid_live_activity_context",
+                preserveDock: true
+            )
+            recordArrivalMonitoringResolutionFailure(
+                activity: activity,
+                source: source,
+                reason: "invalid_activity_context"
+            )
+            return
+        }
+
+        let restoredPersistedMonitoring = DockArrivalMonitoringService.shared.restoreMonitoringIfNeeded(
+            matchingActiveDockId: recoveryContext.activeDockId,
+            scheduledJourneyId: recoveryContext.scheduledJourneyId,
+            phase: recoveryContext.phase,
+            adHocJourneyId: recoveryContext.adHocJourneyId,
+            destinationDockId: recoveryContext.destinationDockId,
+            source: source
+        )
+        if !restoredPersistedMonitoring {
+            DockArrivalMonitoringService.shared.stopMonitoring(
+                reason: "persisted_context_mismatch",
+                preserveDock: true
+            )
+        }
+
+        TroubleshootingLogStore.shared.record(
+            category: "dock_arrival",
+            event: "activity_monitoring_context_fetch_started",
+            message: "Activity attributes were incomplete; fetching dock coordinates before monitoring.",
+            metadata: [
+                "source": source.rawValue,
+                "activityId": activity.id,
+                "activeDockId": recoveryContext.activeDockId,
+                "destinationDockId": recoveryContext.destinationDockId,
+                "restoredPersistedMonitoring": restoredPersistedMonitoring,
+            ]
+        )
+
+        let generation = UUID()
+        arrivalMonitoringRecoveryGeneration = generation
+        arrivalMonitoringRecoveryTask = Task { [weak self] in
+            guard let self else { return }
+            await self.recoverArrivalMonitoring(
+                for: activity,
+                context: recoveryContext,
+                source: source,
+                generation: generation
+            )
+        }
+    }
+
+    private func recoverArrivalMonitoring(
+        for activity: Activity<DockActivityAttributes>,
+        context: DockActivityMonitoringRecoveryContext,
+        source: DockArrivalMonitoringReconciliationSource,
+        generation: UUID
+    ) async {
+        defer {
+            if arrivalMonitoringRecoveryGeneration == generation {
+                arrivalMonitoringRecoveryTask = nil
+                arrivalMonitoringRecoveryGeneration = nil
+            }
+        }
+
+        async let fetchedActiveDock = fetchBikePointForMonitoring(
+            dockId: context.activeDockId,
+            fallbackName: context.activeDockName
+        )
+
+        let fetchedDestinationDock: ScheduledJourneyDock?
+        if context.phase == .start,
+           let destinationDockId = context.destinationDockId {
+            let destinationBikePoint = await fetchBikePointForMonitoring(
+                dockId: destinationDockId,
+                fallbackName: context.destinationDockName
+            )
+            fetchedDestinationDock = destinationBikePoint.map { ScheduledJourneyDock(bikePoint: $0) }
+        } else {
+            fetchedDestinationDock = nil
+        }
+
+        let activeDock = await fetchedActiveDock
+        guard !Task.isCancelled,
+              arrivalMonitoringRecoveryGeneration == generation,
+              arrivalMonitoringAuthorityActivityId == activity.id,
+              isTrackableActivityState(activity.activityState),
+              activeActivities.values.contains(where: { $0.id == activity.id }) else {
+            TroubleshootingLogStore.shared.record(
+                category: "dock_arrival",
+                event: "activity_monitoring_context_fetch_discarded",
+                message: "Discarded fetched dock context because another Live Activity became authoritative.",
+                metadata: [
+                    "source": source.rawValue,
+                    "activityId": activity.id,
+                    "activeDockId": context.activeDockId,
+                ]
+            )
+            return
+        }
+
+        let attributes = activity.attributes
+        let latestState = activity.content.state
+        guard DockActivityMonitoringResolver.recoveryContext(
+            attributes: attributes,
+            state: latestState
+        ) == context else {
+            TroubleshootingLogStore.shared.record(
+                category: "dock_arrival",
+                event: "activity_monitoring_context_fetch_discarded",
+                message: "Discarded fetched dock context because the activity stage changed during recovery.",
+                metadata: [
+                    "source": source.rawValue,
+                    "activityId": activity.id,
+                    "activeDockId": context.activeDockId,
+                ]
+            )
+            return
+        }
+
+        guard let configuration = DockActivityMonitoringResolver.resolve(
+            attributes: attributes,
+            state: latestState,
+            fallbackActiveDock: activeDock,
+            fallbackDestinationDock: fetchedDestinationDock
+        ) else {
+            recordArrivalMonitoringResolutionFailure(
+                activity: activity,
+                source: source,
+                reason: "invalid_or_unavailable_dock_context"
+            )
+            return
+        }
+
+        applyArrivalMonitoringConfiguration(configuration, source: source)
+    }
+
+    private func fetchBikePointForMonitoring(
+        dockId: String,
+        fallbackName: String?
+    ) async -> BikePoint? {
+        let urlString = "\(AppConstants.API.baseURL)\(AppConstants.API.placeEndpoint)/\(dockId)?cb=\(Int(Date().timeIntervalSince1970))"
+        guard let url = URL(string: urlString) else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode),
+                  let decoded = try? JSONDecoder().decode(BikePoint.self, from: data),
+                  decoded.id == dockId,
+                  decoded.lat.isFinite,
+                  decoded.lon.isFinite,
+                  (-90...90).contains(decoded.lat),
+                  (-180...180).contains(decoded.lon),
+                  decoded.lat != 0 || decoded.lon != 0 else {
+                return nil
+            }
+
+            let trimmedName = decoded.commonName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedName = trimmedName.isEmpty
+                ? fallbackName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                : trimmedName
+            guard !resolvedName.isEmpty else { return nil }
+            return BikePoint(
+                id: decoded.id,
+                commonName: resolvedName,
+                lat: decoded.lat,
+                lon: decoded.lon,
+                additionalProperties: decoded.additionalProperties
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    private func recordArrivalMonitoringResolutionFailure(
+        activity: Activity<DockActivityAttributes>,
+        source: DockArrivalMonitoringReconciliationSource,
+        reason: String
+    ) {
+        let activeDockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
+        let phase = DockActivityMonitoringResolver.recoveryContext(
+            attributes: activity.attributes,
+            state: activity.content.state
+        )?.phase
+        TroubleshootingLogStore.shared.record(
+            category: "dock_arrival",
+            event: "activity_monitoring_context_unresolved",
+            message: "Could not derive a safe dock arrival monitoring target from the active Live Activity.",
+            metadata: [
+                "source": source.rawValue,
+                "reason": reason,
+                "activityId": activity.id,
+                "activeDockId": activeDockId,
+                "phase": phase?.rawValue,
+                "attributeDockId": activity.attributes.dockId,
+                "destinationDockId": activity.attributes.destinationDockId,
+            ]
+        )
+        logLiveActivityDiagnosticEvent(
+            "live_activity_monitoring_context_unresolved",
+            dockId: activeDockId,
+            dockName: activity.content.state.resolvedDockName ?? activity.attributes.dockName,
+            scheduledJourneyId: activity.attributes.scheduledJourneyId,
+            scheduledJourneyPhase: phase,
+            message: "Could not derive a safe dock arrival monitoring target",
+            raw: [
+                "source": source.rawValue,
+                "reason": reason,
+                "activityId": activity.id,
+            ]
+        )
+    }
+
     private func handleObservedActivity(_ activity: Activity<DockActivityAttributes>) async {
         let dockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
-        let dockName = activity.content.state.resolvedDockName ?? activity.attributes.dockName
         activeActivities[dockId] = activity
         staleDates[dockId] = activity.content.staleDate
-        let scheduledJourneyPhase = ScheduledJourney.ActiveRun.Phase(
-            rawValue: activity.content.state.activeJourneyPhase ?? activity.attributes.scheduledJourneyPhase ?? ""
-        )
+        reconcileArrivalMonitoring(for: activity, source: .activityObserved)
+        // ActivityKit can surface a remotely push-started activity before its update
+        // token is available. Arm the async observer before doing any network work.
+        ensureActivityObservation(for: activity, source: "activity_observed")
+        let scheduledJourneyPhase = scheduledJourneyPhase(for: activity)
         let alternatives = await updateScheduledJourneyAlternativesIfNeeded(
             for: activity,
             phase: scheduledJourneyPhase
         )
 
         if let pushToken = activity.pushToken {
-            let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
-            await registerWithServer(
-                dockId: dockId,
-                pushToken: tokenString,
-                dockName: dockName,
-                alternatives: alternatives,
-                currentState: activity.content.state,
-                scheduledJourneyId: activity.attributes.scheduledJourneyId,
-                scheduledJourneyPhase: scheduledJourneyPhase,
-                adHocJourneyId: activity.attributes.adHocJourneyId
-            )
-        }
-
-        if let phase = scheduledJourneyPhase,
-           let latitude = activity.attributes.latitude,
-           let longitude = activity.attributes.longitude {
-            let bikePoint = BikePoint(
-                id: dockId,
-                commonName: dockName,
-                lat: latitude,
-                lon: longitude
-            )
-            let destinationDock: ScheduledJourneyDock?
-            if let destinationDockId = activity.attributes.destinationDockId,
-               let destinationDockName = activity.attributes.destinationDockName,
-               let destinationLatitude = activity.attributes.destinationLatitude,
-               let destinationLongitude = activity.attributes.destinationLongitude {
-                destinationDock = ScheduledJourneyDock(
-                    id: destinationDockId,
-                    name: destinationDockName,
-                    latitude: destinationLatitude,
-                    longitude: destinationLongitude
-                )
-            } else {
-                destinationDock = nil
-            }
-            DockArrivalMonitoringService.shared.beginMonitoring(
-                for: bikePoint,
-                scheduledJourneyId: activity.attributes.scheduledJourneyId,
-                phase: phase,
-                adHocJourneyId: activity.attributes.adHocJourneyId,
-                destinationDock: destinationDock
+            await registerActivityTokenIfNeeded(
+                for: activity,
+                pushToken: pushToken,
+                source: "activity_observed_enriched",
+                force: true,
+                alternatives: alternatives
             )
         }
     }
@@ -1325,36 +2007,29 @@ class LiveActivityService: ObservableObject {
         phase: ScheduledJourney.ActiveRun.Phase?
     ) async -> [DockActivityAttributes.AlternativeDock] {
         guard let phase,
-              let latitude = activity.attributes.latitude,
-              let longitude = activity.attributes.longitude else {
+              let configuration = DockActivityMonitoringResolver.resolve(
+                  attributes: activity.attributes,
+                  state: activity.content.state
+              ) else {
             return activity.content.state.alternatives
         }
 
-        let activeDockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
-        let activeDockName = activity.content.state.resolvedDockName ?? activity.attributes.dockName
-        guard activeDockId == activity.attributes.dockId else {
-            // The journey has already transitioned to a mutable destination dock. The immutable
-            // attributes still describe the original dock, so recomputing alternatives from them
-            // would regress the content state.
-            return activity.content.state.alternatives
-        }
-
+        let activeDockId = configuration.bikePoint.id
+        let activeDockName = configuration.bikePoint.commonName
         let dock = ScheduledJourneyDock(
             id: activeDockId,
             name: activeDockName,
-            latitude: latitude,
-            longitude: longitude
+            latitude: configuration.bikePoint.lat,
+            longitude: configuration.bikePoint.lon
         )
         let bikePoint = await fetchBikePointIfPossible(dock: dock)
         let alternatives = await scheduledJourneyAlternatives(for: bikePoint, phase: phase)
-        let alternativeDocks = alternatives.prefix(5).map {
-            DockActivityAttributes.AlternativeDock(
-                name: $0.commonName,
-                standardBikes: $0.standardBikes,
-                eBikes: $0.eBikes,
-                emptySpaces: $0.emptyDocks
-            )
+        guard !Task.isCancelled,
+              (activity.content.state.resolvedDockId ?? activity.attributes.dockId) == activeDockId,
+              scheduledJourneyPhase(for: activity) == phase else {
+            return activity.content.state.alternatives
         }
+        let alternativeDocks = alternatives.prefix(5).map(alternativeSnapshot)
 
         let updatedState = DockActivityAttributes.ContentState(
             standardBikes: bikePoint.standardBikes,
@@ -1363,16 +2038,51 @@ class LiveActivityService: ObservableObject {
             alternatives: Array(alternativeDocks),
             activeDockId: activeDockId,
             activeDockName: activeDockName,
-            activeDockAlias: activity.content.state.resolvedAlias,
+            activeDockAlias: DockPreferencesService.shared.alias(for: activeDockId),
             activeJourneyPhase: phase.rawValue,
-            primaryDisplay: activity.content.state.primaryDisplay
+            primaryDisplay: activity.content.state.primaryDisplay,
+            availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970)
         )
         let updatedContent = ActivityContent(
             state: updatedState,
-            staleDate: activity.content.staleDate
+            staleDate: Date().addingTimeInterval(availabilityFreshnessSeconds)
         )
         await activity.update(updatedContent)
+        staleDates[activeDockId] = updatedContent.staleDate
         return updatedState.alternatives
+    }
+
+    private func alternativeSnapshot(for bikePoint: BikePoint) -> DockActivityAttributes.AlternativeDock {
+        DockActivityAttributes.AlternativeDock(
+            name: bikePoint.commonName,
+            standardBikes: bikePoint.standardBikes,
+            eBikes: bikePoint.eBikes,
+            emptySpaces: bikePoint.emptyDocks,
+            id: bikePoint.id,
+            alias: DockPreferencesService.shared.alias(for: bikePoint.id)
+        )
+    }
+
+    private func alternativePurpose(for activity: Activity<DockActivityAttributes>) -> AlternativeDockPurpose {
+        if let phase = scheduledJourneyPhase(for: activity) {
+            return scheduledJourneyAlternativePurpose(for: phase)
+        }
+        let dockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
+        switch getPrimaryDisplay(for: dockId) {
+        case .bikes: return .bikes
+        case .eBikes: return .eBikes
+        case .spaces: return .spaces
+        }
+    }
+
+    private func acknowledgeDockPreferences(from data: Data) {
+        struct Response: Decodable {
+            let dockPreferencesRevision: Int64?
+        }
+        if let response = try? JSONDecoder().decode(Response.self, from: data),
+           let revision = response.dockPreferencesRevision {
+            DockPreferencesService.shared.markSynced(revision: revision)
+        }
     }
 
     private func fetchBikePointIfPossible(dock: ScheduledJourneyDock) async -> BikePoint {
@@ -1452,30 +2162,18 @@ class LiveActivityService: ObservableObject {
     func handleDeviceTokenRegistration() async {
         let runningActivities = Activity<DockActivityAttributes>.activities
 
-        for activity in runningActivities where activity.activityState == .active {
+        for activity in runningActivities where isTrackableActivityState(activity.activityState) {
             guard let pushToken = activity.pushToken else { continue }
-            let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
-            let scheduledJourneyPhase = ScheduledJourney.ActiveRun.Phase(
-                rawValue: activity.content.state.activeJourneyPhase ?? activity.attributes.scheduledJourneyPhase ?? ""
-            )
             let dockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
-            let dockName = activity.content.state.resolvedDockName ?? activity.attributes.dockName
-            let alternatives = await updateScheduledJourneyAlternativesIfNeeded(
-                for: activity,
-                phase: scheduledJourneyPhase
-            )
             logger.info(
                 "Re-registering active live activity for dock \(dockId) after APNs device token update"
             )
-            await registerWithServer(
-                dockId: dockId,
-                pushToken: tokenString,
-                dockName: dockName,
-                alternatives: alternatives,
-                currentState: activity.content.state,
-                scheduledJourneyId: activity.attributes.scheduledJourneyId,
-                scheduledJourneyPhase: scheduledJourneyPhase,
-                adHocJourneyId: activity.attributes.adHocJourneyId
+            ensureActivityObservation(for: activity, source: "device_token_registration")
+            await registerActivityTokenIfNeeded(
+                for: activity,
+                pushToken: pushToken,
+                source: "device_token_registration",
+                force: true
             )
         }
 
@@ -1524,7 +2222,8 @@ class LiveActivityService: ObservableObject {
                     activeDockName: currentState.activeDockName,
                     activeDockAlias: currentState.activeDockAlias,
                     activeJourneyPhase: currentState.activeJourneyPhase,
-                    primaryDisplay: display.rawValue
+                    primaryDisplay: display.rawValue,
+                    availabilityUpdatedAtEpochSeconds: currentState.availabilityUpdatedAtEpochSeconds
                 )
                 let preservedStaleDate = self.staleDates[dockId]
                 let newContent = ActivityContent(state: updatedState, staleDate: preservedStaleDate)
@@ -1603,7 +2302,6 @@ class LiveActivityService: ObservableObject {
         var keptDockId: String?
         for activity in runningActivities {
             let dockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
-            let dockName = activity.content.state.resolvedDockName ?? activity.attributes.dockName
 
             if DockArrivalMonitoringService.shared.hasPendingArrival(for: dockId) {
                 logger.info("Ending restored live activity for dock \(dockId) because its arrival is pending delivery")
@@ -1617,16 +2315,11 @@ class LiveActivityService: ObservableObject {
                 continue
             }
 
-            // End stale activities immediately rather than restoring them
             if activity.activityState == .stale {
-                logger.info("Restored live activity for dock \(dockId) is stale — ending immediately")
-                Task { [weak self] in
-                    await self?.endActivityInstance(activity, dockId: dockId)
-                }
-                continue
+                logger.info("Restoring stale live activity for dock \(dockId) while awaiting fresh availability")
             }
 
-            if activity.activityState == .active {
+            if isTrackableActivityState(activity.activityState) {
                 if let keptDockId {
                     logger.info("Found additional live activity for dock \(dockId); ending to enforce single activity (keeping \(keptDockId))")
                     Task { [weak self] in
@@ -1646,88 +2339,10 @@ class LiveActivityService: ObservableObject {
                     logger.info("Restored live activity for dock \(dockId)")
                 }
 
-                // Cancel any existing observation tasks
-                cancelObservationTasks(for: dockId)
-
-                // Re-register restored activities with the server so push updates
-                // resume even after process/server restarts.
-                if let pushToken = activity.pushToken {
-                    let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
-                    Task { [weak self] in
-                        guard let self else { return }
-                        let scheduledJourneyPhase = ScheduledJourney.ActiveRun.Phase(
-                            rawValue: activity.content.state.activeJourneyPhase ?? activity.attributes.scheduledJourneyPhase ?? ""
-                        )
-                        let alternatives = await self.updateScheduledJourneyAlternativesIfNeeded(
-                            for: activity,
-                            phase: scheduledJourneyPhase
-                        )
-                        await self.registerWithServer(
-                            dockId: dockId,
-                            pushToken: tokenString,
-                            dockName: dockName,
-                            alternatives: alternatives,
-                            currentState: activity.content.state,
-                            scheduledJourneyId: activity.attributes.scheduledJourneyId,
-                            scheduledJourneyPhase: scheduledJourneyPhase,
-                            adHocJourneyId: activity.attributes.adHocJourneyId
-                        )
-                    }
-                }
-
-                let pushTokenTask = Task { [weak self] in
-                    for await pushToken in activity.pushTokenUpdates {
-                        guard let self = self else { break }
-                        let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
-                        self.logger.info("Restored push token for dock \(dockId): \(tokenString)")
-                        let scheduledJourneyPhase = ScheduledJourney.ActiveRun.Phase(
-                            rawValue: activity.content.state.activeJourneyPhase ?? activity.attributes.scheduledJourneyPhase ?? ""
-                        )
-                        let alternatives = await self.updateScheduledJourneyAlternativesIfNeeded(
-                            for: activity,
-                            phase: scheduledJourneyPhase
-                        )
-                        await self.registerWithServer(
-                            dockId: dockId,
-                            pushToken: tokenString,
-                            dockName: dockName,
-                            alternatives: alternatives,
-                            currentState: activity.content.state,
-                            scheduledJourneyId: activity.attributes.scheduledJourneyId,
-                            scheduledJourneyPhase: scheduledJourneyPhase,
-                            adHocJourneyId: activity.attributes.adHocJourneyId
-                        )
-                    }
-                }
-
-                // Re-observe state changes
-                let stateTask = Task { [weak self] in
-                    for await state in activity.activityStateUpdates {
-                        guard let self = self else { break }
-                        if state == .stale {
-                            self.logger.info("Restored activity for dock \(dockId) is stale — ending immediately")
-                            await MainActor.run { self.endLiveActivity(for: dockId) }
-                            break
-                        } else if state == .dismissed || state == .ended {
-                            await MainActor.run {
-                                if let adHocJourneyId = activity.attributes.adHocJourneyId {
-                                    AdHocJourneyService.shared.complete(journeyId: adHocJourneyId)
-                                }
-                                self.clearLocallyTrackedActivity(for: dockId)
-                                self.notifyPrimaryDisplayChanged()
-                            }
-                            // Notify server to stop polling
-                            if let pushToken = activity.pushToken {
-                                let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
-                                await self.unregisterFromServer(dockId: dockId, pushToken: tokenString)
-                            }
-                            break
-                        }
-                    }
-                }
-
-                // Store task so it can be cancelled later
-                observationTasks[dockId] = [pushTokenTask, stateTask]
+                let reconciliationSource: DockArrivalMonitoringReconciliationSource =
+                    UIApplication.shared.applicationState == .active ? .foreground : .activityRestored
+                reconcileArrivalMonitoring(for: activity, source: reconciliationSource)
+                ensureActivityObservation(for: activity, source: "activity_restored")
             }
         }
 
@@ -1735,9 +2350,13 @@ class LiveActivityService: ObservableObject {
             logger.info("Restored \(self.activeActivities.count) live activities")
         }
 
-        DockArrivalMonitoringService.shared.restoreMonitoringIfNeeded(
-            activeDockIds: Set(self.activeActivities.keys)
-        )
+        if keptDockId == nil {
+            arrivalMonitoringRecoveryTask?.cancel()
+            arrivalMonitoringRecoveryTask = nil
+            arrivalMonitoringRecoveryGeneration = nil
+            arrivalMonitoringAuthorityActivityId = nil
+            DockArrivalMonitoringService.shared.restoreMonitoringIfNeeded(activeDockIds: [])
+        }
 
         Task { [weak self] in
             await self?.refreshNotificationStatusFromServer()
@@ -1798,11 +2417,11 @@ class LiveActivityService: ObservableObject {
         scheduledJourneyId: String? = nil,
         scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase? = nil,
         adHocJourneyId: String? = nil
-    ) async {
+    ) async -> Bool {
         let urlString = "\(serverBaseURL)/live-activity/start"
         guard let url = URL(string: urlString) else {
             logger.error("Invalid server URL: \(urlString)")
-            return
+            return false
         }
 
         var request = URLRequest(url: url)
@@ -1821,14 +2440,7 @@ class LiveActivityService: ObservableObject {
         // Get the auto-removal duration from settings (capped to the max notification window)
         let finalExpirySeconds = configuredLiveActivityExpirySeconds()
 
-        let serializedAlternatives: [[String: Any]] = alternatives.map { alternative in
-            [
-                "name": alternative.name,
-                "standardBikes": alternative.standardBikes,
-                "eBikes": alternative.eBikes,
-                "emptySpaces": alternative.emptySpaces,
-            ]
-        }
+        let serializedAlternatives = alternatives.map(\.serverPayload)
         let primaryDisplayRawValue = scheduledJourneyPrimaryDisplay(
             dockId: dockId,
             scheduledJourneyPhase: scheduledJourneyPhase
@@ -1836,6 +2448,8 @@ class LiveActivityService: ObservableObject {
         let minimumThresholds = minimumThresholdsPayload()
 
         var body: [String: Any] = [
+            "deviceId": DeviceTokenHelper.scheduledJourneyDeviceId,
+            "dockPreferences": DockPreferencesService.shared.serverPayload,
             "dockId": dockId,
             "dockName": dockName,
             "pushToken": pushToken,
@@ -1853,6 +2467,7 @@ class LiveActivityService: ObservableObject {
             body["activeDockName"] = currentState.activeDockName
             body["activeDockAlias"] = currentState.activeDockAlias
             body["activeJourneyPhase"] = currentState.activeJourneyPhase
+            body["availabilityUpdatedAtEpochSeconds"] = currentState.availabilityUpdatedAtEpochSeconds
         }
         if let scheduledJourneyId {
             body["scheduledJourneyId"] = scheduledJourneyId
@@ -1866,8 +2481,9 @@ class LiveActivityService: ObservableObject {
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                acknowledgeDockPreferences(from: data)
                 trackServerSession(dockId: dockId, pushToken: pushToken)
                 let activeThreshold = primaryDisplayRawValue == "allBikes"
                     ? (minimumThresholds[LiveActivityPrimaryDisplay.bikes.rawValue] ?? 0) + (minimumThresholds[LiveActivityPrimaryDisplay.eBikes.rawValue] ?? 0)
@@ -1902,6 +2518,7 @@ class LiveActivityService: ObservableObject {
                     ]
                 )
                 await refreshNotificationStatusFromServer()
+                return true
             } else {
                 logger.warning("Server returned unexpected response for dock \(dockId)")
                 let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
@@ -1930,6 +2547,7 @@ class LiveActivityService: ObservableObject {
                         "statusCode": statusCode,
                     ]
                 )
+                return false
             }
         } catch {
             logger.error("Failed to register with server: \(error.localizedDescription)")
@@ -1954,6 +2572,7 @@ class LiveActivityService: ObservableObject {
                 message: "Failed to register live activity with server: \(error.localizedDescription)",
                 raw: ["pushTokenPrefix": String(pushToken.prefix(8))]
             )
+            return false
         }
     }
 
@@ -1983,9 +2602,13 @@ class LiveActivityService: ObservableObject {
         }
 
         var body: [String: Any] = [
+            "deviceId": DeviceTokenHelper.scheduledJourneyDeviceId,
+            "dockPreferences": DockPreferencesService.shared.serverPayload,
             "dockId": dockId,
             "pushToken": pushToken,
-            "primaryDisplay": primaryDisplay.rawValue,
+            "primaryDisplay": scheduledJourneyPhase.map {
+                scheduledJourneyPrimaryDisplay(dockId: targetDockId ?? dockId, scheduledJourneyPhase: $0)
+            } ?? primaryDisplay.rawValue,
             "minimumThresholds": minimumThresholdsPayload(),
         ]
         if let targetDockId, !targetDockId.isEmpty {
@@ -1995,14 +2618,7 @@ class LiveActivityService: ObservableObject {
             body["dockName"] = dockName
         }
         if let alternatives {
-            body["alternatives"] = alternatives.map { alternative in
-                [
-                    "name": alternative.name,
-                    "standardBikes": alternative.standardBikes,
-                    "eBikes": alternative.eBikes,
-                    "emptySpaces": alternative.emptySpaces,
-                ]
-            }
+            body["alternatives"] = alternatives.map(\.serverPayload)
         }
         if let currentState {
             body["standardBikes"] = currentState.standardBikes
@@ -2019,8 +2635,9 @@ class LiveActivityService: ObservableObject {
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                acknowledgeDockPreferences(from: data)
                 logger.info("Updated live activity server session for dock \(dockId) with primaryDisplay \(primaryDisplay.rawValue)")
             } else {
                 logger.warning("Server returned unexpected response while updating live activity session for dock \(dockId)")

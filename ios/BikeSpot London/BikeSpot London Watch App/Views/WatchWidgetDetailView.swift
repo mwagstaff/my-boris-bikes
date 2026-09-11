@@ -50,7 +50,6 @@ struct WatchWidgetDetailView: View {
     @State private var isLoadingAlternatives = false
     @State private var hasLoadedAlternatives = false
     @State private var alternativesLoadFailed = false
-    @State private var hasLoadedInitialData = false
     @State private var isPerformingJourneyAction = false
     @State private var journeyActionMessage: String?
     @State private var displayedDockId: String
@@ -102,9 +101,7 @@ struct WatchWidgetDetailView: View {
         }
         .navigationTitle("Dock Info")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
-            guard !hasLoadedInitialData else { return }
-            hasLoadedInitialData = true
+        .task(id: favoritesService.dockPreferencesRevision) {
             await loadDockDetails()
         }
     }
@@ -136,7 +133,7 @@ struct WatchWidgetDetailView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if !alternatives.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Nearby alternatives")
+                Text(favoritesService.customDockIDs(for: displayedDockId) == nil ? "Nearby alternatives" : "Preferred alternatives")
                     .font(.system(.caption2, weight: .semibold))
                     .foregroundColor(.secondary)
 
@@ -150,7 +147,9 @@ struct WatchWidgetDetailView: View {
                 }
             }
         } else if hasLoadedAlternatives {
-            Text(alternativesLoadFailed ? "Couldn’t load nearby alternatives." : "No nearby alternatives found.")
+            Text(alternativesLoadFailed ? "Couldn’t load alternatives." :
+                    favoritesService.customDockIDs(for: displayedDockId) == nil
+                        ? "No nearby alternatives found." : "No preferred alternatives available.")
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -246,10 +245,12 @@ struct WatchWidgetDetailView: View {
                 .async()
         }
 
-        if var resolved = primary, resolved.alias == nil {
+        if var resolved = primary {
             resolved.alias = WatchFavoritesService.shared.alias(for: resolved.id)
             primary = resolved
         }
+
+        guard !Task.isCancelled else { return }
 
         await MainActor.run {
             primaryBikePoint = primary
@@ -264,50 +265,66 @@ struct WatchWidgetDetailView: View {
     }
 
     private func loadAlternatives(near primary: WatchBikePoint) async {
+        let preferencesRevision = favoritesService.dockPreferencesRevision
+        let customDockIDs = favoritesService.customDockIDs(for: primary.id)
         let coordinate = CLLocationCoordinate2D(latitude: primary.lat, longitude: primary.lon)
-        guard CLLocationCoordinate2DIsValid(coordinate),
-              !(primary.lat == 0 && primary.lon == 0) else {
+        guard customDockIDs != nil || (CLLocationCoordinate2DIsValid(coordinate) &&
+              !(primary.lat == 0 && primary.lon == 0)) else {
             return
         }
 
         await MainActor.run { isLoadingAlternatives = true }
 
         do {
-            let nearby = try await WatchTfLAPIService.shared.fetchNearbyBikePoints(
-                lat: primary.lat,
-                lon: primary.lon,
-                radiusMeters: 500
-            )
-            var sortedAlternatives = sortedAlternativeCandidates(from: nearby, primary: primary)
-
-            // If the immediate area has no suitable alternatives, widen the radius once.
-            if sortedAlternatives.isEmpty {
-                let expandedNearby = try await WatchTfLAPIService.shared.fetchNearbyBikePoints(
+            var sortedAlternatives: [WatchBikePoint]
+            if let customDockIDs {
+                let chosenDocks = favoritesService.customAlternativesEnabled
+                    ? try await WatchTfLAPIService.shared.fetchBikePointsInOrder(ids: customDockIDs)
+                    : []
+                sortedAlternatives = chosenDocks.filter { $0.isAvailable && meetsJourneyRequirement($0) }
+            } else {
+                let nearby = try await WatchTfLAPIService.shared.fetchNearbyBikePoints(
                     lat: primary.lat,
                     lon: primary.lon,
-                    radiusMeters: 1000
+                    radiusMeters: 500
                 )
-                sortedAlternatives = sortedAlternativeCandidates(from: expandedNearby, primary: primary)
+                sortedAlternatives = sortedAlternativeCandidates(from: nearby, primary: primary)
+
+                // If the immediate area has no suitable alternatives, widen the radius once.
+                if sortedAlternatives.isEmpty {
+                    let expandedNearby = try await WatchTfLAPIService.shared.fetchNearbyBikePoints(
+                        lat: primary.lat,
+                        lon: primary.lon,
+                        radiusMeters: 1000
+                    )
+                    sortedAlternatives = sortedAlternativeCandidates(from: expandedNearby, primary: primary)
+                }
             }
 
+            try Task.checkCancellation()
+            let displayLimit = journeyPurpose == nil ? 5 : 3
             let displayedAlternatives = sortedAlternatives
-                .prefix(journeyPurpose == nil ? 5 : 3)
+                .prefix(customDockIDs == nil ? displayLimit : favoritesService.customAlternativeLimit(maximum: displayLimit))
                 .map { dock in
                     var updated = dock
-                    if updated.alias == nil {
-                        updated.alias = WatchFavoritesService.shared.alias(for: updated.id)
-                    }
+                    updated.alias = WatchFavoritesService.shared.alias(for: updated.id)
                     return updated
                 }
 
             await MainActor.run {
+                guard !Task.isCancelled,
+                      primary.id == displayedDockId,
+                      preferencesRevision == favoritesService.dockPreferencesRevision else { return }
                 alternatives = Array(displayedAlternatives)
                 hasLoadedAlternatives = true
                 alternativesLoadFailed = false
                 isLoadingAlternatives = false
             }
         } catch {
+            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard primary.id == displayedDockId,
+                      preferencesRevision == favoritesService.dockPreferencesRevision else { return }
                 alternatives = []
                 hasLoadedAlternatives = true
                 alternativesLoadFailed = true

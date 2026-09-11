@@ -15,11 +15,42 @@ private func haversineDistance(lat1: Double, lon1: Double, lat2: Double, lon2: D
     return R * 2 * atan2(sqrt(a), sqrt(1 - a))
 }
 
+@MainActor
+private func preferredOrNearbyDocks(for primary: WatchBikePoint) async throws -> [WatchBikePoint] {
+    let preferences = WatchFavoritesService.shared
+    let docks: [WatchBikePoint]
+    if let customIDs = preferences.customDockIDs(for: primary.id) {
+        guard preferences.customAlternativesEnabled else { return [] }
+        let chosenDocks = try await WatchTfLAPIService.shared.fetchBikePointsInOrder(ids: customIDs)
+        docks = Array(chosenDocks.filter(\.isAvailable).prefix(preferences.customAlternativeLimit(maximum: 5)))
+    } else {
+        let nearby = try await WatchTfLAPIService.shared.fetchNearbyBikePoints(
+            lat: primary.lat, lon: primary.lon, radiusMeters: 500
+        )
+        docks = Array(
+            nearby
+                .filter { $0.id != primary.id && $0.isAvailable }
+                .sorted {
+                    haversineDistance(lat1: primary.lat, lon1: primary.lon, lat2: $0.lat, lon2: $0.lon) <
+                    haversineDistance(lat1: primary.lat, lon1: primary.lon, lat2: $1.lat, lon2: $1.lon)
+                }
+                .prefix(5)
+        )
+    }
+    try Task.checkCancellation()
+    return docks.map { dock in
+        var updated = dock
+        updated.alias = preferences.alias(for: dock.id)
+        return updated
+    }
+}
+
 // MARK: - WatchDockDetailView
 
 struct WatchDockDetailView: View {
     @State private var displayedBikePoint: WatchBikePoint
     @StateObject private var locationService = WatchLocationService.shared
+    @ObservedObject private var favoritesService = WatchFavoritesService.shared
     @StateObject private var viewModel = WatchFavoritesViewModel()
     @Environment(\.dismiss) private var dismiss
     @State private var lastUpdateTime: Date?
@@ -101,13 +132,14 @@ struct WatchDockDetailView: View {
         .navigationTitle("Dock Details")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            if displayedBikePoint.alias == nil,
-               let alias = WatchFavoritesService.shared.alias(for: displayedBikePoint.id) {
-                displayedBikePoint.alias = alias
-            }
+            displayedBikePoint.alias = favoritesService.alias(for: displayedBikePoint.id)
             loadLastUpdateTime()
             syncWithMainAppData()
-            Task { await fetchNearbyAlternatives() }
+        }
+        .task(id: favoritesService.dockPreferencesRevision) {
+            alternativesFetched = false
+            displayedBikePoint.alias = favoritesService.alias(for: displayedBikePoint.id)
+            await fetchNearbyAlternatives()
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -140,7 +172,7 @@ struct WatchDockDetailView: View {
         } else if !nearbyAlternatives.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Divider()
-                Text("Nearby alternatives")
+                Text(favoritesService.customDockIDs(for: displayedBikePoint.id) == nil ? "Nearby alternatives" : "Preferred alternatives")
                     .font(.system(.caption2, weight: .semibold))
                     .foregroundColor(.secondary)
                     .padding(.bottom, 2)
@@ -159,31 +191,22 @@ struct WatchDockDetailView: View {
     // MARK: Private helpers
 
     private func fetchNearbyAlternatives() async {
-        guard !alternativesFetched, displayedBikePoint.lat != 0 else { return }
+        guard !alternativesFetched,
+              favoritesService.customDockIDs(for: displayedBikePoint.id) != nil || displayedBikePoint.lat != 0 else { return }
         alternativesFetched = true
+        let preferencesRevision = favoritesService.dockPreferencesRevision
         await MainActor.run { isLoadingAlternatives = true }
-        let primaryId = displayedBikePoint.id
-        let primaryLat = displayedBikePoint.lat
-        let primaryLon = displayedBikePoint.lon
         do {
-            let nearby = try await WatchTfLAPIService.shared.fetchNearbyBikePoints(
-                lat: primaryLat, lon: primaryLon, radiusMeters: 500
-            )
-            let alternatives = Array(
-                nearby
-                    .filter { $0.id != primaryId && $0.isAvailable }
-                    .sorted {
-                        haversineDistance(lat1: primaryLat, lon1: primaryLon, lat2: $0.lat, lon2: $0.lon) <
-                        haversineDistance(lat1: primaryLat, lon1: primaryLon, lat2: $1.lat, lon2: $1.lon)
-                    }
-                    .prefix(5)
-            )
+            let alternatives = try await preferredOrNearbyDocks(for: displayedBikePoint)
             await MainActor.run {
+                guard !Task.isCancelled, preferencesRevision == favoritesService.dockPreferencesRevision else { return }
                 nearbyAlternatives = alternatives
                 isLoadingAlternatives = false
             }
         } catch {
+            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard preferencesRevision == favoritesService.dockPreferencesRevision else { return }
                 alternativesFetched = false // allow retry
                 isLoadingAlternatives = false
             }
@@ -258,11 +281,7 @@ struct WatchDockDetailView: View {
     }
 
     private func resolvedAlias(for bikePoint: WatchBikePoint) -> String? {
-        if let alias = bikePoint.alias?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !alias.isEmpty {
-            return alias
-        }
-        return WatchFavoritesService.shared.alias(for: bikePoint.id)
+        WatchFavoritesService.shared.alias(for: bikePoint.id)
     }
 }
 
@@ -270,6 +289,7 @@ struct CustomDockDetailView: View {
     @State private var displayedBikePoint: WatchBikePoint
     let widgetId: String?
     @StateObject private var locationService = WatchLocationService.shared
+    @ObservedObject private var favoritesService = WatchFavoritesService.shared
     @StateObject private var viewModel = WatchFavoritesViewModel()
     @Environment(\.dismiss) private var dismiss
     @State private var lastUpdateTime: Date?
@@ -379,13 +399,14 @@ struct CustomDockDetailView: View {
         .navigationTitle("Dock Details")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            if displayedBikePoint.alias == nil,
-               let alias = WatchFavoritesService.shared.alias(for: displayedBikePoint.id) {
-                displayedBikePoint.alias = alias
-            }
+            displayedBikePoint.alias = favoritesService.alias(for: displayedBikePoint.id)
             loadLastUpdateTime()
             syncWithMainAppData()
-            Task { await fetchNearbyAlternatives() }
+        }
+        .task(id: favoritesService.dockPreferencesRevision) {
+            alternativesFetched = false
+            displayedBikePoint.alias = favoritesService.alias(for: displayedBikePoint.id)
+            await fetchNearbyAlternatives()
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -426,7 +447,7 @@ struct CustomDockDetailView: View {
         } else if !nearbyAlternatives.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Divider()
-                Text("Nearby alternatives")
+                Text(favoritesService.customDockIDs(for: displayedBikePoint.id) == nil ? "Nearby alternatives" : "Preferred alternatives")
                     .font(.system(.caption2, weight: .semibold))
                     .foregroundColor(.secondary)
                     .padding(.bottom, 2)
@@ -445,31 +466,22 @@ struct CustomDockDetailView: View {
     // MARK: Private helpers
 
     private func fetchNearbyAlternatives() async {
-        guard !alternativesFetched, displayedBikePoint.lat != 0 else { return }
+        guard !alternativesFetched,
+              favoritesService.customDockIDs(for: displayedBikePoint.id) != nil || displayedBikePoint.lat != 0 else { return }
         alternativesFetched = true
+        let preferencesRevision = favoritesService.dockPreferencesRevision
         await MainActor.run { isLoadingAlternatives = true }
-        let primaryId = displayedBikePoint.id
-        let primaryLat = displayedBikePoint.lat
-        let primaryLon = displayedBikePoint.lon
         do {
-            let nearby = try await WatchTfLAPIService.shared.fetchNearbyBikePoints(
-                lat: primaryLat, lon: primaryLon, radiusMeters: 500
-            )
-            let alternatives = Array(
-                nearby
-                    .filter { $0.id != primaryId && $0.isAvailable }
-                    .sorted {
-                        haversineDistance(lat1: primaryLat, lon1: primaryLon, lat2: $0.lat, lon2: $0.lon) <
-                        haversineDistance(lat1: primaryLat, lon1: primaryLon, lat2: $1.lat, lon2: $1.lon)
-                    }
-                    .prefix(5)
-            )
+            let alternatives = try await preferredOrNearbyDocks(for: displayedBikePoint)
             await MainActor.run {
+                guard !Task.isCancelled, preferencesRevision == favoritesService.dockPreferencesRevision else { return }
                 nearbyAlternatives = alternatives
                 isLoadingAlternatives = false
             }
         } catch {
+            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard preferencesRevision == favoritesService.dockPreferencesRevision else { return }
                 alternativesFetched = false
                 isLoadingAlternatives = false
             }
@@ -545,11 +557,7 @@ struct CustomDockDetailView: View {
     }
 
     private func resolvedAlias(for bikePoint: WatchBikePoint) -> String? {
-        if let alias = bikePoint.alias?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !alias.isEmpty {
-            return alias
-        }
-        return WatchFavoritesService.shared.alias(for: bikePoint.id)
+        WatchFavoritesService.shared.alias(for: bikePoint.id)
     }
 }
 

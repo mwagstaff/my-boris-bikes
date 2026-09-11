@@ -143,8 +143,7 @@ class HomeViewModel: BaseViewModel {
         let favoriteIds = favoritesService.favorites.map { $0.id }
         guard !favoriteIds.isEmpty else {
             favoriteBikePoints = []
-            allBikePoints = []
-            lastAllBikePointsRefreshTime = nil
+            loadAllBikePointsIfNeeded(forceRefresh: forceRefresh)
             return
         }
         

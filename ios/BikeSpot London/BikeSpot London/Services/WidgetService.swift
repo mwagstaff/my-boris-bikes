@@ -8,6 +8,7 @@
 import Foundation
 import WidgetKit
 import CoreLocation
+import Combine
 
 @MainActor
 class WidgetService: ObservableObject {
@@ -17,9 +18,19 @@ class WidgetService: ObservableObject {
     private let widgetDataKey = "ios_widget_data"
     private let userDefaults: UserDefaults?
     private var cachedAllBikePoints: [BikePoint] = []
+    private var cachedFavoriteBikePoints: [BikePoint] = []
+    private var cachedUserLocation: CLLocation?
+    private var preferencesObserver: AnyCancellable?
 
     private init() {
         self.userDefaults = UserDefaults(suiteName: appGroup)
+        preferencesObserver = NotificationCenter.default.publisher(for: .dockPreferencesDidChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.refreshForDockPreferencesChange()
+                }
+            }
     }
 
     private func debugLog(_ message: @autoclosure () -> String) {
@@ -40,6 +51,8 @@ class WidgetService: ObservableObject {
         if !allBikePoints.isEmpty {
             cachedAllBikePoints = allBikePoints
         }
+        cachedFavoriteBikePoints = bikePoints
+        cachedUserLocation = userLocation
         let effectiveAllBikePoints = allBikePoints.isEmpty ? cachedAllBikePoints : allBikePoints
         var widgetBikePoints: [WidgetBikePointData] = []
 
@@ -52,7 +65,7 @@ class WidgetService: ObservableObject {
 
                 let widgetData = WidgetBikePointData(
                     id: bikePoint.id,
-                    displayName: favorite.displayName,
+                    displayName: DockPreferencesService.shared.alias(for: bikePoint.id) ?? bikePoint.commonName,
                     actualName: bikePoint.commonName,
                     standardBikes: bikePoint.standardBikes,
                     eBikes: bikePoint.eBikes,
@@ -104,7 +117,7 @@ class WidgetService: ObservableObject {
             let alternativeWidgetData = alternativeBikePoints.map { bikePoint in
                 WidgetBikePointData(
                     id: bikePoint.id,
-                    displayName: bikePoint.commonName,
+                    displayName: DockPreferencesService.shared.alias(for: bikePoint.id) ?? bikePoint.commonName,
                     actualName: bikePoint.commonName,
                     standardBikes: bikePoint.standardBikes,
                     eBikes: bikePoint.eBikes,
@@ -139,6 +152,25 @@ class WidgetService: ObservableObject {
         reloadWidgets()
     }
 
+    func refreshForDockPreferencesChange() {
+        let allBikePoints = cachedAllBikePoints.isEmpty
+            ? AllBikePointsCache.shared.load()
+            : cachedAllBikePoints
+        guard !allBikePoints.isEmpty else { return }
+        var pointsByID = Dictionary(allBikePoints.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for bikePoint in cachedFavoriteBikePoints {
+            pointsByID[bikePoint.id] = bikePoint
+        }
+        let favoritesService = FavoritesService.shared
+        updateWidgetData(
+            bikePoints: favoritesService.favorites.compactMap { pointsByID[$0.id] },
+            allBikePoints: Array(pointsByID.values),
+            favorites: favoritesService.favorites,
+            sortMode: favoritesService.sortMode,
+            userLocation: cachedUserLocation
+        )
+    }
+
     private func distanceFromUser(_ userLocation: CLLocation?, to bikePoint: BikePoint) -> Double? {
         guard let userLocation = userLocation else { return nil }
         return userLocation.distance(from: CLLocation(
@@ -154,8 +186,11 @@ class WidgetService: ObservableObject {
 
     private func alternativeSettings() -> AlternativeSettingsSnapshot {
         let defaults = AlternativeDockSettings.userDefaultsStore
-        let enabled = defaults.object(forKey: AlternativeDockSettings.widgetEnabledKey) as? Bool
+        let masterEnabled = defaults.object(forKey: AlternativeDockSettings.enabledKey) as? Bool
+            ?? AlternativeDockSettings.defaultEnabled
+        let widgetEnabled = defaults.object(forKey: AlternativeDockSettings.widgetEnabledKey) as? Bool
             ?? AlternativeDockSettings.defaultWidgetEnabled
+        let enabled = masterEnabled && widgetEnabled
         let minSpaces = defaults.object(forKey: AlternativeDockSettings.minSpacesKey) as? Int
             ?? AlternativeDockSettings.defaultMinSpaces
         let minBikes = defaults.object(forKey: AlternativeDockSettings.minBikesKey) as? Int
@@ -220,11 +255,12 @@ class WidgetService: ObservableObject {
 
         guard shouldShowAlternatives else { return [] }
 
-        let candidates = allBikePoints.filter { bikePoint in
-            bikePoint.id != favorite.id &&
-            !favoriteIds.contains(bikePoint.id) &&
-            bikePoint.isAvailable
-        }
+        let candidates = AlternativeDockSelectionService.orderedCandidates(
+            for: favorite,
+            allBikePoints: allBikePoints,
+            excludingFavoriteIDs: favoriteIds,
+            customDockIDs: DockPreferencesService.shared.customDockIDs(for: favorite.id)
+        )
 
         let filteredCandidates = candidates.filter { bikePoint in
             let meetsBikes = settings.useMinimumThresholds
@@ -250,15 +286,8 @@ class WidgetService: ObservableObject {
             }
         }
 
-        let favoriteLocation = CLLocation(latitude: favorite.lat, longitude: favorite.lon)
-        let sorted = filteredCandidates.sorted { first, second in
-            let firstDistance = favoriteLocation.distance(from: CLLocation(latitude: first.lat, longitude: first.lon))
-            let secondDistance = favoriteLocation.distance(from: CLLocation(latitude: second.lat, longitude: second.lon))
-            return firstDistance < secondDistance
-        }
-
         let maxAlternatives = min(settings.maxCount, 3)
-        return Array(sorted.prefix(maxAlternatives))
+        return Array(filteredCandidates.prefix(maxAlternatives))
     }
 
     private func startingPointFavoriteIds(

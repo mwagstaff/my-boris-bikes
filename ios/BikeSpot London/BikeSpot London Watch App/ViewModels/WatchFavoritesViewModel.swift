@@ -32,6 +32,14 @@ class WatchFavoritesViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
+        NotificationCenter.default.publisher(for: .dockPreferencesDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.favoriteBikePoints = self.sortBikePoints(self.applyAliases(self.favoriteBikePoints))
+            }
+            .store(in: &cancellables)
+
         // Re-sort when location changes for distance sorting
         locationService.$location
             .sink { [weak self] _ in
@@ -44,7 +52,6 @@ class WatchFavoritesViewModel: ObservableObject {
     
     private func loadFavoriteData() async {
         let favoriteIds = favoritesService.favorites.map { $0.id }
-        let aliases = aliasMap()
         
         guard !favoriteIds.isEmpty else {
             favoriteBikePoints = []
@@ -61,7 +68,7 @@ class WatchFavoritesViewModel: ObservableObject {
                 .fetchMultipleBikePoints(ids: favoriteIds)
                 .async()
             
-            let aliasedBikePoints = applyAliases(bikePoints, aliasMap: aliases)
+            let aliasedBikePoints = applyAliases(bikePoints)
             
             favoriteBikePoints = sortBikePoints(aliasedBikePoints)
             hasError = false
@@ -106,25 +113,14 @@ class WatchFavoritesViewModel: ObservableObject {
         }
     }
     
-    private func aliasMap() -> [String: String] {
-        favoritesService.favorites.reduce(into: [String: String]()) { result, favorite in
-            if let alias = favorite.alias?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !alias.isEmpty {
-                result[favorite.id] = alias
-            }
-        }
-    }
-    
-    private func applyAliases(_ bikePoints: [WatchBikePoint], aliasMap: [String: String]) -> [WatchBikePoint] {
+    private func applyAliases(_ bikePoints: [WatchBikePoint]) -> [WatchBikePoint] {
         bikePoints.map { bikePoint in
             var updatedBikePoint = bikePoint
-            if let alias = aliasMap[bikePoint.id] {
-                updatedBikePoint.alias = alias
-            }
+            updatedBikePoint.alias = favoritesService.alias(for: bikePoint.id)
             return updatedBikePoint
         }
     }
-    
+
     private func sortBikePointsByDistance(_ bikePoints: [WatchBikePoint]) -> [WatchBikePoint] {
         guard let userLocation = locationService.location else { return bikePoints }
         
@@ -149,9 +145,7 @@ class WatchFavoritesViewModel: ObservableObject {
         // If this bike point is in our favorites, update it
         if let index = favoriteBikePoints.firstIndex(where: { $0.id == bikePoint.id }) {
             var updatedBikePoint = bikePoint
-            if updatedBikePoint.alias == nil {
-                updatedBikePoint.alias = aliasMap()[bikePoint.id]
-            }
+            updatedBikePoint.alias = favoritesService.alias(for: bikePoint.id)
             await MainActor.run {
                 favoriteBikePoints[index] = updatedBikePoint
             }
@@ -166,7 +160,6 @@ class WatchFavoritesViewModel: ObservableObject {
     
     private func loadFavoriteDataWithCacheBusting() async {
         let favoriteIds = favoritesService.favorites.map { $0.id }
-        let aliases = aliasMap()
         
         guard !favoriteIds.isEmpty else {
             favoriteBikePoints = []
@@ -183,7 +176,7 @@ class WatchFavoritesViewModel: ObservableObject {
                 .fetchMultipleBikePoints(ids: favoriteIds, cacheBusting: true)
                 .async()
             
-            let aliasedBikePoints = applyAliases(bikePoints, aliasMap: aliases)
+            let aliasedBikePoints = applyAliases(bikePoints)
             
             favoriteBikePoints = sortBikePoints(aliasedBikePoints)
             hasError = false
@@ -238,7 +231,6 @@ class WatchFavoritesViewModel: ObservableObject {
         
         isLoading = true
         hasError = false
-        let aliases = aliasMap()
         
         do {
             // Clear cache for this specific dock
@@ -247,7 +239,7 @@ class WatchFavoritesViewModel: ObservableObject {
             let bikePoint = try await apiService.fetchSingleBikePoint(id: dockId, cacheBusting: true).async()
             
             if var bikePoint = bikePoint {
-                bikePoint.alias = aliases[bikePoint.id]
+                bikePoint.alias = favoritesService.alias(for: bikePoint.id)
                 // Update the dock in our current favorites list
                 if let index = favoriteBikePoints.firstIndex(where: { $0.id == dockId }) {
                     favoriteBikePoints[index] = bikePoint

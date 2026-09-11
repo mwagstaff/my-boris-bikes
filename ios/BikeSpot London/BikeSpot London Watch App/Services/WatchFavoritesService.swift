@@ -12,6 +12,7 @@ struct WatchJourneyActionResult {
 // MARK: - Notification Names
 extension Notification.Name {
     static let favoritesDidChange = Notification.Name("favoritesDidChange")
+    static let dockPreferencesDidChange = Notification.Name("dockPreferencesDidChange")
 }
 
 class WatchFavoritesService: NSObject, ObservableObject {
@@ -20,11 +21,14 @@ class WatchFavoritesService: NSObject, ObservableObject {
     @Published var favorites: [WatchFavoriteBikePoint] = []
     @Published var sortMode: WatchSortMode = .distance
     @Published var isConnectedToPhone: Bool = false
+    @Published private(set) var dockPreferencesRevision: Int64?
     
     private let userDefaults: UserDefaults
     private let appGroup = "group.dev.skynolimit.myborisbikes"
     private let favoritesKey = "favorites"
     private let sortModeKey = "sortMode"
+    private let dockPreferencesKey = "dockPreferences"
+    private var dockPreferences: WatchDockPreferencesSnapshot?
     
     // Automatic sync properties
     private var syncTimer: Timer?
@@ -46,6 +50,9 @@ class WatchFavoritesService: NSObject, ObservableObject {
         
         loadFavorites()
         loadSortMode()
+        if let data = userDefaults.data(forKey: dockPreferencesKey) {
+            processDockPreferencesData(data)
+        }
     }
     
     private func loadFavorites(preserveExisting: Bool = false) {
@@ -54,7 +61,7 @@ class WatchFavoritesService: NSObject, ObservableObject {
         if let data = userDefaults.data(forKey: favoritesKey) {
             do {
                 let iosFavorites = try JSONDecoder().decode([FavoriteBikePointiOS].self, from: data)
-                favorites = iosFavorites.map { WatchFavoriteBikePoint(from: $0) }
+                favorites = applyingDockAliases(to: iosFavorites.map { WatchFavoriteBikePoint(from: $0) })
             } catch {
                 if !preserveExisting {
                     favorites = []
@@ -83,12 +90,72 @@ class WatchFavoritesService: NSObject, ObservableObject {
     }
     
     func alias(for id: String) -> String? {
-        guard let rawAlias = favorites.first(where: { $0.id == id })?.alias?
+        let savedAlias: String?
+        if let dockPreferences {
+            savedAlias = dockPreferences.aliases[id]
+        } else {
+            savedAlias = favorites.first(where: { $0.id == id })?.alias
+        }
+        guard let rawAlias = savedAlias?
             .trimmingCharacters(in: .whitespacesAndNewlines),
               !rawAlias.isEmpty else {
             return nil
         }
         return rawAlias
+    }
+
+    func customDockIDs(for id: String) -> [String]? {
+        dockPreferences?.customDockIDs(for: id)
+    }
+
+    var customAlternativesEnabled: Bool {
+        dockPreferences?.settings?.enabled ?? true
+    }
+
+    func customAlternativeLimit(maximum: Int) -> Int {
+        min(maximum, max(1, dockPreferences?.settings?.maxCount ?? maximum))
+    }
+
+    private func applyingDockAliases(to favorites: [WatchFavoriteBikePoint]) -> [WatchFavoriteBikePoint] {
+        guard let dockPreferences else { return favorites }
+        return favorites.map { favorite in
+            WatchFavoriteBikePoint(
+                id: favorite.id,
+                commonName: favorite.commonName,
+                alias: dockPreferences.aliases[favorite.id],
+                sortOrder: favorite.sortOrder
+            )
+        }
+    }
+
+    private func processDockPreferencesData(_ data: Data) {
+        guard let snapshot = try? JSONDecoder().decode(WatchDockPreferencesSnapshot.self, from: data),
+              snapshot.revision >= (dockPreferencesRevision ?? -1),
+              userDefaults.data(forKey: dockPreferencesKey) != data || dockPreferences == nil else { return }
+
+        dockPreferences = snapshot
+        dockPreferencesRevision = snapshot.revision
+        userDefaults.set(data, forKey: dockPreferencesKey)
+        let updatedFavorites = applyingDockAliases(to: favorites)
+        if updatedFavorites.map(\.alias) != favorites.map(\.alias) {
+            favorites = updatedFavorites
+            saveFavoritesToUserDefaults()
+        }
+        if let settings = snapshot.settings {
+            let values: [String: Any?] = [
+                "alternativeDocksEnabled": settings.enabled,
+                "alternativeDocksMinSpaces": settings.minSpaces.map { max(0, $0) },
+                "alternativeDocksMinBikes": settings.minBikes.map { max(0, $0) },
+                "alternativeDocksMinEBikes": settings.minEBikes.map { max(0, $0) },
+                "alternativeDocksMaxCount": settings.maxCount.map { max(1, $0) },
+                "alternativeDocksUseMinimumThresholds": settings.useMinimumThresholds,
+            ]
+            for (key, value) in values {
+                if let value { userDefaults.set(value, forKey: key) }
+            }
+        }
+        NotificationCenter.default.post(name: .dockPreferencesDidChange, object: nil)
+        WidgetCenter.shared.reloadAllTimelines()
     }
     
     func updateSortMode(_ mode: WatchSortMode) {
@@ -227,6 +294,9 @@ class WatchFavoritesService: NSObject, ObservableObject {
     private func handleSyncResponse(_ response: [String: Any], success: Bool) {
         if success {
             consecutiveFailureCount = 0
+            if let preferencesData = response["dockPreferences"] as? Data {
+                processDockPreferencesData(preferencesData)
+            }
             
             // Check if the response contains favorites data
             if let favoritesData = response["favorites"] as? Data {
@@ -251,7 +321,7 @@ class WatchFavoritesService: NSObject, ObservableObject {
             let watchCompatibleFavorites = try JSONDecoder().decode([WatchCompatibleFavorite].self, from: data)
             
             DispatchQueue.main.async {
-                self.favorites = watchCompatibleFavorites.map { WatchFavoriteBikePoint(from: $0) }
+                self.favorites = self.applyingDockAliases(to: watchCompatibleFavorites.map { WatchFavoriteBikePoint(from: $0) })
                 self.saveFavoritesToUserDefaults()
             }
         } catch {
@@ -409,6 +479,11 @@ extension WatchFavoritesService: WCSessionDelegate {
     /// to reload widget timelines so complications pick up the fresh data already written
     /// to the shared app group by the iOS background refresh task.
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String : Any]) {
+        if let preferencesData = userInfo["dockPreferences"] as? Data {
+            DispatchQueue.main.async {
+                self.processDockPreferencesData(preferencesData)
+            }
+        }
         guard userInfo["complication_refresh"] as? Bool == true else { return }
         print("WatchFavoritesService: Received complication refresh signal — reloading timelines")
         DispatchQueue.main.async {
@@ -416,7 +491,18 @@ extension WatchFavoritesService: WCSessionDelegate {
         }
     }
 
+    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        DispatchQueue.main.async {
+            self.handleSyncResponse(applicationContext, success: true)
+        }
+    }
+
     func session(_ session: WCSession, didReceiveMessage message: [String : Any], replyHandler: @escaping ([String : Any]) -> Void) {
+        if let preferencesData = message["dockPreferences"] as? Data {
+            DispatchQueue.main.async {
+                self.processDockPreferencesData(preferencesData)
+            }
+        }
         
         if let favoritesData = message["favorites"] as? Data {
             do {
@@ -424,7 +510,7 @@ extension WatchFavoritesService: WCSessionDelegate {
                 let watchCompatibleFavorites = try JSONDecoder().decode([WatchCompatibleFavorite].self, from: favoritesData)
                 
                 DispatchQueue.main.async {
-                    self.favorites = watchCompatibleFavorites.map { WatchFavoriteBikePoint(from: $0) }
+                    self.favorites = self.applyingDockAliases(to: watchCompatibleFavorites.map { WatchFavoriteBikePoint(from: $0) })
                     self.saveFavoritesToUserDefaults()
                 }
                 
@@ -436,7 +522,7 @@ extension WatchFavoritesService: WCSessionDelegate {
                     let iosFavorites = try JSONDecoder().decode([FavoriteBikePointiOS].self, from: favoritesData)
                     
                     DispatchQueue.main.async {
-                        self.favorites = iosFavorites.map { WatchFavoriteBikePoint(from: $0) }
+                        self.favorites = self.applyingDockAliases(to: iosFavorites.map { WatchFavoriteBikePoint(from: $0) })
                         self.saveFavoritesToUserDefaults()
                     }
                     
@@ -446,8 +532,30 @@ extension WatchFavoritesService: WCSessionDelegate {
                 }
             }
         } else {
-            replyHandler(["status": "no_data"])
+            replyHandler(["status": message["dockPreferences"] is Data ? "success" : "no_data"])
         }
+    }
+}
+
+struct WatchDockPreferencesSnapshot: Decodable {
+    struct Settings: Decodable {
+        let enabled: Bool?
+        let minSpaces: Int?
+        let minBikes: Int?
+        let minEBikes: Int?
+        let maxCount: Int?
+        let useMinimumThresholds: Bool?
+    }
+
+    let revision: Int64
+    let alternatives: [String: [String]]
+    let aliases: [String: String]
+    let settings: Settings?
+
+    func customDockIDs(for primaryID: String) -> [String]? {
+        guard let savedIDs = alternatives[primaryID] else { return nil }
+        var seen = Set<String>()
+        return savedIDs.filter { !$0.isEmpty && $0 != primaryID && seen.insert($0).inserted }
     }
 }
 

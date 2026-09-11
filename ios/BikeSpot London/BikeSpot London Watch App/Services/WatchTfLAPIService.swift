@@ -119,6 +119,20 @@ class WatchTfLAPIService: ObservableObject {
         // Use parallel approach for better performance
         return fetchBikePointsInParallel(ids: ids, cacheBusting: cacheBusting)
     }
+
+    /// Explicit choices can be outside the nearby search radius; retain their saved order.
+    func fetchBikePointsInOrder(ids: [String]) async throws -> [WatchBikePoint] {
+        guard !ids.isEmpty else { return [] }
+        try Task.checkCancellation()
+        for try await bikePoints in fetchMultipleBikePoints(ids: ids).values {
+            try Task.checkCancellation()
+            guard !bikePoints.isEmpty else { throw WatchNetworkError.noData }
+            let pointsByID = Dictionary(bikePoints.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return ids.compactMap { pointsByID[$0] }
+        }
+        try Task.checkCancellation()
+        throw WatchNetworkError.noData
+    }
     
     func fetchSingleBikePoint(id: String, cacheBusting: Bool = false) -> AnyPublisher<WatchBikePoint?, WatchNetworkError> {
         if cacheBusting {

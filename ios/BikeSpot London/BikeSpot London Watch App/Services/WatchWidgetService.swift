@@ -211,13 +211,7 @@ class WatchWidgetService {
     }
     
     private func resolvedAlias(for bikePoint: WatchBikePoint) -> String? {
-        if let alias = bikePoint.alias?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !alias.isEmpty {
-            return alias
-        }
-        
-        // Fallback to stored favorites on the watch if the bike point doesn't carry an alias
-        return WatchFavoritesService.shared.alias(for: bikePoint.id)
+        WatchFavoritesService.shared.alias(for: bikePoint.id)
     }
     
     /// Calculate distance between two coordinates using Haversine formula

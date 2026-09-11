@@ -21,6 +21,10 @@ final class AdHocJourneyService: ObservableObject {
         load()
     }
 
+    func save(startDock: ScheduledJourneyDock, endDock: ScheduledJourneyDock) {
+        upsert(AdHocJourney(startDock: startDock, endDock: endDock))
+    }
+
     func createAndStart(startDock: ScheduledJourneyDock, endDock: ScheduledJourneyDock) async {
         let journey = AdHocJourney(
             startDock: startDock,

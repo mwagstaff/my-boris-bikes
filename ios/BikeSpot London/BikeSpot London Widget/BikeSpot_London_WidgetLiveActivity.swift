@@ -37,6 +37,8 @@ private func displayAlias(attributes: DockActivityAttributes, state: DockActivit
     if let alias = state.activeDockAlias?.trimmingCharacters(in: .whitespacesAndNewlines), !alias.isEmpty {
         return alias
     }
+    // A mutable dock identity also makes an empty alias authoritative (removed or a destination dock).
+    guard state.resolvedDockId == nil else { return nil }
     if let alias = attributes.alias?.trimmingCharacters(in: .whitespacesAndNewlines), !alias.isEmpty {
         return alias
     }
@@ -168,12 +170,12 @@ private struct AlternativeJourneyDockRow: View {
                 emptySpaces: alternative.emptySpaces,
                 size: 30,
                 strokeWidth: 5,
-                centerText: extractInitials(from: alternative.name)
+                centerText: extractInitials(from: alternative.displayName)
             )
             .fixedSize()
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(alternative.name)
+                Text(alternative.displayName)
                     .font(.system(size: 11, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -415,14 +417,14 @@ private struct WatchLiveActivityView: View {
 
                 HStack {
                     Spacer(minLength: 0)
-                    ForEach(displayedAlternatives, id: \.name) { alt in
+                    ForEach(displayedAlternatives, id: \.stableIdentifier) { alt in
                         WidgetDonutChart(
                             standardBikes: alt.standardBikes,
                             eBikes: alt.eBikes,
                             emptySpaces: alt.emptySpaces,
                             size: 27,
                             strokeWidth: 4.5,
-                            centerText: extractInitials(from: alt.name)
+                            centerText: extractInitials(from: alt.displayName)
                         )
                         .fixedSize()
                         Spacer(minLength: 0)
@@ -467,6 +469,7 @@ private struct SmallLegendItem: View {
 private struct DockLiveActivityView: View {
     let attributes: DockActivityAttributes
     let state: DockActivityAttributes.ContentState
+    let isStale: Bool
 
     @Environment(\.activityFamily) private var activityFamily
 
@@ -499,15 +502,26 @@ private struct DockLiveActivityView: View {
     private let emptySpaceColor = Color(red: 117/255, green: 117/255, blue: 117/255)
 
     var body: some View {
-        // .small = Apple Watch Smart Stack (iOS 18+ / watchOS 11+)
-        // .medium = iOS Lock Screen (default behaviour)
-        if #available(iOS 18.0, watchOS 11.0, *), activityFamily == .small {
-            WatchLiveActivityView(attributes: attributes, state: state)
-                .activityBackgroundTint(Color.black)
-        } else {
-            lockScreenContent
-                .activityBackgroundTint(Color(.systemBackground))
-                .widgetURL(lockScreenDetailURL)
+        Group {
+            // .small = Apple Watch Smart Stack (iOS 18+ / watchOS 11+)
+            // .medium = iOS Lock Screen (default behaviour)
+            if #available(iOS 18.0, watchOS 11.0, *), activityFamily == .small {
+                WatchLiveActivityView(attributes: attributes, state: state)
+                    .activityBackgroundTint(Color.black)
+            } else {
+                lockScreenContent
+                    .activityBackgroundTint(Color(.systemBackground))
+                    .widgetURL(lockScreenDetailURL)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if isStale {
+                Label("Updating…", systemImage: "clock.arrow.circlepath")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .padding(7)
+                    .accessibilityLabel("Dock availability is updating")
+            }
         }
     }
 
@@ -639,7 +653,7 @@ private struct DockLiveActivityView: View {
                 if !lockScreenAlternatives.isEmpty {
                     Divider()
                     HStack(spacing: 8) {
-                        ForEach(lockScreenAlternatives, id: \.name) { alt in
+                        ForEach(lockScreenAlternatives, id: \.stableIdentifier) { alt in
                             let altFiltered = bikeDataFilter.filteredCounts(
                                 standardBikes: alt.standardBikes,
                                 eBikes: alt.eBikes,
@@ -659,12 +673,12 @@ private struct DockLiveActivityView: View {
                                         emptySpaces: alt.emptySpaces,
                                         size: 30,
                                         strokeWidth: 5,
-                                        centerText: extractInitials(from: alt.name)
+                                        centerText: extractInitials(from: alt.displayName)
                                     )
                                     .fixedSize()
 
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(alt.name)
+                                    Text(alt.displayName)
                                         .font(.system(size: 11, weight: .semibold))
                                         .lineLimit(1)
                                         .minimumScaleFactor(0.8)
@@ -722,6 +736,7 @@ private struct PrimaryDisplayText: View {
     let state: DockActivityAttributes.ContentState
     let fontSize: CGFloat
     let fontWeight: Font.Weight
+    var isStale = false
 
     @AppStorage(LiveActivityPrimaryDisplay.userDefaultsKey, store: LiveActivityPrimaryDisplay.userDefaultsStore)
     private var globalPrimaryDisplayRawValue: String = LiveActivityPrimaryDisplay.bikes.rawValue
@@ -769,6 +784,9 @@ private struct PrimaryDisplayText: View {
     }
 
     private var displayColor: Color {
+        if isStale {
+            return .orange
+        }
         if currentValue == 0 {
             return Color.red
         } else if currentValue >= threshold {
@@ -897,7 +915,8 @@ struct BikeSpot_London_WidgetLiveActivity: Widget {
         ActivityConfiguration(for: DockActivityAttributes.self) { context in
             DockLiveActivityView(
                 attributes: context.attributes,
-                state: context.state
+                state: context.state,
+                isStale: context.isStale
             )
             .activitySystemActionForegroundColor(Color.primary)
         } dynamicIsland: { context in
@@ -906,7 +925,13 @@ struct BikeSpot_London_WidgetLiveActivity: Widget {
                     ExpandedLeadingView(attributes: context.attributes, state: context.state)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    PrimaryDisplayText(attributes: context.attributes, state: context.state, fontSize: 20, fontWeight: .bold)
+                    PrimaryDisplayText(
+                        attributes: context.attributes,
+                        state: context.state,
+                        fontSize: 20,
+                        fontWeight: .bold,
+                        isStale: context.isStale
+                    )
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     ExpandedBottomView(
@@ -917,9 +942,21 @@ struct BikeSpot_London_WidgetLiveActivity: Widget {
             } compactLeading: {
                 CompactDonutView(attributes: context.attributes, state: context.state)
             } compactTrailing: {
-                PrimaryDisplayText(attributes: context.attributes, state: context.state, fontSize: 14, fontWeight: .bold)
+                PrimaryDisplayText(
+                    attributes: context.attributes,
+                    state: context.state,
+                    fontSize: 14,
+                    fontWeight: .bold,
+                    isStale: context.isStale
+                )
             } minimal: {
-                PrimaryDisplayText(attributes: context.attributes, state: context.state, fontSize: 12, fontWeight: .bold)
+                PrimaryDisplayText(
+                    attributes: context.attributes,
+                    state: context.state,
+                    fontSize: 12,
+                    fontWeight: .bold,
+                    isStale: context.isStale
+                )
             }
             .widgetURL(appLaunchURL)
         }
