@@ -27,13 +27,34 @@ private enum WatchJourneyAlternativePurpose: String {
     case eBikes
     case allBikes
     case spaces
+
+    var metric: JourneyMetric {
+        switch self {
+        case .bikes: return .bikes
+        case .eBikes: return .eBikes
+        case .allBikes: return .allBikes
+        case .spaces: return .spaces
+        }
+    }
 }
 
 struct WatchWidgetDetailView: View {
     let primaryDockId: String
     let journeyMetricRawValue: String?
+    let showsJourneyActions: Bool
+    let autoRefresh: Bool
+    let compactCards: Bool
+    let alwaysShowsEndAction: Bool
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isVisible = false
 
-    init(primaryDockId: String, journeyMetricRawValue: String? = nil) {
+    init(primaryDockId: String, journeyMetricRawValue: String? = nil,
+         showsJourneyActions: Bool = true, autoRefresh: Bool = false,
+         compactCards: Bool = false, alwaysShowsEndAction: Bool = false) {
+        self.showsJourneyActions = showsJourneyActions
+        self.autoRefresh = autoRefresh
+        self.compactCards = compactCards
+        self.alwaysShowsEndAction = alwaysShowsEndAction
         self.primaryDockId = primaryDockId
         self.journeyMetricRawValue = journeyMetricRawValue
         _displayedDockId = State(initialValue: primaryDockId)
@@ -45,12 +66,15 @@ struct WatchWidgetDetailView: View {
     @ObservedObject private var favoritesService = WatchFavoritesService.shared
 
     @State private var primaryBikePoint: WatchBikePoint?
+    @State private var primaryJourneyAvailability: JourneyAvailability?
     @State private var alternatives: [WatchBikePoint] = []
     @State private var isLoadingPrimary = true
     @State private var isLoadingAlternatives = false
     @State private var hasLoadedAlternatives = false
     @State private var alternativesLoadFailed = false
     @State private var isPerformingJourneyAction = false
+    @State private var isRefreshing = false
+    @State private var hasPendingRefresh = false
     @State private var journeyActionMessage: String?
     @State private var displayedDockId: String
     @State private var displayedJourneyMetricRawValue: String?
@@ -72,9 +96,10 @@ struct WatchWidgetDetailView: View {
         return WatchJourneyAlternativePurpose(rawValue: displayedJourneyMetricRawValue)
     }
 
-    private var journeyAction: WatchJourneyAction? {
-        guard let journeyPurpose else { return nil }
-        return journeyPurpose == .spaces ? .end : .advance
+    private var journeyActions: [WatchJourneyAction] {
+        guard showsJourneyActions, let journeyPurpose else { return [] }
+        if journeyPurpose == .spaces { return [.end] }
+        return alwaysShowsEndAction ? [.advance, .end] : [.advance]
     }
 
     var body: some View {
@@ -99,10 +124,31 @@ struct WatchWidgetDetailView: View {
                 .padding(.bottom, 8)
             }
         }
-        .navigationTitle("Dock Info")
+        .navigationTitle(compactCards ? "Journey" : "Dock Info")
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: favoritesService.dockPreferencesRevision) {
-            await loadDockDetails()
+        .onAppear { isVisible = true }
+        .onDisappear { isVisible = false }
+        .onChange(of: favoritesService.dockPreferencesRevision) { _, _ in
+            guard isVisible, scenePhase == .active else { return }
+            Task { await refreshJourneyAndDock() }
+        }
+        .task(id: isVisible && scenePhase == .active) {
+            guard isVisible, scenePhase == .active else { return }
+            while !Task.isCancelled {
+                await refreshJourneyAndDock()
+                guard autoRefresh else { return }
+                do { try await Task.sleep(for: .seconds(20)) } catch { return }
+            }
+        }
+        .toolbar {
+            if autoRefresh {
+                ToolbarItem(placement: .topBarTrailing) {
+                    WatchRefreshButton(isLoading: isRefreshing) {
+                        Task { await refreshJourneyAndDock() }
+                    }
+                    .accessibilityLabel("Refresh journey")
+                }
+            }
         }
     }
 
@@ -110,12 +156,23 @@ struct WatchWidgetDetailView: View {
 
     @ViewBuilder
     private func primarySection(_ station: WatchBikePoint) -> some View {
-        DockAvailabilityCard(
-            bikePoint: station,
-            distanceString: distanceString(for: station),
-            chartSize: 64,
-            journeyPurpose: journeyPurpose
-        )
+        if compactCards {
+            CompactJourneyDockAvailabilityCard(
+                dockName: station.displayName,
+                availability: primaryJourneyAvailability ?? journeyAvailability(for: station),
+                distanceString: distanceString(for: station),
+                metric: journeyPurpose?.metric ?? .allBikes,
+                threshold: threshold(for: journeyPurpose),
+                isPrimary: true
+            )
+        } else {
+            DockAvailabilityCard(
+                bikePoint: station,
+                distanceString: distanceString(for: station),
+                chartSize: 64,
+                journeyPurpose: journeyPurpose
+            )
+        }
     }
 
     // MARK: - Alternatives section
@@ -138,12 +195,23 @@ struct WatchWidgetDetailView: View {
                     .foregroundColor(.secondary)
 
                 ForEach(alternatives, id: \.id) { alt in
-                    DockAvailabilityCard(
-                        bikePoint: alt,
-                        distanceString: distanceString(for: alt),
-                        chartSize: 52,
-                        journeyPurpose: journeyPurpose
-                    )
+                    if compactCards {
+                        CompactJourneyDockAvailabilityCard(
+                            dockName: alt.displayName,
+                            availability: journeyAvailability(for: alt),
+                            distanceString: distanceString(for: alt),
+                            metric: journeyPurpose?.metric ?? .allBikes,
+                            threshold: threshold(for: journeyPurpose),
+                            isPrimary: false
+                        )
+                    } else {
+                        DockAvailabilityCard(
+                            bikePoint: alt,
+                            distanceString: distanceString(for: alt),
+                            chartSize: 52,
+                            journeyPurpose: journeyPurpose
+                        )
+                    }
                 }
             }
         } else if hasLoadedAlternatives {
@@ -158,23 +226,18 @@ struct WatchWidgetDetailView: View {
 
     @ViewBuilder
     private func journeyActionSection(scrollProxy: ScrollViewProxy) -> some View {
-        if let journeyAction {
+        if !journeyActions.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
-                Button {
-                    Task { await performJourneyAction(journeyAction, scrollProxy: scrollProxy) }
-                } label: {
-                    HStack {
-                        if isPerformingJourneyAction {
-                            ProgressView()
-                                .scaleEffect(0.8)
-                        }
-                        Text(journeyAction.title)
-                            .font(.system(.caption, weight: .semibold))
+                ForEach(journeyActions) { action in
+                    if action == .advance {
+                        journeyActionButton(action, scrollProxy: scrollProxy)
+                            .buttonStyle(.borderedProminent)
+                    } else {
+                        journeyActionButton(action, scrollProxy: scrollProxy)
+                            .buttonStyle(.bordered)
+                            .tint(.red)
                     }
-                    .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(isPerformingJourneyAction)
 
                 if let journeyActionMessage {
                     Text(journeyActionMessage)
@@ -189,6 +252,32 @@ struct WatchWidgetDetailView: View {
                 }
             }
             .padding(.top, 4)
+        }
+    }
+
+    private func journeyActionButton(
+        _ action: WatchJourneyAction,
+        scrollProxy: ScrollViewProxy
+    ) -> some View {
+        Button {
+            Task { await performJourneyAction(action, scrollProxy: scrollProxy) }
+        } label: {
+            HStack(spacing: 5) {
+                if isPerformingJourneyAction { ProgressView().controlSize(.mini) }
+                Text(action.title).font(.system(.caption, weight: .semibold))
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .disabled(isPerformingJourneyAction)
+    }
+
+    private func threshold(for purpose: WatchJourneyAlternativePurpose?) -> Int {
+        switch purpose {
+        case .bikes: return minBikes
+        case .eBikes: return minEBikes
+        case .allBikes: return minBikes + minEBikes
+        case .spaces: return minSpaces
+        case nil: return 0
         }
     }
 
@@ -223,23 +312,64 @@ struct WatchWidgetDetailView: View {
         )
     }
 
-    private func loadDockDetails() async {
-        await MainActor.run {
-            isLoadingPrimary = true
-            isLoadingAlternatives = false
-            hasLoadedAlternatives = false
-            alternativesLoadFailed = false
-            alternatives = []
+    private func journeyAvailability(for bikePoint: WatchBikePoint) -> JourneyAvailability {
+        JourneyAvailability(
+            standardBikes: bikePoint.standardBikes,
+            eBikes: bikePoint.eBikes,
+            spaces: bikePoint.emptyDocks,
+            updatedAt: Date()
+        )
+    }
+
+    private func refreshJourneyAndDock() async {
+        guard isVisible, scenePhase == .active else { return }
+        guard !isRefreshing else {
+            hasPendingRefresh = true
+            return
+        }
+        isRefreshing = true
+        defer {
+            isRefreshing = false
+            let shouldRefreshAgain = hasPendingRefresh && isVisible && scenePhase == .active
+            hasPendingRefresh = false
+            if shouldRefreshAgain { Task { await refreshJourneyAndDock() } }
         }
 
+        if journeyPurpose != nil {
+            _ = await WatchFavoritesService.shared.requestJourneyRefreshFromPhone()
+        }
+        guard !Task.isCancelled else { return }
+        await loadDockDetails(preservingContent: primaryBikePoint != nil)
+    }
+
+    private func loadDockDetails(preservingContent: Bool = false) async {
+        if !preservingContent {
+            await MainActor.run {
+                isLoadingPrimary = true
+                isLoadingAlternatives = false
+                hasLoadedAlternatives = false
+                alternativesLoadFailed = false
+                alternatives = []
+            }
+        }
         // Use existing in-memory favorites first for fast first paint.
         var primary = viewModel.favoriteBikePoints.first(where: { $0.id == displayedDockId })
+        let isJourneyDock = journeyPurpose != nil
+        var freshJourneyAvailability: JourneyAvailability?
+        if preservingContent || isJourneyDock {
+            if let refreshed = try? await WatchTfLAPIService.shared.fetchBikePoint(id: displayedDockId, cacheBusting: true).async() {
+                primary = refreshed
+                if isJourneyDock { freshJourneyAvailability = journeyAvailability(for: refreshed) }
+            } else {
+                primary = primaryBikePoint ?? primary
+            }
+        }
         if primary == nil {
             primary = try? await WatchTfLAPIService.shared
                 .fetchBikePoint(id: displayedDockId)
                 .async()
         }
-        if primary == nil {
+        if primary == nil && !isJourneyDock {
             primary = try? await WatchTfLAPIService.shared
                 .fetchBikePoint(id: displayedDockId, cacheBusting: true)
                 .async()
@@ -255,6 +385,19 @@ struct WatchWidgetDetailView: View {
         await MainActor.run {
             primaryBikePoint = primary
             isLoadingPrimary = false
+            if let primary, isJourneyDock {
+                let cached = JourneyStore.availability(for: primary.id)
+                if let freshJourneyAvailability,
+                   freshJourneyAvailability.updatedAt > (cached?.updatedAt ?? .distantPast) {
+                    // Only a fresh network response can advance the shared timestamp.
+                    JourneyStore.write(freshJourneyAvailability, key: "journeyAvailability.\(primary.id)")
+                    primaryJourneyAvailability = freshJourneyAvailability
+                    NotificationCenter.default.post(name: Notification.Name("journeySnapshotChanged"), object: nil)
+                } else {
+                    // An offline/cache fallback must not replace the parent's newer count.
+                    primaryJourneyAvailability = cached ?? freshJourneyAvailability
+                }
+            }
         }
 
         // Refresh full favorites in the background for cache warming / widget freshness.
@@ -281,7 +424,9 @@ struct WatchWidgetDetailView: View {
                 let chosenDocks = favoritesService.customAlternativesEnabled
                     ? try await WatchTfLAPIService.shared.fetchBikePointsInOrder(ids: customDockIDs)
                     : []
-                sortedAlternatives = chosenDocks.filter { $0.isAvailable && meetsJourneyRequirement($0) }
+                // Keep the user's configured order and show their choices even when a
+                // preferred alternative is currently below the availability threshold.
+                sortedAlternatives = chosenDocks.filter(\.isAvailable)
             } else {
                 let nearby = try await WatchTfLAPIService.shared.fetchNearbyBikePoints(
                     lat: primary.lat,
@@ -397,6 +542,8 @@ struct WatchWidgetDetailView: View {
 
         guard result.success else { return }
 
+        updateCachedJourney(after: action.rawValue)
+
         if action == .advance, let nextDockId = result.dockId {
             await MainActor.run {
                 displayedDockId = nextDockId
@@ -411,9 +558,11 @@ struct WatchWidgetDetailView: View {
     }
 }
 
-private enum WatchJourneyAction: String {
+private enum WatchJourneyAction: String, Identifiable {
     case advance
     case end
+
+    var id: String { rawValue }
 
     var title: String {
         switch self {
@@ -431,6 +580,57 @@ private enum WatchJourneyAction: String {
         case .end:
             return "Journey ended."
         }
+    }
+}
+
+struct CompactJourneyDockAvailabilityCard: View {
+    let dockName: String
+    let availability: JourneyAvailability
+    let distanceString: String?
+    let metric: JourneyMetric
+    let threshold: Int
+    let isPrimary: Bool
+
+    private var isLow: Bool {
+        // Compact primary cards are shown only when the journey dock is low.
+        // With both bike types selected, a shortage of either type is enough.
+        isPrimary || metric.count(in: availability) < threshold
+    }
+
+    var body: some View {
+        HStack(spacing: 9) {
+            JourneyDonut(availability: availability, metric: metric, size: 38)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(dockName)
+                    .font(.system(.caption, weight: .semibold))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+
+                HStack(spacing: 5) {
+                    JourneyAvailabilityLabel(
+                        availability: availability,
+                        metric: metric,
+                        threshold: threshold,
+                        isLowAvailability: isLow
+                    )
+                    if let distanceString, distanceString != "?" {
+                        Text(distanceString)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            isPrimary && isLow ? Color.orange.opacity(0.18) : Color.white.opacity(0.09),
+            in: Capsule()
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(dockName), \(metric.count(in: availability)) \(metric.label(count: metric.count(in: availability)))\(isLow ? ", low availability" : "")")
     }
 }
 

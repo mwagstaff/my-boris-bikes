@@ -5,6 +5,7 @@
 //  Created by Mike Wagstaff on 08/08/2025.
 //
 
+import Foundation
 import Testing
 import CoreLocation
 @testable import BikeSpot_London
@@ -13,18 +14,17 @@ struct BikeSpot_LondonTests {
 
     @Test func testBikePointModel() async throws {
         let properties = [
-            AdditionalProperty(key: "Installed", value: "true"),
-            AdditionalProperty(key: "Locked", value: "false"),
-            AdditionalProperty(key: "NbDocks", value: "20"),
-            AdditionalProperty(key: "NbEmptyDocks", value: "5"),
-            AdditionalProperty(key: "NbStandardBikes", value: "10"),
-            AdditionalProperty(key: "NbEBikes", value: "5")
+            try property(key: "Installed", value: "true"),
+            try property(key: "Locked", value: "false"),
+            try property(key: "NbDocks", value: "20"),
+            try property(key: "NbEmptyDocks", value: "5"),
+            try property(key: "NbStandardBikes", value: "10"),
+            try property(key: "NbEBikes", value: "5")
         ]
         
         let bikePoint = BikePoint(
             id: "BikePoints_1",
             commonName: "Test Station, Test Street",
-            url: "/Place/BikePoints_1",
             lat: 51.5074,
             lon: -0.1278,
             additionalProperties: properties
@@ -42,14 +42,13 @@ struct BikeSpot_LondonTests {
     
     @Test func testBikePointUnavailable() async throws {
         let properties = [
-            AdditionalProperty(key: "Installed", value: "false"),
-            AdditionalProperty(key: "Locked", value: "true")
+            try property(key: "Installed", value: "false"),
+            try property(key: "Locked", value: "true")
         ]
         
         let bikePoint = BikePoint(
             id: "BikePoints_2",
             commonName: "Unavailable Station",
-            url: "/Place/BikePoints_2",
             lat: 51.5074,
             lon: -0.1278,
             additionalProperties: properties
@@ -62,14 +61,13 @@ struct BikeSpot_LondonTests {
     
     @Test func testFavoriteBikePoint() async throws {
         let properties = [
-            AdditionalProperty(key: "Installed", value: "true"),
-            AdditionalProperty(key: "Locked", value: "false")
+            try property(key: "Installed", value: "true"),
+            try property(key: "Locked", value: "false")
         ]
         
         let bikePoint = BikePoint(
             id: "BikePoints_1",
             commonName: "Test Station",
-            url: "/Place/BikePoints_1",
             lat: 51.5074,
             lon: -0.1278,
             additionalProperties: properties
@@ -82,6 +80,11 @@ struct BikeSpot_LondonTests {
         #expect(favorite.sortOrder == 0)
     }
     
+    private func property(key: String, value: String) throws -> AdditionalProperty {
+        let data = try JSONSerialization.data(withJSONObject: ["key": key, "value": value])
+        return try JSONDecoder().decode(AdditionalProperty.self, from: data)
+    }
+
     @Test func testSortModes() async throws {
         let modes = SortMode.allCases
 

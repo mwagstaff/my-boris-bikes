@@ -114,6 +114,9 @@ class LocationService: NSObject, ObservableObject {
 
 extension LocationService: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        if let latest = locations.last {
+            Task { @MainActor in JourneySyncService.shared.updateLocation(latest) }
+        }
         guard let newLocation = locations.last else {
             logger.warning("Received location update with no locations")
             return

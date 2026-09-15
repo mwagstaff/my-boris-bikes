@@ -391,6 +391,7 @@ struct PreferencesView: View {
 
 #if DEBUG
                 Section("Debug") {
+                    NavigationLink("Test a Journey") { JourneyTestView() }
                     Button(isDebugRefreshing ? "Refreshing…" : "Run Background Refresh") {
                         isDebugRefreshing = true
                         debugRefreshStatus = "Running..."

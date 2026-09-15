@@ -64,6 +64,14 @@ class WatchLocationService: NSObject, ObservableObject {
 extension WatchLocationService: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         location = locations.last
+        if let location {
+            let sample = JourneyLocation(coordinate: JourneyCoordinate(latitude: location.coordinate.latitude,
+                                                                        longitude: location.coordinate.longitude),
+                                         accuracy: location.horizontalAccuracy, date: location.timestamp)
+            if sample.isUsable(at: Date()), sample.date > (JourneyStore.location?.date ?? .distantPast) {
+                JourneyStore.write(sample, key: JourneyStore.locationKey)
+            }
+        }
     }
     
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

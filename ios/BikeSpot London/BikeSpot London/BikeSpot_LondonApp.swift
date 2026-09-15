@@ -27,7 +27,9 @@ struct BikeSpot_LondonApp: App {
         LiveActivityService.shared.restoreActivities()
         LiveActivityService.shared.startActivityUpdateObservation()
         ScheduledJourneyService.shared.startPushToStartTokenObservation()
+        JourneySyncService.shared.start()
         Task {
+            await ScheduledJourneyService.shared.refresh()
             await DockArrivalMonitoringService.shared.retryPendingArrivalDeliveryIfNeeded()
         }
     }
@@ -49,7 +51,8 @@ struct BikeSpot_LondonApp: App {
                 // Reconcile local/server live activity state after foregrounding
                 LiveActivityService.shared.restoreActivities()
                 Task {
-                    await DockArrivalMonitoringService.shared.retryPendingArrivalDeliveryIfNeeded()
+                    await ScheduledJourneyService.shared.refresh()
+            await DockArrivalMonitoringService.shared.retryPendingArrivalDeliveryIfNeeded()
                 }
                 // When the app comes to foreground, reload widget timelines
                 // so they pick up the freshest data from the main app
@@ -70,7 +73,7 @@ struct BikeSpot_LondonApp: App {
             selectedTab = 0 // Navigate to favorites tab
         case "map":
             selectedTab = 1 // Navigate to map tab
-        case "journeys":
+        case "journeys", "journey":
             selectedDockId = nil
             selectedTab = 2 // Navigate to journeys tab
         case "dock":

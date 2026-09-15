@@ -1232,6 +1232,7 @@ final class DockArrivalMonitoringService: NSObject {
     }
 
     private func checkArrival(with location: CLLocation) {
+        Task { @MainActor in JourneySyncService.shared.updateLocation(location) }
         guard let dock = monitoredDock else { return }
 
         let dockLocation = CLLocation(latitude: dock.latitude, longitude: dock.longitude)

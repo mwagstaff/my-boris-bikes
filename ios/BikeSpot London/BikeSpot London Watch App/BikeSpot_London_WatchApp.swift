@@ -20,6 +20,7 @@ struct BikeSpot_London_Watch_AppApp: App {
     @State private var selectedDockId: String?
     @State private var customWidgetContext: String?
     @State private var journeyMetricRawValue: String?
+    @State private var activityContext: JourneyActivityContext?
 
     private static let backgroundRefreshTaskIdentifier = "dev.skynolimit.myborisbikes.watch-complication-refresh"
 
@@ -37,7 +38,8 @@ struct BikeSpot_London_Watch_AppApp: App {
             ContentView(
                 selectedDockId: $selectedDockId,
                 customWidgetContext: $customWidgetContext,
-                journeyMetricRawValue: $journeyMetricRawValue
+                journeyMetricRawValue: $journeyMetricRawValue,
+                activityContext: activityContext
             )
                 .environmentObject(WatchFavoritesService.shared)
                 .environmentObject(WatchLocationService.shared)
@@ -48,6 +50,12 @@ struct BikeSpot_London_Watch_AppApp: App {
                 }
                 .onOpenURL { url in
                     handleDeepLink(url)
+                }
+                .onContinueUserActivity(NSUserActivityTypeLiveActivity) { _ in
+                    activityContext = nil
+                    customWidgetContext = nil
+                    journeyMetricRawValue = nil
+                    selectedDockId = "JOURNEY_ACTIVITY"
                 }
                 .onChange(of: customWidgetContext) { newValue in
                 }
@@ -74,6 +82,8 @@ struct BikeSpot_London_Watch_AppApp: App {
     /// Fetches fresh dock data from TfL and writes it to the shared app group so that
     /// the widget extension can display up-to-date complications.
     private func performWatchBackgroundRefresh() async {
+        _ = await JourneyDataSource.refresh()
+        WidgetCenter.shared.reloadTimelines(ofKind: JourneyStore.widgetKind)
         let favoritesService = WatchFavoritesService.shared
         let widgetService = WatchWidgetService.shared
         let apiService = WatchTfLAPIService.shared
@@ -115,6 +125,21 @@ struct BikeSpot_London_Watch_AppApp: App {
             applyPreferenceOverrides(from: url)
         }
         
+        if supportsWatchRouting, url.host == "journey" {
+            customWidgetContext = nil
+            journeyMetricRawValue = nil
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+            activityContext = JourneyActivityContext.from(url)
+            if activityContext == nil, let encoded = items?.first(where: { $0.name == "context" })?.value,
+               let data = Data(base64Encoded: encoded),
+               let handoff = try? JSONDecoder().decode(JourneyActivityHandoff.self, from: data) {
+                handoff.apply()
+                activityContext = handoff.activityContext
+            }
+            selectedDockId = items?.first { $0.name == "view" }?.value == "alternatives"
+                ? "JOURNEY_ALTERNATIVES" : "JOURNEY_ACTIVITY"
+            return
+        }
         // Handle myborisbikes://dock/{dockId}
         if supportsWatchRouting,
            url.host == "dock",

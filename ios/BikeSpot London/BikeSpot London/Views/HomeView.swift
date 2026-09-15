@@ -357,12 +357,31 @@ struct FavoritesListView: View {
         }
     }
 
+    private var collapsedFavoriteJourneys: [FavoriteJourney] {
+        guard locationService.location != nil else { return [] }
+        return nearbyFavoriteJourneys.isEmpty
+            ? Array(favoriteJourneysByDistance.prefix(1))
+            : nearbyFavoriteJourneys
+    }
+
     private var displayedFavoriteJourneys: [FavoriteJourney] {
-        isShowingAllFavoriteJourneys ? favoriteJourneysByDistance : nearbyFavoriteJourneys
+        isShowingAllFavoriteJourneys ? favoriteJourneysByDistance : collapsedFavoriteJourneys
     }
 
     private var hasAdditionalFavoriteJourneys: Bool {
-        nearbyFavoriteJourneys.count < favoriteJourneys.count
+        collapsedFavoriteJourneys.count < favoriteJourneys.count
+    }
+
+    private var collapsedFavoriteJourneysLabel: String {
+        locationService.location != nil && nearbyFavoriteJourneys.isEmpty
+            ? "Nearest only"
+            : "Nearby only"
+    }
+
+    private var collapsedFavoriteJourneysAccessibilityLabel: String {
+        locationService.location != nil && nearbyFavoriteJourneys.isEmpty
+            ? "Show nearest favourite journey"
+            : "Show nearby favourite journeys only"
     }
 
     private var availableBikePointsByID: [String: BikePoint] {
@@ -662,7 +681,7 @@ struct FavoritesListView: View {
     private func favoriteJourneysSection(bikePointsByID: [String: BikePoint]) -> some View {
         Section {
             if displayedFavoriteJourneys.isEmpty {
-                Text(locationService.location == nil ? "Current location unavailable" : "No favourite journeys nearby")
+                Text("Current location unavailable")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else {
@@ -699,7 +718,7 @@ struct FavoritesListView: View {
                 if hasAdditionalFavoriteJourneys {
                     Button(action: toggleAllFavoriteJourneys) {
                         HStack(spacing: 3) {
-                            Text(isShowingAllFavoriteJourneys ? "Nearby only" : "View all")
+                            Text(isShowingAllFavoriteJourneys ? collapsedFavoriteJourneysLabel : "View all")
                             Image(systemName: isShowingAllFavoriteJourneys ? "chevron.up" : "chevron.down")
                         }
                         .font(.caption.weight(.semibold))
@@ -707,7 +726,11 @@ struct FavoritesListView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(isShowingAllFavoriteJourneys ? "Show nearby favourite journeys only" : "View all favourite journeys")
+                    .accessibilityLabel(
+                        isShowingAllFavoriteJourneys
+                            ? collapsedFavoriteJourneysAccessibilityLabel
+                            : "View all favourite journeys"
+                    )
                 }
 
                 Button(action: onHideJourneySection) {

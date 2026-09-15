@@ -12,6 +12,7 @@ struct WatchJourneyActionResult {
 // MARK: - Notification Names
 extension Notification.Name {
     static let favoritesDidChange = Notification.Name("favoritesDidChange")
+    static let favoriteJourneysDidChange = Notification.Name("favoriteJourneysDidChange")
     static let dockPreferencesDidChange = Notification.Name("dockPreferencesDidChange")
 }
 
@@ -19,6 +20,7 @@ class WatchFavoritesService: NSObject, ObservableObject {
     static let shared = WatchFavoritesService()
     
     @Published var favorites: [WatchFavoriteBikePoint] = []
+    @Published private(set) var favoriteJourneys: [WatchFavoriteJourney] = []
     @Published var sortMode: WatchSortMode = .distance
     @Published var isConnectedToPhone: Bool = false
     @Published private(set) var dockPreferencesRevision: Int64?
@@ -26,6 +28,7 @@ class WatchFavoritesService: NSObject, ObservableObject {
     private let userDefaults: UserDefaults
     private let appGroup = "group.dev.skynolimit.myborisbikes"
     private let favoritesKey = "favorites"
+    private let favoriteJourneysKey = "watchFavoriteJourneys.v1"
     private let sortModeKey = "sortMode"
     private let dockPreferencesKey = "dockPreferences"
     private var dockPreferences: WatchDockPreferencesSnapshot?
@@ -49,6 +52,7 @@ class WatchFavoritesService: NSObject, ObservableObject {
         }
         
         loadFavorites()
+        loadFavoriteJourneys()
         loadSortMode()
         if let data = userDefaults.data(forKey: dockPreferencesKey) {
             processDockPreferencesData(data)
@@ -87,6 +91,15 @@ class WatchFavoritesService: NSObject, ObservableObject {
            let mode = WatchSortMode(rawValue: sortModeString) {
             sortMode = mode
         }
+    }
+
+    private func loadFavoriteJourneys() {
+        guard let data = userDefaults.data(forKey: favoriteJourneysKey),
+              let journeys = try? JSONDecoder().decode([WatchFavoriteJourney].self, from: data) else {
+            favoriteJourneys = []
+            return
+        }
+        favoriteJourneys = applyingDockAliases(to: journeys)
     }
     
     func alias(for id: String) -> String? {
@@ -128,6 +141,20 @@ class WatchFavoritesService: NSObject, ObservableObject {
         }
     }
 
+    private func applyingDockAliases(to journeys: [WatchFavoriteJourney]) -> [WatchFavoriteJourney] {
+        journeys.map { journey in
+            var updated = journey
+            if dockPreferences == nil {
+                updated.startDock.alias = journey.startDock.alias
+                updated.endDock.alias = journey.endDock.alias
+            } else {
+                updated.startDock.alias = alias(for: journey.startDock.id)
+                updated.endDock.alias = alias(for: journey.endDock.id)
+            }
+            return updated
+        }
+    }
+
     private func processDockPreferencesData(_ data: Data) {
         guard let snapshot = try? JSONDecoder().decode(WatchDockPreferencesSnapshot.self, from: data),
               snapshot.revision >= (dockPreferencesRevision ?? -1),
@@ -140,6 +167,11 @@ class WatchFavoritesService: NSObject, ObservableObject {
         if updatedFavorites.map(\.alias) != favorites.map(\.alias) {
             favorites = updatedFavorites
             saveFavoritesToUserDefaults()
+        }
+        let updatedJourneys = applyingDockAliases(to: favoriteJourneys)
+        if updatedJourneys != favoriteJourneys {
+            favoriteJourneys = updatedJourneys
+            saveFavoriteJourneysToUserDefaults()
         }
         if let settings = snapshot.settings {
             let values: [String: Any?] = [
@@ -165,6 +197,7 @@ class WatchFavoritesService: NSObject, ObservableObject {
     
     func refreshFromiOS(preserveExisting: Bool = false) {
         loadFavorites(preserveExisting: preserveExisting)
+        loadFavoriteJourneys()
     }
     
     func setupWatchConnectivity() {
@@ -243,29 +276,90 @@ class WatchFavoritesService: NSObject, ObservableObject {
         requestFavoritesFromPhone()
     }
 
-    func performJourneyAction(action: String, dockId: String) async -> WatchJourneyActionResult {
+    /// Pulls only the current journey payload while the journey screen is visible.
+    /// This is deliberately separate from the timer-driven favourites sync because
+    /// watchOS can suspend that timer while the display is inactive.
+    @MainActor
+    func requestJourneyRefreshFromPhone() async -> Bool {
+        guard !Task.isCancelled else { return false }
+        let session = WCSession.default
+
+        // The latest application context can arrive while this screen is already visible.
+        // Read it explicitly so the refresh does not depend on a view lifecycle change.
+        if !session.receivedApplicationContext.isEmpty {
+            processJourneyPayload(session.receivedApplicationContext)
+        }
+
+        guard session.activationState == .activated, session.isReachable else { return false }
+
+        let message: [String: Any] = [
+            "request": "journeyState",
+            "timestamp": Date().timeIntervalSince1970
+        ]
+        return await Self.waitForJourneyRefreshReply { complete in
+            session.sendMessage(message, replyHandler: { [weak self] reply in
+                DispatchQueue.main.async {
+                    self?.processJourneyPayload(reply)
+                    complete(true)
+                }
+            }, errorHandler: { _ in
+                complete(false)
+            })
+        }
+    }
+
+    @MainActor
+    static func waitForJourneyRefreshReply(
+        timeout: Duration = .seconds(8),
+        send: (@escaping @Sendable (Bool) -> Void) -> Void
+    ) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        let (stream, continuation) = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingOldest(1))
+        let timeoutTask = Task {
+            do { try await Task.sleep(for: timeout) } catch { return }
+            continuation.yield(false)
+            continuation.finish()
+        }
+        defer {
+            timeoutTask.cancel()
+            continuation.finish()
+        }
+        send { success in
+            continuation.yield(success)
+            continuation.finish()
+        }
+        // Cancellation ends iteration even if WatchConnectivity never invokes a callback.
+        // A late reply may still update the cache, but cannot resume this wait twice.
+        for await success in stream { return !Task.isCancelled && success }
+        return false
+    }
+
+    func performJourneyAction(action: String, dockId: String, isSimulation: Bool = false) async -> WatchJourneyActionResult {
         guard WCSession.default.activationState == .activated,
               WCSession.default.isReachable else {
             return WatchJourneyActionResult(success: false, dockId: nil, journeyMetricRawValue: nil)
         }
 
         let message: [String: Any] = [
-            "request": "journeyAction",
+            "request": isSimulation ? "journeyTestAction" : "journeyAction",
             "action": action,
             "dockId": dockId,
             "timestamp": Date().timeIntervalSince1970
         ]
 
         return await withCheckedContinuation { continuation in
-            WCSession.default.sendMessage(message, replyHandler: { reply in
+            WCSession.default.sendMessage(message, replyHandler: { [weak self] reply in
                 let success = reply["success"] as? Bool ?? false
                 let dockId = reply["dockId"] as? String
                 let journeyMetricRawValue = reply["journeyMetric"] as? String
-                continuation.resume(returning: WatchJourneyActionResult(
-                    success: success,
-                    dockId: dockId,
-                    journeyMetricRawValue: journeyMetricRawValue
-                ))
+                DispatchQueue.main.async {
+                    self?.processJourneyPayload(reply)
+                    continuation.resume(returning: WatchJourneyActionResult(
+                        success: success,
+                        dockId: dockId,
+                        journeyMetricRawValue: journeyMetricRawValue
+                    ))
+                }
             }, errorHandler: { _ in
                 continuation.resume(returning: WatchJourneyActionResult(
                     success: false,
@@ -291,8 +385,32 @@ class WatchFavoritesService: NSObject, ObservableObject {
         }
     }
     
+    private func processJourneyPayload(_ payload: [String: Any]) {
+        if let data = payload[JourneyStore.snapshotKey] as? Data { JourneyStore.receive(data) }
+        if let data = payload[JourneyStore.locationKey] as? Data,
+           let incoming = try? JSONDecoder().decode(JourneyLocation.self, from: data),
+           incoming.date > (JourneyStore.location?.date ?? .distantPast) {
+            JourneyStore.write(incoming, key: JourneyStore.locationKey)
+        }
+        if let data = payload["journeyAvailability"] as? Data,
+           let availability = try? JSONDecoder().decode([String: JourneyAvailability].self, from: data) {
+            for (id, value) in availability where value.updatedAt > (JourneyStore.availability(for: id)?.updatedAt ?? .distantPast) {
+                JourneyStore.write(value, key: "journeyAvailability.\(id)")
+            }
+        }
+        if let data = payload[JourneySimulation.key] as? Data {
+            JourneyStore.receiveSimulation(data)
+        }
+        if let data = payload["dockPreferences"] as? Data {
+            processDockPreferencesData(data)
+        }
+        WidgetCenter.shared.reloadTimelines(ofKind: JourneyStore.widgetKind)
+        NotificationCenter.default.post(name: Notification.Name("journeySnapshotChanged"), object: nil)
+    }
+
     private func handleSyncResponse(_ response: [String: Any], success: Bool) {
         if success {
+            processJourneyPayload(response)
             consecutiveFailureCount = 0
             if let preferencesData = response["dockPreferences"] as? Data {
                 processDockPreferencesData(preferencesData)
@@ -301,6 +419,9 @@ class WatchFavoritesService: NSObject, ObservableObject {
             // Check if the response contains favorites data
             if let favoritesData = response["favorites"] as? Data {
                 processFavoritesData(favoritesData)
+            }
+            if let favoriteJourneysData = response["favoriteJourneys"] as? Data {
+                processFavoriteJourneysData(favoriteJourneysData)
             }
         } else {
             consecutiveFailureCount += 1
@@ -326,6 +447,20 @@ class WatchFavoritesService: NSObject, ObservableObject {
             }
         } catch {
         }
+    }
+
+    private func processFavoriteJourneysData(_ data: Data) {
+        guard let decoded = try? JSONDecoder().decode([WatchFavoriteJourney].self, from: data) else { return }
+        let journeys = applyingDockAliases(to: decoded)
+        guard journeys != favoriteJourneys || userDefaults.data(forKey: favoriteJourneysKey) != data else { return }
+        favoriteJourneys = journeys
+        saveFavoriteJourneysToUserDefaults()
+        NotificationCenter.default.post(name: .favoriteJourneysDidChange, object: nil)
+    }
+
+    private func saveFavoriteJourneysToUserDefaults() {
+        guard let data = try? JSONEncoder().encode(favoriteJourneys) else { return }
+        userDefaults.set(data, forKey: favoriteJourneysKey)
     }
     
     private func saveFavoritesToUserDefaults() {
@@ -479,6 +614,10 @@ extension WatchFavoritesService: WCSessionDelegate {
     /// to reload widget timelines so complications pick up the fresh data already written
     /// to the shared app group by the iOS background refresh task.
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String : Any]) {
+        DispatchQueue.main.async { self.processJourneyPayload(userInfo) }
+        if let favoriteJourneysData = userInfo["favoriteJourneys"] as? Data {
+            DispatchQueue.main.async { self.processFavoriteJourneysData(favoriteJourneysData) }
+        }
         if let preferencesData = userInfo["dockPreferences"] as? Data {
             DispatchQueue.main.async {
                 self.processDockPreferencesData(preferencesData)
@@ -498,6 +637,10 @@ extension WatchFavoritesService: WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String : Any], replyHandler: @escaping ([String : Any]) -> Void) {
+        DispatchQueue.main.async { self.processJourneyPayload(message) }
+        if let favoriteJourneysData = message["favoriteJourneys"] as? Data {
+            DispatchQueue.main.async { self.processFavoriteJourneysData(favoriteJourneysData) }
+        }
         if let preferencesData = message["dockPreferences"] as? Data {
             DispatchQueue.main.async {
                 self.processDockPreferencesData(preferencesData)

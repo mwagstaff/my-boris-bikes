@@ -121,6 +121,24 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AA1000000000000000000001 /* Exceptions for "BikeSpot London" folder in "BikeSpot London Watch App" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Components/JourneyAvailabilityViews.swift,
+				Models/JourneyComplicationModels.swift,
+				Models/JourneyDataSource.swift,
+			);
+			target = E74FF9B12E46798800DD1BA8 /* BikeSpot London Watch App */;
+		};
+		AA1000000000000000000002 /* Exceptions for "BikeSpot London" folder in "BikeSpot London Watch App Extension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Components/JourneyAvailabilityViews.swift,
+				Models/JourneyComplicationModels.swift,
+				Models/JourneyDataSource.swift,
+			);
+			target = E7544E6A2E48175C00B3F29D /* BikeSpot London Watch App Extension */;
+		};
 		E74135F32F31675C00EB72C4 /* Exceptions for "BikeSpot London Widget" folder in "BikeSpot London WidgetExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -131,8 +149,11 @@
 		E74136082F31682B00EB72C4 /* Exceptions for "BikeSpot London" folder in "BikeSpot London WidgetExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				Components/JourneyAvailabilityViews.swift,
 				Configuration/AppConstants.swift,
 				Models/BikePoint.swift,
+				Models/JourneyComplicationModels.swift,
+				Models/JourneyDataSource.swift,
 				Models/LiveActivityModels.swift,
 				Models/WidgetModels.swift,
 			);
@@ -159,6 +180,8 @@
 		E74FF9862E46720100DD1BA8 /* BikeSpot London */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
+				AA1000000000000000000001 /* Exceptions for "BikeSpot London" folder in "BikeSpot London Watch App" target */,
+				AA1000000000000000000002 /* Exceptions for "BikeSpot London" folder in "BikeSpot London Watch App Extension" target */,
 				E74136082F31682B00EB72C4 /* Exceptions for "BikeSpot London" folder in "BikeSpot London WidgetExtension" target */,
 			);
 			path = "BikeSpot London";
@@ -742,6 +765,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -989,7 +1013,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SJ8X4DLAN9;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-BikesTests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1008,7 +1032,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SJ8X4DLAN9;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.myborisbikes.My-Boris-BikesTests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1064,14 +1088,10 @@
 				DEVELOPMENT_TEAM = SJ8X4DLAN9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "BikeSpot London Watch";
-				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLName = myborisbikes;
-				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLSchemes_0 = myborisbikes;
-				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLName = myborisbikeswatch;
-				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLSchemes_0 = myborisbikeswatch;
+				INFOPLIST_FILE = "BikeSpot-London-Watch-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "BikeSpot London";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "dev.skynolimit.myborisbikes.My-Boris-Bikes";
-				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = DockActivityAttributes;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1081,6 +1101,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
@@ -1091,6 +1112,7 @@
 		E74FF9D52E46798900DD1BA8 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				"ENABLE_TESTABILITY[sdk=watchsimulator*]" = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "BikeSpot London Watch App/BikeSpot London Watch App.entitlements";
@@ -1099,14 +1121,10 @@
 				DEVELOPMENT_TEAM = SJ8X4DLAN9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "BikeSpot London Watch";
-				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLName = myborisbikes;
-				INFOPLIST_KEY_CFBundleURLTypes_0_CFBundleURLSchemes_0 = myborisbikes;
-				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLName = myborisbikeswatch;
-				INFOPLIST_KEY_CFBundleURLTypes_1_CFBundleURLSchemes_0 = myborisbikeswatch;
+				INFOPLIST_FILE = "BikeSpot-London-Watch-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "BikeSpot London";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "dev.skynolimit.myborisbikes.My-Boris-Bikes";
-				INFOPLIST_KEY_WKSupportsLiveActivityLaunchAttributeTypes = DockActivityAttributes;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1225,6 +1243,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;

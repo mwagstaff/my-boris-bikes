@@ -189,45 +189,6 @@ private struct AlternativeJourneyDockRow: View {
     }
 }
 
-private struct JourneyDockAvailabilityRow: View {
-    let attributes: DockActivityAttributes
-    let state: DockActivityAttributes.ContentState
-    let summary: JourneyAvailabilitySummary
-    let donutSize: CGFloat
-    let strokeWidth: CGFloat
-    let labelFontSize: CGFloat
-    let dockFontSize: CGFloat
-    let spacing: CGFloat
-
-    var body: some View {
-        HStack(spacing: spacing) {
-            WidgetDonutChart(
-                standardBikes: state.standardBikes,
-                eBikes: state.eBikes,
-                emptySpaces: state.emptySpaces,
-                size: donutSize,
-                strokeWidth: strokeWidth,
-                centerText: extractInitials(from: displayTitle(attributes: attributes, state: state))
-            )
-            .fixedSize()
-
-            Text(summary.text)
-                .font(.system(size: labelFontSize, weight: .semibold))
-                .foregroundColor(summary.color)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-
-            Text(displayDockName(attributes: attributes, state: state))
-                .font(.system(size: dockFontSize, weight: .semibold))
-                .foregroundColor(.primary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .minimumScaleFactor(0.85)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
-
 // MARK: - Live Activity Legend Item (local to this file)
 
 private struct LiveActivityLegendItem: View {
@@ -261,6 +222,7 @@ private struct LiveActivityLegendItem: View {
 private struct WatchLiveActivityView: View {
     let attributes: DockActivityAttributes
     let state: DockActivityAttributes.ContentState
+    let isStale: Bool
 
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
@@ -319,6 +281,34 @@ private struct WatchLiveActivityView: View {
         )
     }
 
+    private var journeyHandoff: JourneyActivityHandoff? {
+        guard let phase = JourneyRun.Phase(rawValue: activeJourneyPhase(attributes: attributes, state: state) ?? ""),
+              let timestamp = state.availabilityUpdatedAtEpochSeconds else { return nil }
+        let id = attributes.scheduledJourneyId ?? attributes.adHocJourneyId ?? attributes.dockId
+        let cached = JourneyStore.snapshot.active
+        let start = cached?.id == id ? cached?.startDock : nil
+        let destination = cached?.id == id ? cached?.destinationDock : nil
+        let startDock = start ?? JourneyDock(id: attributes.dockId, name: attributes.dockName, alias: attributes.alias,
+            coordinate: attributes.latitude.flatMap { lat in attributes.longitude.map { JourneyCoordinate(latitude: lat, longitude: $0) } })
+        guard let destinationDock = destination ?? attributes.destinationDockId.map({ dockId in
+            JourneyDock(id: dockId, name: attributes.destinationDockName ?? dockId,
+                        alias: phase == .riding ? displayAlias(attributes: attributes, state: state) : nil,
+                        coordinate: attributes.destinationLatitude.flatMap { lat in
+                            attributes.destinationLongitude.map { JourneyCoordinate(latitude: lat, longitude: $0) }
+                        })
+        }) else { return nil }
+        let date = Date(timeIntervalSince1970: Double(timestamp))
+        let run = JourneyRun(id: id, phase: phase, startDock: startDock, destinationDock: destinationDock,
+                             startedAt: cached?.id == id ? cached!.startedAt : date,
+                             expiresAt: cached?.id == id ? cached!.expiresAt : date.addingTimeInterval(8 * 3600),
+                             progress: state.journeyProgress,
+                             rideStartedAt: state.rideStartedAtEpochSeconds.map { Date(timeIntervalSince1970: $0) }
+                                ?? (cached?.id == id ? cached?.rideStartedAt : nil))
+        return JourneyActivityHandoff(run: run,
+            availability: JourneyAvailability(standardBikes: state.standardBikes, eBikes: state.eBikes, spaces: state.emptySpaces, updatedAt: date),
+            bikeMetric: JourneyMetric(rawValue: journeyMetric?.queryValue ?? "bikes") ?? .bikes)
+    }
+
     private var watchDetailURL: URL? {
         var components = URLComponents()
         components.scheme = "myborisbikes"
@@ -331,7 +321,12 @@ private struct WatchLiveActivityView: View {
             URLQueryItem(name: "minSpaces", value: String(minSpaces))
         ]
         if let journeyMetric {
+            components.host = "journey"
+            components.path = ""
             components.queryItems?.append(URLQueryItem(name: "journeyMetric", value: journeyMetric.queryValue))
+            if let item = journeyHandoff?.activityContext.queryItem {
+                components.queryItems?.append(item)
+            }
         }
         return components.url
     }
@@ -340,17 +335,16 @@ private struct WatchLiveActivityView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             // Primary dock row: donut left, name + legend right
-            if let journeySummary {
-                JourneyDockAvailabilityRow(
-                    attributes: attributes,
-                    state: state,
-                    summary: journeySummary,
-                    donutSize: 36,
-                    strokeWidth: 7,
-                    labelFontSize: 13,
-                    dockFontSize: 13,
-                    spacing: 8
-                )
+            if let journeySummary, let journeyMetric {
+                JourneySmartStackCard(dockName: displayTitle(attributes: attributes, state: state),
+                    availability: JourneyAvailability(standardBikes: state.standardBikes, eBikes: state.eBikes,
+                        spaces: state.emptySpaces,
+                        updatedAt: Date(timeIntervalSince1970: Double(state.availabilityUpdatedAtEpochSeconds ?? 0))),
+                    metric: JourneyMetric(rawValue: journeyMetric.queryValue) ?? .bikes,
+                    threshold: journeySummary.threshold,
+                    phase: journeyMetric.queryValue == "spaces" ? .riding : .pickup,
+                    progress: state.journeyProgress,
+                    isStale: isStale)
             } else {
                 HStack(spacing: 10) {
                     WidgetDonutChart(
@@ -411,7 +405,7 @@ private struct WatchLiveActivityView: View {
             }
 
             // Nearby alternatives: up to 3 donut charts centered horizontally
-            if !displayedAlternatives.isEmpty {
+            if journeyMetric == nil && !displayedAlternatives.isEmpty {
                 Divider()
                     .background(Color.white.opacity(0.3))
 
@@ -466,6 +460,7 @@ private struct SmallLegendItem: View {
 
 // MARK: - Lock Screen / Banner View
 
+@available(iOS 18.0, *)
 private struct DockLiveActivityView: View {
     let attributes: DockActivityAttributes
     let state: DockActivityAttributes.ContentState
@@ -506,7 +501,7 @@ private struct DockLiveActivityView: View {
             // .small = Apple Watch Smart Stack (iOS 18+ / watchOS 11+)
             // .medium = iOS Lock Screen (default behaviour)
             if #available(iOS 18.0, watchOS 11.0, *), activityFamily == .small {
-                WatchLiveActivityView(attributes: attributes, state: state)
+                WatchLiveActivityView(attributes: attributes, state: state, isStale: isStale)
                     .activityBackgroundTint(Color.black)
             } else {
                 lockScreenContent
@@ -515,7 +510,7 @@ private struct DockLiveActivityView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if isStale {
+            if isStale && (activityFamily != .small || journeyMetric == nil) {
                 Label("Updating…", systemImage: "clock.arrow.circlepath")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.orange)
@@ -579,17 +574,13 @@ private struct DockLiveActivityView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 // Primary dock row
-                if let journeySummary {
-                    JourneyDockAvailabilityRow(
-                        attributes: attributes,
-                        state: state,
-                        summary: journeySummary,
-                        donutSize: 42,
-                        strokeWidth: 10,
-                        labelFontSize: 16,
-                        dockFontSize: 16,
-                        spacing: 10
-                    )
+                if let journeySummary, let journeyMetric {
+                    JourneyActivityCard(dockName: displayTitle(attributes: attributes, state: state),
+                        availability: JourneyAvailability(standardBikes: state.standardBikes, eBikes: state.eBikes,
+                            spaces: state.emptySpaces,
+                            updatedAt: Date(timeIntervalSince1970: Double(state.availabilityUpdatedAtEpochSeconds ?? 0))),
+                        metric: JourneyMetric(rawValue: journeyMetric.queryValue) ?? .bikes,
+                        threshold: journeySummary.threshold, progress: state.journeyProgress, compact: false)
                 } else {
                     HStack(spacing: 14) {
                         WidgetDonutChart(
@@ -906,6 +897,7 @@ private struct CompactDonutView: View {
 
 // MARK: - Live Activity Widget
 
+@available(iOS 18.0, *)
 struct BikeSpot_London_WidgetLiveActivity: Widget {
     private var appLaunchURL: URL? {
         URL(string: "myborisbikes://journeys")
@@ -960,7 +952,7 @@ struct BikeSpot_London_WidgetLiveActivity: Widget {
             }
             .widgetURL(appLaunchURL)
         }
-        .supplementalActivityFamilies([.small, .medium])
+        .supplementalActivityFamilies([.small])
     }
 }
 

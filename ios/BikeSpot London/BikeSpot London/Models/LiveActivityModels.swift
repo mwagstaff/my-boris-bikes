@@ -8,6 +8,13 @@
 import ActivityKit
 import Foundation
 
+#if DEBUG
+/// Separate activity type so the simulator never registers a real server session or arrival monitor.
+struct JourneyDemoAttributes: ActivityAttributes {
+    typealias ContentState = DockActivityAttributes.ContentState
+}
+#endif
+
 struct DockActivityAttributes: ActivityAttributes {
     /// Fixed properties set at activity creation
     let dockId: String
@@ -64,6 +71,10 @@ struct DockActivityAttributes: ActivityAttributes {
         let activeDockAlias: String?
         let activeJourneyPhase: String?
         let primaryDisplay: String?
+        var journeyProgress: JourneyProgress?
+        var journeyActivityContext: JourneyActivityContext?
+        /// Actual bike collection time, distinct from the pickup activity's start time.
+        var rideStartedAtEpochSeconds: Double?
         /// Unix timestamp for the availability snapshot shown in this content state.
         /// Older server payloads omit it, so it remains optional for compatibility.
         let availabilityUpdatedAtEpochSeconds: Int?
@@ -78,7 +89,10 @@ struct DockActivityAttributes: ActivityAttributes {
             activeDockAlias: String? = nil,
             activeJourneyPhase: String? = nil,
             primaryDisplay: String? = nil,
-            availabilityUpdatedAtEpochSeconds: Int? = nil
+            availabilityUpdatedAtEpochSeconds: Int? = nil,
+            journeyProgress: JourneyProgress? = nil,
+            journeyActivityContext: JourneyActivityContext? = nil,
+            rideStartedAtEpochSeconds: Double? = nil
         ) {
             self.standardBikes = standardBikes
             self.eBikes = eBikes
@@ -89,6 +103,9 @@ struct DockActivityAttributes: ActivityAttributes {
             self.activeDockAlias = activeDockAlias?.liveActivityDisplayText
             self.activeJourneyPhase = activeJourneyPhase
             self.primaryDisplay = primaryDisplay
+            self.journeyProgress = journeyProgress
+            self.journeyActivityContext = journeyActivityContext
+            self.rideStartedAtEpochSeconds = rideStartedAtEpochSeconds
             self.availabilityUpdatedAtEpochSeconds = availabilityUpdatedAtEpochSeconds
         }
 
@@ -104,6 +121,9 @@ struct DockActivityAttributes: ActivityAttributes {
             activeDockAlias = try container.decodeIfPresent(String.self, forKey: .activeDockAlias)?.liveActivityDisplayText
             activeJourneyPhase = try container.decodeIfPresent(String.self, forKey: .activeJourneyPhase)
             primaryDisplay = try container.decodeIfPresent(String.self, forKey: .primaryDisplay)
+            journeyProgress = try container.decodeIfPresent(JourneyProgress.self, forKey: .journeyProgress)
+            journeyActivityContext = try container.decodeIfPresent(JourneyActivityContext.self, forKey: .journeyActivityContext)
+            rideStartedAtEpochSeconds = try container.decodeIfPresent(Double.self, forKey: .rideStartedAtEpochSeconds)
             availabilityUpdatedAtEpochSeconds = try container.decodeIfPresent(
                 Int.self,
                 forKey: .availabilityUpdatedAtEpochSeconds

@@ -105,6 +105,8 @@ final class BackgroundRefreshService {
     /// Async version of refresh used by the background task handler.
     /// Uses async/await with the tight-timeout session for faster execution.
     private func refreshWidgetDataAsync() async -> Bool {
+        await ScheduledJourneyService.shared.refresh()
+        await MainActor.run { JourneySyncService.shared.publish() }
         let favoritesService = FavoritesService.shared
         let favorites = favoritesService.favorites
         guard !favorites.isEmpty else { return true }
@@ -237,10 +239,11 @@ final class BackgroundRefreshService {
             if WCSession.isSupported() {
                 let session = WCSession.default
                 if session.activationState == .activated && session.isWatchAppInstalled {
-                    let payload: [String: Any] = [
+                    var payload: [String: Any] = [
                         "complication_refresh": true,
                         "timestamp": timestamp
                     ]
+                    payload.merge(JourneyStore.syncPayload) { _, latest in latest }
                     session.transferCurrentComplicationUserInfo(payload)
                     print("BackgroundRefresh: Sent complication refresh signal to watch")
                 }

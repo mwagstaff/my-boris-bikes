@@ -1619,6 +1619,7 @@ struct MyBorisBikesWidgetBundle: WidgetBundle {
     }
     
     var body: some Widget {
+        JourneyComplication()
         MyBorisBikesClosestDockCircularComplication()
         MyBorisBikesClosestDockRectangularComplication()
         MyBorisBikesSimpleComplication()

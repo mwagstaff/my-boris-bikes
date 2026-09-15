@@ -387,6 +387,9 @@ struct BikeSpot_London_WidgetBundle: WidgetBundle {
     var body: some Widget {
         BikeSpot_London_Widget()
         BikeSpot_London_WidgetLiveActivity()
+#if DEBUG
+        JourneyDemoLiveActivity()
+#endif
     }
 }
 

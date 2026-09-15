@@ -219,7 +219,9 @@ class FavoritesService: NSObject, ObservableObject {
             
             let data = try JSONEncoder().encode(watchCompatibleFavorites)
             var message: [String: Any] = ["favorites": data]
+            message["favoriteJourneys"] = encodedFavoriteJourneysForWatch()
             message["dockPreferences"] = DockPreferencesService.shared.encodedPayload
+            message.merge(JourneyStore.syncPayload) { _, latest in latest }
             // Application context delivers the latest complete preferences when Watch reconnects.
             try WCSession.default.updateApplicationContext(message)
             guard WCSession.default.isReachable else { return }
@@ -233,6 +235,32 @@ class FavoritesService: NSObject, ObservableObject {
     // Public method to force sync with watch
     func forceSyncWithWatch() {
         sendFavoritesToWatch()
+    }
+
+    private func encodedFavoriteJourneysForWatch() -> Data? {
+        let storedJourneys = userDefaults.data(forKey: AppConstants.UserDefaults.favoriteJourneysKey)
+            .flatMap { try? JSONDecoder().decode([FavoriteJourney].self, from: $0) } ?? []
+        let preferences = DockPreferencesService.shared
+        let journeys = storedJourneys.map { journey in
+            WatchFavoriteJourney(
+                id: journey.id,
+                startDock: WatchFavoriteJourneyDock(
+                    id: journey.startDock.id,
+                    commonName: journey.startDock.name,
+                    alias: preferences.alias(for: journey.startDock.id),
+                    lat: journey.startDock.latitude,
+                    lon: journey.startDock.longitude
+                ),
+                endDock: WatchFavoriteJourneyDock(
+                    id: journey.endDock.id,
+                    commonName: journey.endDock.name,
+                    alias: preferences.alias(for: journey.endDock.id),
+                    lat: journey.endDock.latitude,
+                    lon: journey.endDock.longitude
+                )
+            )
+        }
+        return try? JSONEncoder().encode(journeys)
     }
     
     func setupWatchConnectivity() {
@@ -251,6 +279,20 @@ struct WatchCompatibleFavorite: Codable {
     let commonName: String
     let alias: String?
     let sortOrder: Int
+}
+
+private struct WatchFavoriteJourneyDock: Codable {
+    let id: String
+    let commonName: String
+    let alias: String?
+    let lat: Double
+    let lon: Double
+}
+
+private struct WatchFavoriteJourney: Codable {
+    let id: String
+    let startDock: WatchFavoriteJourneyDock
+    let endDock: WatchFavoriteJourneyDock
 }
 
 #if os(iOS)
@@ -292,7 +334,10 @@ extension FavoritesService: WCSessionDelegate {
                     "timestamp": Date().timeIntervalSince1970
                 ] as [String : Any]
                 
+                response["favoriteJourneys"] = encodedFavoriteJourneysForWatch()
                 response["dockPreferences"] = DockPreferencesService.shared.encodedPayload
+                response.merge(JourneyStore.syncPayload) { _, latest in latest }
+                Task { @MainActor in await ScheduledJourneyService.shared.refresh() }
                 replyHandler(response)
                 
             } catch {
@@ -301,6 +346,34 @@ extension FavoritesService: WCSessionDelegate {
                     "message": error.localizedDescription,
                     "timestamp": Date().timeIntervalSince1970
                 ])
+            }
+        } else if let request = message["request"] as? String, request == "journeyState" {
+            var response = JourneyStore.syncPayload
+            response["dockPreferences"] = DockPreferencesService.shared.encodedPayload
+            response["status"] = "success"
+            response["timestamp"] = Date().timeIntervalSince1970
+            replyHandler(response)
+        } else if let request = message["request"] as? String, request == "journeyTestAction" {
+            let action = message["action"] as? String ?? ""
+            Task { @MainActor in
+#if DEBUG
+                let success = await JourneyTestService.shared.performWatchAction(action)
+#else
+                let success = false
+#endif
+                var response = JourneyStore.syncPayload
+                response["dockPreferences"] = DockPreferencesService.shared.encodedPayload
+                response["status"] = success ? "success" : "error"
+                response["success"] = success
+                response["timestamp"] = Date().timeIntervalSince1970
+                if success,
+                   let simulation = JourneyStore.read(JourneySimulation.self, key: JourneySimulation.key),
+                   simulation.expiresAt > Date(),
+                   let selection = simulation.snapshot.selection(location: simulation.location, nearby: simulation.nearby) {
+                    response["dockId"] = selection.dock.id
+                    response["journeyMetric"] = selection.metric.rawValue
+                }
+                replyHandler(response)
             }
         } else if let request = message["request"] as? String, request == "journeyAction" {
             let action = message["action"] as? String ?? ""

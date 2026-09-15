@@ -9,6 +9,7 @@ final class ScheduledJourneyService: ObservableObject {
 
     @Published private(set) var journeys: [ScheduledJourney] = [] {
         didSet {
+            JourneyStore.write(journeys, key: "journeySchedulesCache")
             AppConstants.UserDefaults.sharedDefaults.set(
                 journeys.contains { $0.enabled },
                 forKey: AppConstants.UserDefaults.hasEnabledScheduledJourneysKey
@@ -66,6 +67,7 @@ final class ScheduledJourneyService: ObservableObject {
         }
         encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
+        journeys = JourneyStore.read([ScheduledJourney].self, key: "journeySchedulesCache") ?? []
         dockPreferencesObserver = NotificationCenter.default.addObserver(
             forName: .dockPreferencesDidChange,
             object: nil,

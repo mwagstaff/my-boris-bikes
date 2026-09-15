@@ -1,3 +1,4 @@
+const { updateJourneyProgress, rideStartedAtForPhase } = require("./journey-progress");
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const fs = require("fs");
@@ -1649,6 +1650,8 @@ function contentStateWithAlternatives(data, session) {
     activeJourneyPhase: session?.scheduledJourneyPhase || null,
     primaryDisplay: sanitizePrimaryDisplay(session?.primaryDisplay),
     availabilityUpdatedAtEpochSeconds: Math.floor(Date.now() / 1000),
+    journeyProgress: session?.scheduledJourneyPhase === "end" ? session.journeyProgress || null : null,
+    rideStartedAtEpochSeconds: session?.scheduledJourneyPhase === "end" ? session.rideStartedAtEpochSeconds ?? null : null,
   };
 }
 
@@ -4387,6 +4390,8 @@ app.post("/live-activity/start", async (req, res) => {
         ? scheduledJourneyId
         : null,
     scheduledJourneyPhase: normalizedScheduledJourneyPhase,
+    rideStartedAtEpochSeconds: rideStartedAtForPhase(normalizedScheduledJourneyPhase,
+      existingSessionForPushToken, req.body?.rideStartedAtEpochSeconds),
     adHocJourneyId:
       typeof adHocJourneyId === "string" && adHocJourneyId.trim()
         ? adHocJourneyId.trim().slice(0, 128)
@@ -4400,6 +4405,8 @@ app.post("/live-activity/start", async (req, res) => {
     activeDockAlias:
       typeof activeDockAlias === "string" && activeDockAlias.trim() ? activeDockAlias.trim() : null,
   });
+
+  updateJourneyProgress(poller.tokens.get(normalizedPushToken), req.body?.journeyProgress);
 
   appendDiagnosticJsonLine("live_activity_session_registered", {
     dockId,
@@ -4563,6 +4570,11 @@ app.post("/live-activity/session/update", async (req, res) => {
     return res.status(404).json({ error: "Live activity session token not found" });
   }
 
+  if (req.body?.progressOnly === true) {
+    const updated = updateJourneyProgress(session, req.body.journeyProgress);
+    return res.json({ success: true, progressUpdated: updated });
+  }
+
   const deviceId = deviceIdFromRequest(req) || session.deviceId;
   const validatedPreferences = req.body?.dockPreferences === undefined ? {}
     : validateDockPreferences(req.body.dockPreferences);
@@ -4608,8 +4620,12 @@ app.post("/live-activity/session/update", async (req, res) => {
     activeJourneyPhase
   );
   if (normalizedScheduledJourneyPhase) {
+    session.rideStartedAtEpochSeconds = rideStartedAtForPhase(normalizedScheduledJourneyPhase,
+      session, req.body?.rideStartedAtEpochSeconds);
     session.scheduledJourneyPhase = normalizedScheduledJourneyPhase;
   }
+
+  updateJourneyProgress(session, req.body?.journeyProgress);
 
   session.activeDockId = resolvedTargetDockId;
   session.activeDockName =

@@ -601,6 +601,9 @@ class LiveActivityService: ObservableObject {
         dockId: String,
         skipServerUnregister: Bool = false
     ) async {
+        if !skipServerUnregister {
+            JourneySyncService.shared.markEnded(journeyId: activity.attributes.scheduledJourneyId ?? activity.attributes.adHocJourneyId)
+        }
         completeAdHocJourneyIfNeeded(for: activity)
 
         if !skipServerUnregister, let pushToken = activity.pushToken {
@@ -774,11 +777,14 @@ class LiveActivityService: ObservableObject {
                         raw: ["activityId": activity.id]
                     )
                 } else if state == .dismissed || state == .ended {
+                    JourneySyncService.shared.markEnded(journeyId: activity.attributes.scheduledJourneyId ?? activity.attributes.adHocJourneyId)
                     if let adHocJourneyId = activity.attributes.adHocJourneyId {
                         AdHocJourneyService.shared.complete(journeyId: adHocJourneyId)
                     }
                     self.clearLocallyTrackedActivity(for: currentDockId)
                     self.notifyPrimaryDisplayChanged()
+                    await ScheduledJourneyService.shared.refresh()
+                    JourneySyncService.shared.publish()
                     if let pushToken = activity.pushToken {
                         let tokenString = pushToken.map { String(format: "%02x", $0) }.joined()
                         await self.unregisterFromServer(dockId: currentDockId, pushToken: tokenString)
@@ -793,6 +799,7 @@ class LiveActivityService: ObservableObject {
                 guard let self else { break }
                 let currentDockId = content.state.resolvedDockId ?? activity.attributes.dockId
                 self.staleDates[currentDockId] = content.staleDate
+                JourneySyncService.shared.publish()
                 self.logLiveActivityDiagnosticEvent(
                     "live_activity_content_update_received",
                     dockId: currentDockId,
@@ -967,7 +974,8 @@ class LiveActivityService: ObservableObject {
                 dockId: dockId,
                 scheduledJourneyPhase: scheduledJourneyPhase
             ),
-            availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970)
+            availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970),
+            rideStartedAtEpochSeconds: scheduledJourneyPhase == .end ? Date().timeIntervalSince1970 : nil
         )
 
         // `staleDate` represents availability freshness. The server separately owns
@@ -1084,6 +1092,9 @@ class LiveActivityService: ObservableObject {
 
     func endLiveActivity(for dockId: String, skipServerUnregister: Bool = false) {
         guard let activity = activeActivities[dockId] else { return }
+        if !skipServerUnregister {
+            JourneySyncService.shared.markEnded(journeyId: activity.attributes.scheduledJourneyId ?? activity.attributes.adHocJourneyId)
+        }
 
         // Remove from active tracking synchronously to prevent double-end races
         activeActivities.removeValue(forKey: dockId)
@@ -1254,7 +1265,9 @@ class LiveActivityService: ObservableObject {
                 primaryDisplay: currentState.primaryDisplay,
                 availabilityUpdatedAtEpochSeconds: refreshPreferences
                     ? currentState.availabilityUpdatedAtEpochSeconds
-                    : Int(Date().timeIntervalSince1970)
+                    : Int(Date().timeIntervalSince1970),
+                journeyProgress: currentState.journeyProgress,
+                rideStartedAtEpochSeconds: currentState.rideStartedAtEpochSeconds
             )
             guard refreshPreferences || availabilityChanged || alternativesChanged || updatedState.resolvedAlias != currentState.resolvedAlias else {
                 continue
@@ -1580,6 +1593,8 @@ class LiveActivityService: ObservableObject {
             adHocJourneyId: adHocJourneyId
         ) ?? activeActivityFallback()
 
+        let rideStartedAt = current?.content.state.rideStartedAtEpochSeconds ?? Date().timeIntervalSince1970
+
         logLiveActivityDiagnosticEvent(
             "scheduled_transition_to_end_started",
             dockId: endDock.id,
@@ -1626,7 +1641,8 @@ class LiveActivityService: ObservableObject {
             activeDockAlias: DockPreferencesService.shared.alias(for: endBikePoint.id),
             activeJourneyPhase: ScheduledJourney.ActiveRun.Phase.end.rawValue,
             primaryDisplay: LiveActivityPrimaryDisplay.spaces.rawValue,
-            availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970)
+            availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970),
+            rideStartedAtEpochSeconds: rideStartedAt
         )
         let staleDate = Date().addingTimeInterval(availabilityFreshnessSeconds)
 
@@ -2041,7 +2057,9 @@ class LiveActivityService: ObservableObject {
             activeDockAlias: DockPreferencesService.shared.alias(for: activeDockId),
             activeJourneyPhase: phase.rawValue,
             primaryDisplay: activity.content.state.primaryDisplay,
-            availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970)
+            availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970),
+            journeyProgress: activity.content.state.journeyProgress,
+            rideStartedAtEpochSeconds: activity.content.state.rideStartedAtEpochSeconds
         )
         let updatedContent = ActivityContent(
             state: updatedState,
@@ -2223,7 +2241,9 @@ class LiveActivityService: ObservableObject {
                     activeDockAlias: currentState.activeDockAlias,
                     activeJourneyPhase: currentState.activeJourneyPhase,
                     primaryDisplay: display.rawValue,
-                    availabilityUpdatedAtEpochSeconds: currentState.availabilityUpdatedAtEpochSeconds
+                    availabilityUpdatedAtEpochSeconds: currentState.availabilityUpdatedAtEpochSeconds,
+                    journeyProgress: currentState.journeyProgress,
+                    rideStartedAtEpochSeconds: currentState.rideStartedAtEpochSeconds
                 )
                 let preservedStaleDate = self.staleDates[dockId]
                 let newContent = ActivityContent(state: updatedState, staleDate: preservedStaleDate)
@@ -2467,6 +2487,11 @@ class LiveActivityService: ObservableObject {
             body["activeDockName"] = currentState.activeDockName
             body["activeDockAlias"] = currentState.activeDockAlias
             body["activeJourneyPhase"] = currentState.activeJourneyPhase
+            body["rideStartedAtEpochSeconds"] = currentState.rideStartedAtEpochSeconds
+            if let progress = currentState.journeyProgress,
+               let data = try? JSONEncoder().encode(progress) {
+                body["journeyProgress"] = try? JSONSerialization.jsonObject(with: data)
+            }
             body["availabilityUpdatedAtEpochSeconds"] = currentState.availabilityUpdatedAtEpochSeconds
         }
         if let scheduledJourneyId {
@@ -2576,6 +2601,27 @@ class LiveActivityService: ObservableObject {
         }
     }
 
+    /// Location refreshes retain the actual availability timestamp and stale date.
+    func updateJourneyProgress(_ progress: JourneyProgress, journeyId: String) async {
+        guard let activity = activeActivities.values.first(where: {
+            $0.attributes.scheduledJourneyId == journeyId || $0.attributes.adHocJourneyId == journeyId || $0.id == journeyId
+        }), scheduledJourneyPhase(for: activity) == .end else { return }
+        var state = activity.content.state
+        state.journeyProgress = progress
+        await activity.update(ActivityContent(state: state, staleDate: activity.content.staleDate))
+        guard !Task.isCancelled, scheduledJourneyPhase(for: activity) == .end,
+              activity.activityState == .active || activity.activityState == .stale else { return }
+        if let token = activity.pushToken {
+            // Send only progress: re-sending cached counts would overwrite the server's fresher dock data.
+            let dockId = state.resolvedDockId ?? activity.attributes.dockId
+            await updateSessionConfigurationOnServer(
+                dockId: dockId, pushToken: token.map { String(format: "%02x", $0) }.joined(),
+                dockName: state.resolvedDockName ?? activity.attributes.dockName,
+                primaryDisplay: .spaces, progress: progress
+            )
+        }
+    }
+
     private func updateSessionConfigurationOnServer(
         dockId: String,
         pushToken: String,
@@ -2584,7 +2630,8 @@ class LiveActivityService: ObservableObject {
         targetDockId: String? = nil,
         alternatives: [DockActivityAttributes.AlternativeDock]? = nil,
         currentState: DockActivityAttributes.ContentState? = nil,
-        scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase? = nil
+        scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase? = nil,
+        progress: JourneyProgress? = nil
     ) async {
         let urlString = "\(serverBaseURL)/live-activity/session/update"
         guard let url = URL(string: urlString) else {
@@ -2611,6 +2658,10 @@ class LiveActivityService: ObservableObject {
             } ?? primaryDisplay.rawValue,
             "minimumThresholds": minimumThresholdsPayload(),
         ]
+        if let progress, let data = try? JSONEncoder().encode(progress) {
+            body["progressOnly"] = true
+            body["journeyProgress"] = try? JSONSerialization.jsonObject(with: data)
+        }
         if let targetDockId, !targetDockId.isEmpty {
             body["targetDockId"] = targetDockId
         }
@@ -2628,6 +2679,11 @@ class LiveActivityService: ObservableObject {
             body["activeDockName"] = currentState.activeDockName
             body["activeDockAlias"] = currentState.activeDockAlias
             body["activeJourneyPhase"] = currentState.activeJourneyPhase
+            body["rideStartedAtEpochSeconds"] = currentState.rideStartedAtEpochSeconds
+            if let progress = currentState.journeyProgress,
+               let data = try? JSONEncoder().encode(progress) {
+                body["journeyProgress"] = try? JSONSerialization.jsonObject(with: data)
+            }
         }
         if let scheduledJourneyPhase {
             body["scheduledJourneyPhase"] = scheduledJourneyPhase.rawValue

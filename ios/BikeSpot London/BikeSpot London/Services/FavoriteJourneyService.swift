@@ -48,5 +48,6 @@ final class FavoriteJourneyService: ObservableObject {
     private func persist() {
         guard let data = try? encoder.encode(journeys) else { return }
         userDefaults.set(data, forKey: AppConstants.UserDefaults.favoriteJourneysKey)
+        FavoritesService.shared.forceSyncWithWatch()
     }
 }
