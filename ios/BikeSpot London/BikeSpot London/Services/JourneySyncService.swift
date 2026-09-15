@@ -76,10 +76,48 @@ final class JourneySyncService {
                                        schedules: schedules, favorites: favorites, holidayMode: scheduled.isHolidayModeEnabled,
                                        bikeMetric: metric, minBikes: settings.minBikes, minEBikes: settings.minEBikes,
                                        minSpaces: settings.minSpaces, useMinimumThresholds: settings.useMinimumThresholds)
+        snapshot.siriDestination = old.siriDestination
+        snapshot.siriHasAmbiguousJourney = hasAmbiguousJourneys()
+        snapshot.siriSchemaVersion = 1
         guard snapshot != old else { return }
-        snapshot.generatedAt = Date()
+        snapshot.generatedAt = max(Date(), old.generatedAt.addingTimeInterval(0.001))
         JourneyStore.write(snapshot, key: JourneyStore.snapshotKey)
         FavoritesService.shared.forceSyncWithWatch()
+    }
+
+    /// The phone is the sole writer of Siri defaults. Nil is an explicit, synced clear.
+    func setSiriDestination(_ dock: JourneyDock?) {
+        var snapshot = JourneyStore.snapshot
+        snapshot.siriDestination = dock
+        snapshot.siriSchemaVersion = 1
+        snapshot.generatedAt = max(Date(), snapshot.generatedAt.addingTimeInterval(0.001))
+        JourneyStore.write(snapshot, key: JourneyStore.snapshotKey)
+        FavoritesService.shared.forceSyncWithWatch()
+    }
+
+    private func hasAmbiguousJourneys() -> Bool {
+        let now = Date()
+        var ids = Set<String>()
+        for journey in ScheduledJourneyService.shared.journeys where journey.activeRun != nil {
+            let start = journey.activeRun?.startedAt ?? journey.updatedAt ?? .distantPast
+            if start > (endedJourneys[journey.id] ?? .distantPast), now.timeIntervalSince(start) < 8 * 3600 {
+                ids.insert(journey.id)
+            }
+        }
+        for journey in AdHocJourneyService.shared.recentJourneys where journey.isActive {
+            let start = journey.lastStartedAt ?? journey.createdAt
+            if start > (endedJourneys[journey.id] ?? .distantPast), now.timeIntervalSince(start) < 8 * 3600 {
+                ids.insert(journey.id)
+            }
+        }
+        for activity in LiveActivityService.shared.activeActivities.values
+            where activity.activityState == .active || activity.activityState == .stale {
+            let attributes = activity.attributes
+            guard (activity.content.state.activeJourneyPhase ?? attributes.scheduledJourneyPhase) != nil else { continue }
+            let id = attributes.scheduledJourneyId ?? attributes.adHocJourneyId ?? activity.id
+            if (firstSeenActivities[activity.id] ?? now) > (endedJourneys[id] ?? .distantPast) { ids.insert(id) }
+        }
+        return ids.count > 1
     }
 
     func updateLocation(_ location: CLLocation) {

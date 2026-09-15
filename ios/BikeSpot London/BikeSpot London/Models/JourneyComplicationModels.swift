@@ -263,6 +263,10 @@ struct JourneySnapshot: Codable, Equatable, Sendable {
     var minEBikes: Int
     var minSpaces: Int
     var useMinimumThresholds: Bool
+    // Optional additions preserve snapshots from older phone/Watch installations.
+    var siriDestination: JourneyDock? = nil
+    var siriHasAmbiguousJourney: Bool? = nil
+    var siriSchemaVersion: Int? = nil
 
     static let empty = Self(generatedAt: .distantPast, active: nil, schedules: [], favorites: [],
                             holidayMode: false, bikeMetric: .bikes, minBikes: 3, minEBikes: 3,
@@ -367,7 +371,7 @@ enum JourneyStore {
     @discardableResult
     static func receive(_ data: Data, defaults: UserDefaults = defaults) -> Bool {
         guard let incoming = try? JSONDecoder().decode(JourneySnapshot.self, from: data),
-              incoming.generatedAt >= (read(JourneySnapshot.self, key: snapshotKey, defaults: defaults)?.generatedAt ?? .distantPast)
+              incoming.generatedAt > (read(JourneySnapshot.self, key: snapshotKey, defaults: defaults)?.generatedAt ?? .distantPast)
         else { return false }
         defaults.set(data, forKey: snapshotKey)
         return true

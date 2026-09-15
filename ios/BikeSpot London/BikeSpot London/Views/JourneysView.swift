@@ -1140,7 +1140,6 @@ private struct ActiveJourneyCard<Content: View>: View {
                 ),
                 lineWidth: 1
             )
-            .subtleActivityPulse(scale: 1.004, minimumOpacity: 0.72)
             .allowsHitTesting(false)
     }
 }
