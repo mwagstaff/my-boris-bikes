@@ -348,11 +348,14 @@ extension FavoritesService: WCSessionDelegate {
                 ])
             }
         } else if let request = message["request"] as? String, request == "journeyState" {
-            var response = JourneyStore.syncPayload
-            response["dockPreferences"] = DockPreferencesService.shared.encodedPayload
-            response["status"] = "success"
-            response["timestamp"] = Date().timeIntervalSince1970
-            replyHandler(response)
+            Task { @MainActor in
+                JourneySyncService.shared.publish()
+                var response = JourneyStore.syncPayload
+                response["dockPreferences"] = DockPreferencesService.shared.encodedPayload
+                response["status"] = "success"
+                response["timestamp"] = Date().timeIntervalSince1970
+                replyHandler(response)
+            }
         } else if let request = message["request"] as? String, request == "journeyTestAction" {
             let action = message["action"] as? String ?? ""
             Task { @MainActor in

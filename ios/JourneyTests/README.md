@@ -69,6 +69,7 @@ Run from the repository root; this compiles only the shared Foundation model and
 rtk proxy swiftc -D DEBUG \
   'ios/BikeSpot London/BikeSpot London/Models/JourneyComplicationModels.swift' \
   'ios/BikeSpot London/BikeSpot London/Models/JourneyDataSource.swift' \
+  'ios/BikeSpot London/BikeSpot London/Models/SiriAvailability.swift' \
   ios/JourneyTests/JourneyLogicChecks.swift -o /tmp/bikespot-journey-checks
 rtk proxy /tmp/bikespot-journey-checks
 rtk proxy node --test bikespot-london-api/test/*.test.js

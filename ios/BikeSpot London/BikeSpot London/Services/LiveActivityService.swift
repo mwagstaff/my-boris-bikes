@@ -602,7 +602,7 @@ class LiveActivityService: ObservableObject {
         skipServerUnregister: Bool = false
     ) async {
         if !skipServerUnregister {
-            JourneySyncService.shared.markEnded(journeyId: activity.attributes.scheduledJourneyId ?? activity.attributes.adHocJourneyId)
+            JourneySyncService.shared.markEnded(journeyId: activity.attributes.scheduledJourneyId ?? activity.attributes.adHocJourneyId, activityId: activity.id)
         }
         completeAdHocJourneyIfNeeded(for: activity)
 
@@ -777,7 +777,7 @@ class LiveActivityService: ObservableObject {
                         raw: ["activityId": activity.id]
                     )
                 } else if state == .dismissed || state == .ended {
-                    JourneySyncService.shared.markEnded(journeyId: activity.attributes.scheduledJourneyId ?? activity.attributes.adHocJourneyId)
+                    JourneySyncService.shared.markEnded(journeyId: activity.attributes.scheduledJourneyId ?? activity.attributes.adHocJourneyId, activityId: activity.id)
                     if let adHocJourneyId = activity.attributes.adHocJourneyId {
                         AdHocJourneyService.shared.complete(journeyId: adHocJourneyId)
                     }
@@ -1093,7 +1093,7 @@ class LiveActivityService: ObservableObject {
     func endLiveActivity(for dockId: String, skipServerUnregister: Bool = false) {
         guard let activity = activeActivities[dockId] else { return }
         if !skipServerUnregister {
-            JourneySyncService.shared.markEnded(journeyId: activity.attributes.scheduledJourneyId ?? activity.attributes.adHocJourneyId)
+            JourneySyncService.shared.markEnded(journeyId: activity.attributes.scheduledJourneyId ?? activity.attributes.adHocJourneyId, activityId: activity.id)
         }
 
         // Remove from active tracking synchronously to prevent double-end races

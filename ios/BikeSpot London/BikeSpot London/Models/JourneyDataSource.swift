@@ -128,35 +128,120 @@ enum JourneyDataSource {
         return activityContext.map { activityState($0) } ?? cached()
     }
 
-    private static func request<T: Decodable>(_ type: T.Type, path: String) async throws -> T {
-        guard let url = URL(string: "https://api.tfl.gov.uk" + path) else { throw URLError(.badURL) }
-        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let response = response as? HTTPURLResponse, (200...299).contains(response.statusCode) else {
-            throw URLError(.badServerResponse)
+    static func siriReport(id: String, timeout: TimeInterval, session: URLSession = .shared) async throws -> SiriAvailabilityReport {
+        let (data, response, receivedAt) = try await requestData(path: "/BikePoint/\(id)", timeout: timeout, session: session)
+        let point = try JSONDecoder().decode(APIJourneyDock.self, from: data)
+        // A cache re-download must not reset the original retrieval age.
+        let age: TimeInterval
+        if let rawAge = response.value(forHTTPHeaderField: "Age") {
+            guard let parsed = TimeInterval(rawAge), parsed.isFinite, parsed >= 0 else {
+                throw SiriAvailabilityError(message: String(localized: "TfL's report age is unavailable. Please try again."))
+            }
+            age = parsed
+        } else { age = 0 }
+        return SiriAvailabilityReport(point: point, receivedAt: receivedAt,
+                                      retrievedAt: receivedAt.addingTimeInterval(-age))
+    }
+
+    static func siriDockCatalogue(timeout: TimeInterval = 8) async throws -> [JourneyDock] {
+        let (data, _, _) = try await requestData(path: "/BikePoint", timeout: timeout)
+        return try JSONDecoder().decode([APIJourneyDock].self, from: data).map(\.dock)
+    }
+
+    static func siriSnapshot() -> JourneySnapshot {
+        var snapshot = JourneyStore.snapshot
+        let index = JourneyStore.read(DockIndex.self, key: "journeyDockIndex")?.docks ?? []
+        snapshot.favorites = snapshot.favorites.map { favorite in
+            var dock = favorite
+            if dock.coordinate?.isValid != true { dock.coordinate = index.first { $0.id == dock.id }?.coordinate }
+            return dock
         }
+        return snapshot
+    }
+
+    private static func request<T: Decodable>(_ type: T.Type, path: String) async throws -> T {
+        let (data, _, _) = try await requestData(path: path, timeout: 12)
         return try JSONDecoder().decode(type, from: data)
+    }
+
+    private static func requestData(path: String, timeout: TimeInterval, session: URLSession = .shared) async throws -> (Data, HTTPURLResponse, Date) {
+        guard let url = URL(string: "https://api.tfl.gov.uk" + path) else { throw URLError(.badURL) }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        // The task race bounds the entire request, even if a server trickles response bytes.
+        return try await withThrowingTaskGroup(of: (Data, HTTPURLResponse, Date).self) { group in
+            group.addTask {
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+                if http.statusCode == 404 {
+                    throw SiriAvailabilityError(message: String(localized: "The selected dock is unavailable. Update it in BikeSpot London."))
+                }
+                guard (200...299).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+                return (data, http, Date())
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(max(0, timeout)))
+                throw URLError(.timedOut)
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
     }
 }
 
-private struct APIJourneyDock: Decodable {
-    struct Property: Decodable { var key: String; var value: String }
+struct APIJourneyDock: Decodable, Sendable {
+    struct Property: Decodable, Sendable {
+        var key: String
+        var value: String
+        var modified: String?
+
+        enum CodingKeys: String, CodingKey { case key, value, modified }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            key = try c.decode(String.self, forKey: .key)
+            // Missing or non-string metrics remain unknown, never zero.
+            value = (try? c.decode(String.self, forKey: .value)) ?? ""
+            modified = try? c.decode(String.self, forKey: .modified)
+        }
+    }
     var id: String
     var commonName: String
-    var lat: Double
-    var lon: Double
-    var additionalProperties: [Property]
+    var lat: Double?
+    var lon: Double?
+    var additionalProperties: [Property]?
 
-    private func value(_ key: String) -> String? { additionalProperties.first { $0.key == key }?.value }
-    var isAvailable: Bool { value("Installed")?.lowercased() != "false" && value("Locked")?.lowercased() != "true" }
+    private func values(_ key: String) -> [String] {
+        (additionalProperties ?? []).filter { $0.key == key }.map { $0.value.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+    func count(_ key: String) -> Int? {
+        let raw = values(key)
+        guard !raw.isEmpty else { return nil }
+        let parsed = raw.compactMap { text -> Int? in
+            guard !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+            return Int(text)
+        }
+        guard parsed.count == raw.count, Set(parsed).count == 1 else { return nil }
+        return parsed.first
+    }
+    var trustworthyElectricBikes: Int? {
+        guard let total = count("NbBikes"), let standard = count("NbStandardBikes"),
+              let electric = count("NbEBikes"), standard <= total, electric == total - standard else { return nil }
+        return electric
+    }
+    // Match the existing client: installed=false or locked=true confirms unavailability.
+    // Missing/unrecognised flags remain uncertain; Siri attributes every count to TfL.
+    var isAvailable: Bool {
+        !values("Installed").contains { $0.lowercased() == "false" }
+            && !values("Locked").contains { $0.lowercased() == "true" }
+    }
     var dock: JourneyDock {
-        JourneyDock(id: id, name: commonName, coordinate: JourneyCoordinate(latitude: lat, longitude: lon))
+        JourneyDock(id: id, name: commonName, coordinate: lat.flatMap { latitude in
+            lon.map { JourneyCoordinate(latitude: latitude, longitude: $0) }
+        })
     }
     var availability: JourneyAvailability? {
-        guard let standard = value("NbStandardBikes").flatMap(Int.init),
-              let electric = value("NbEBikes").flatMap(Int.init),
-              let spaces = value("NbEmptyDocks").flatMap(Int.init),
-              standard >= 0, electric >= 0, spaces >= 0 else { return nil }
+        guard let standard = count("NbStandardBikes"), let electric = count("NbEBikes"),
+              let spaces = count("NbEmptyDocks") else { return nil }
         return JourneyAvailability(standardBikes: standard, eBikes: electric, spaces: spaces, updatedAt: Date())
     }
 }

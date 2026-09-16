@@ -125,8 +125,11 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Components/JourneyAvailabilityViews.swift,
+				Intents/SiriAvailabilityIntents.swift,
+				Intents/SiriAvailabilityRuntime.swift,
 				Models/JourneyComplicationModels.swift,
 				Models/JourneyDataSource.swift,
+				Models/SiriAvailability.swift,
 			);
 			target = E74FF9B12E46798800DD1BA8 /* BikeSpot London Watch App */;
 		};
@@ -136,6 +139,7 @@
 				Components/JourneyAvailabilityViews.swift,
 				Models/JourneyComplicationModels.swift,
 				Models/JourneyDataSource.swift,
+				Models/SiriAvailability.swift,
 			);
 			target = E7544E6A2E48175C00B3F29D /* BikeSpot London Watch App Extension */;
 		};
@@ -155,6 +159,7 @@
 				Models/JourneyComplicationModels.swift,
 				Models/JourneyDataSource.swift,
 				Models/LiveActivityModels.swift,
+				Models/SiriAvailability.swift,
 				Models/WidgetModels.swift,
 			);
 			target = E74135DE2F31675900EB72C4 /* BikeSpot London WidgetExtension */;
@@ -1112,7 +1117,6 @@
 		E74FF9D52E46798900DD1BA8 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				"ENABLE_TESTABILITY[sdk=watchsimulator*]" = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "BikeSpot London Watch App/BikeSpot London Watch App.entitlements";
@@ -1120,6 +1124,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SJ8X4DLAN9;
 				ENABLE_PREVIEWS = YES;
+				"ENABLE_TESTABILITY[sdk=watchsimulator*]" = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "BikeSpot-London-Watch-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "BikeSpot London";

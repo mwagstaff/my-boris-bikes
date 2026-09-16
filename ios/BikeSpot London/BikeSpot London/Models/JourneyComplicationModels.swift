@@ -266,6 +266,7 @@ struct JourneySnapshot: Codable, Equatable, Sendable {
     // Optional additions preserve snapshots from older phone/Watch installations.
     var siriDestination: JourneyDock? = nil
     var siriHasAmbiguousJourney: Bool? = nil
+    var siriHasUnresolvedJourney: Bool? = nil
     var siriSchemaVersion: Int? = nil
 
     static let empty = Self(generatedAt: .distantPast, active: nil, schedules: [], favorites: [],

@@ -13,8 +13,15 @@ final class JourneySyncService {
     private var firstSeenActivities: [String: Date] = [:]
     private var endedJourneys = JourneyStore.read([String: Date].self, key: "journeyEndedLocally") ?? [:]
 
-    func markEnded(journeyId: String?) {
-        guard let journeyId else { return }
+    private var endedActivityIDs = JourneyStore.read([String: Date].self, key: "journeyEndedActivityIDs") ?? [:]
+
+    func markEnded(journeyId: String?, activityId: String? = nil) {
+        if let activityId {
+            endedActivityIDs = endedActivityIDs.filter { Date().timeIntervalSince($0.value) < 8 * 86_400 }
+            endedActivityIDs[activityId] = Date()
+            JourneyStore.write(endedActivityIDs, key: "journeyEndedActivityIDs")
+        }
+        guard let journeyId else { publish(); return }
         endedJourneys = endedJourneys.filter { Date().timeIntervalSince($0.value) < 8 * 86_400 }
         endedJourneys[journeyId] = Date()
         JourneyStore.write(endedJourneys, key: "journeyEndedLocally")
@@ -78,6 +85,7 @@ final class JourneySyncService {
                                        minSpaces: settings.minSpaces, useMinimumThresholds: settings.useMinimumThresholds)
         snapshot.siriDestination = old.siriDestination
         snapshot.siriHasAmbiguousJourney = hasAmbiguousJourneys()
+        snapshot.siriHasUnresolvedJourney = hasUnresolvedJourney()
         snapshot.siriSchemaVersion = 1
         guard snapshot != old else { return }
         snapshot.generatedAt = max(Date(), old.generatedAt.addingTimeInterval(0.001))
@@ -93,6 +101,19 @@ final class JourneySyncService {
         snapshot.generatedAt = max(Date(), snapshot.generatedAt.addingTimeInterval(0.001))
         JourneyStore.write(snapshot, key: JourneyStore.snapshotKey)
         FavoritesService.shared.forceSyncWithWatch()
+    }
+
+    private func hasUnresolvedJourney() -> Bool {
+        LiveActivityService.shared.activeActivities.values.contains { activity in
+            guard (activity.activityState == .active || activity.activityState == .stale), endedActivityIDs[activity.id] == nil else { return false }
+            let attributes = activity.attributes
+            guard (activity.content.state.activeJourneyPhase ?? attributes.scheduledJourneyPhase) != nil else { return false }
+            let id = attributes.scheduledJourneyId ?? attributes.adHocJourneyId ?? activity.id
+            guard (firstSeenActivities[activity.id] ?? Date()) > (endedJourneys[id] ?? .distantPast) else { return false }
+            if ScheduledJourneyService.shared.journeys.contains(where: { $0.id == attributes.scheduledJourneyId })
+                || AdHocJourneyService.shared.recentJourneys.contains(where: { $0.id == attributes.adHocJourneyId }) { return false }
+            return attributes.destinationDockId == nil
+        }
     }
 
     private func hasAmbiguousJourneys() -> Bool {
@@ -112,6 +133,7 @@ final class JourneySyncService {
         }
         for activity in LiveActivityService.shared.activeActivities.values
             where activity.activityState == .active || activity.activityState == .stale {
+            guard endedActivityIDs[activity.id] == nil else { continue }
             let attributes = activity.attributes
             guard (activity.content.state.activeJourneyPhase ?? attributes.scheduledJourneyPhase) != nil else { continue }
             let id = attributes.scheduledJourneyId ?? attributes.adHocJourneyId ?? activity.id
@@ -154,7 +176,9 @@ final class JourneySyncService {
         let scheduled = ScheduledJourneyService.shared.journeys
         let adHoc = AdHocJourneyService.shared.recentJourneys
         let live = LiveActivityService.shared
-        let activities = live.activeActivities.values.filter { $0.activityState == .active || $0.activityState == .stale }
+        let activities = live.activeActivities.values.filter {
+            ($0.activityState == .active || $0.activityState == .stale) && endedActivityIDs[$0.id] == nil
+        }
         if let activity = activities.first(where: { ($0.content.state.activeJourneyPhase ?? $0.attributes.scheduledJourneyPhase) != nil }) {
             let attributes = activity.attributes
             let state = activity.content.state

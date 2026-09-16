@@ -280,7 +280,7 @@ class WatchFavoritesService: NSObject, ObservableObject {
     /// This is deliberately separate from the timer-driven favourites sync because
     /// watchOS can suspend that timer while the display is inactive.
     @MainActor
-    func requestJourneyRefreshFromPhone() async -> Bool {
+    func requestJourneyRefreshFromPhone(timeout: Duration = .seconds(8), requireSiriContext: Bool = false) async -> Bool {
         guard !Task.isCancelled else { return false }
         let session = WCSession.default
 
@@ -296,11 +296,18 @@ class WatchFavoritesService: NSObject, ObservableObject {
             "request": "journeyState",
             "timestamp": Date().timeIntervalSince1970
         ]
-        return await Self.waitForJourneyRefreshReply { complete in
+        return await Self.waitForJourneyRefreshReply(timeout: timeout) { complete in
             session.sendMessage(message, replyHandler: { [weak self] reply in
                 DispatchQueue.main.async {
                     self?.processJourneyPayload(reply)
-                    complete(true)
+                    guard requireSiriContext else {
+                        complete(true)
+                        return
+                    }
+                    let confirmed = (reply[JourneyStore.snapshotKey] as? Data)
+                        .flatMap { try? JSONDecoder().decode(JourneySnapshot.self, from: $0) }
+                    complete(reply["status"] as? String == "success" && confirmed?.siriSchemaVersion == 1
+                             && (confirmed?.generatedAt ?? .distantPast) >= JourneyStore.snapshot.generatedAt)
                 }
             }, errorHandler: { _ in
                 complete(false)

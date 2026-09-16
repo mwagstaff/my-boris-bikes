@@ -112,6 +112,9 @@ struct PreferencesView: View {
 
     var body: some View {
         Form {
+            Section {
+                NavigationLink("Siri & Shortcuts") { SiriShortcutsView() }
+            }
             Section("Bike Types") {
                 Picker("Show availability for", selection: bikeDataFilterBinding) {
                     ForEach(BikeDataFilter.allCases) { filter in
