@@ -76,7 +76,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "E7544E6A2E48175C00B3F29D"
             BuildableName = "BikeSpot London Watch App Extension.appex"
-            BlueprintName = "BikeSpot London Watch App Extension"
             ReferencedContainer = "container:BikeSpot London.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -119,7 +118,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "E7544E6A2E48175C00B3F29D"
             BuildableName = "BikeSpot London Watch App Extension.appex"
-            BlueprintName = "BikeSpot London Watch App Extension"
             ReferencedContainer = "container:BikeSpot London.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

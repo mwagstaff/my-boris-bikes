@@ -89,10 +89,12 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "E74FF9B12E46798800DD1BA8"
             BuildableName = "BikeSpot London Watch App.app"
-            BlueprintName = "BikeSpot London Watch App"
             ReferencedContainer = "container:BikeSpot London.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
+      <MetalAPIValidationSettings
+         isEnabled = "No">
+      </MetalAPIValidationSettings>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"
@@ -106,7 +108,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "E74FF9B12E46798800DD1BA8"
             BuildableName = "BikeSpot London Watch App.app"
-            BlueprintName = "BikeSpot London Watch App"
             ReferencedContainer = "container:BikeSpot London.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
