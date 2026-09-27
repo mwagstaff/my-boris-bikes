@@ -11,6 +11,7 @@ struct JourneySmartStackCard: View {
     let progress: JourneyProgress?
     var isStale = false
     var isSimulation = false
+    var destination: JourneyDestinationAvailability? = nil
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -62,12 +63,16 @@ struct JourneySmartStackCard: View {
                 }
             } else {
                 HStack(spacing: 8) {
-                    JourneyDonut(availability: availability, metric: metric, size: 32)
+                    JourneyDonut(availability: availability, metric: metric, size: destination == nil ? 32 : 24)
                     VStack(alignment: .leading, spacing: 1) {
                         stationName
                         JourneyAvailabilityLabel(availability: availability, metric: metric, threshold: threshold,
                                                  font: .system(.caption, weight: .bold))
                     }.frame(maxWidth: .infinity, alignment: .leading)
+                    if let destination {
+                        JourneyDestinationSummary(destination: destination, compact: true, isStale: isStale)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
                 }
             }
             freshness
@@ -207,4 +212,20 @@ private extension JourneyAvailability {
     static var previewJourneyAvailability: Self {
         Self(standardBikes: 6, eBikes: 3, spaces: 4, updatedAt: Date())
     }
+}
+
+#Preview("Collect · destination · small Watch") {
+    JourneySmartStackCard(dockName: "🏠 Home", availability: .previewJourneyAvailability, metric: .allBikes,
+        threshold: 10, phase: .pickup, progress: nil,
+        destination: JourneyDestinationAvailability(id: "destination", name: "🚉 Station", spaces: 8,
+            updatedAtEpochSeconds: Date().timeIntervalSince1970))
+        .padding(8).frame(width: 156, height: 92).background(.black).environment(\.colorScheme, .dark)
+}
+
+#Preview("Collect · unavailable destination · larger text") {
+    JourneySmartStackCard(dockName: "Warwick Row", availability: .previewJourneyAvailability, metric: .eBikes,
+        threshold: 5, phase: .pickup, progress: nil,
+        destination: JourneyDestinationAvailability(id: "destination", name: "Allington Street, Victoria"))
+        .padding(8).frame(width: 176, height: 110).background(.black).environment(\.colorScheme, .dark)
+        .environment(\.dynamicTypeSize, .xxxLarge)
 }

@@ -64,5 +64,20 @@ struct LiveActivityTokenRegistrationTests {
         #expect(state.standardBikes == 5)
         #expect(state.alternatives.isEmpty)
         #expect(state.availabilityUpdatedAtEpochSeconds == nil)
+        #expect(state.destinationAvailability == nil)
     }
+
+    @Test func pickupDestinationPayloadDecodesIndependently() throws {
+        let data = Data(#"{"standardBikes":5,"eBikes":2,"emptySpaces":10,"activeJourneyPhase":"start","destinationAvailability":{"id":"BikePoints_2","name":"Station","spaces":0,"updatedAtEpochSeconds":1700000000}}"#.utf8)
+        let state = try JSONDecoder().decode(DockActivityAttributes.ContentState.self, from: data)
+        #expect(state.standardBikes == 5)
+        #expect(state.emptySpaces == 10)
+        #expect(state.destinationAvailability?.spaces == 0)
+        #expect(state.destinationAvailability?.name == "Station")
+        #expect(state.destinationAvailability?.updatedAtEpochSeconds == 1700000000)
+        let roundTrip = try JSONDecoder().decode(DockActivityAttributes.ContentState.self,
+            from: JSONEncoder().encode(state))
+        #expect(roundTrip == state)
+    }
+
 }

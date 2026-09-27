@@ -11,6 +11,20 @@ struct JourneyLogicChecks {
     static func date(_ value: String) -> Date { ISO8601DateFormatter().date(from: value)! }
 
     static func main() throws {
+        let unknownDestination = try JSONDecoder().decode(JourneyDestinationAvailability.self,
+            from: Data(#"{"id":"end","name":"Station"}"#.utf8))
+        check(unknownDestination.spaces == nil && unknownDestination.isStale,
+              "Missing destination data remains unknown")
+        let fullDestination = JourneyDestinationAvailability(id: "end", name: "Station", spaces: 0,
+            updatedAtEpochSeconds: Date().timeIntervalSince1970)
+        let destinationRoundTrip = try JSONDecoder().decode(JourneyDestinationAvailability.self,
+            from: JSONEncoder().encode(fullDestination))
+        check(destinationRoundTrip == fullDestination && !destinationRoundTrip.isStale,
+              "Zero destination spaces and freshness survive activity serialization")
+        let staleDestination = JourneyDestinationAvailability(id: "end", name: "Station", spaces: 8,
+            updatedAtEpochSeconds: Date().addingTimeInterval(-300).timeIntervalSince1970)
+        check(staleDestination.isStale && staleDestination.spaces == 8,
+              "Stale destination data retains its count")
         let now = date("2026-09-14T06:00:00Z") // Monday, 07:00 in London.
         let start = JourneyDock(id: "start", name: "Warwick Row",
                                 coordinate: JourneyCoordinate(latitude: 51.49, longitude: -0.14))

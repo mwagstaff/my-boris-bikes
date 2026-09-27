@@ -74,3 +74,23 @@ rtk proxy swiftc -D DEBUG \
 rtk proxy /tmp/bikespot-journey-checks
 rtk proxy node --test bikespot-london-api/test/*.test.js
 ```
+
+## Collection destination summary
+
+During collection, verify the Lock Screen, expanded Dynamic Island, Watch Smart Stack and rectangular Journey widget show the start dock on the left and smaller, secondary destination spaces on the right. The circular complication keeps its single start-dock count. Use the journey simulator to change destination spaces, including zero and stale data; confirm the summary disappears when cycling starts. Check long names, larger text, light/dark appearances, increased contrast and VoiceOver using the collection previews and paired devices.
+
+Real journeys require the updated API for background destination refreshes. Confirm a destination-only count change updates the activity, a failed fetch preserves its original timestamp, and missing data displays Unavailable. Confirm no Journey active banner appears in the app; standalone dock notification and holiday banners still work.
+
+## Watch widget tap alternatives
+
+Tap the Watch Smart Stack journey card during collection: it should open a compact list of start-dock alternatives with the selected bike metric (Bikes, E-bikes or Both). After collecting a bike, tap again: it should open destination alternatives with space counts. Repeat using the circular/rectangular Journey complication and the test Live Activity. The current dock stays as a compact summary above the list.
+
+Check custom lists independently for the start and destination: saved order must win over distance, low/zero availability choices remain visible with their threshold colours, and an explicitly empty list must not fall back to automatic suggestions. Without custom choices, nearby alternatives use the selected availability filters. Verify a healthy primary dock is green, low counts orange and zero red. Check switching phase while the list is open, cold-launching the Watch from a Live Activity before phone sync, larger text, and VoiceOver. The test activity should open its own simulated journey rather than a real cached journey.
+
+## Manual next leg
+
+For both scheduled and ad hoc journeys, start at Watching start dock. On iPhone, verify Next leg appears above the dock indicators, shows a progress indicator during the transition and prevents repeated taps; End journey is disabled while it runs. On Watch, verify Next leg and End journey appear at the bottom, below dock information and alternatives, including when availability is loading or unavailable. Tap it on each device and confirm both switch to destination spaces, start the ride timer and remove Next leg. A stale start-dock action must not advance a different journey or restart an already riding journey. A disconnected Watch should report failure without changing the local phase. Repeat with the isolated Watch test journey.
+
+## Unified Watch Journey and cached loading
+
+Widget taps open the root Journey screen directly, combining the active dock, progress, alternatives and bottom actions. Verify there is no second Journey screen behind a back button. Reopen within five minutes: the previous primary and alternative counts should appear immediately with Updated age and Updating latest data while refreshing. A newer tapped activity may seed the primary dock before any network response. Older cached rows must be omitted. On network failure, recent rows remain with a saved-data warning and unchanged retrieval times. Changing bike preferences, thresholds or custom alternatives must invalidate the cached alternative list; advancing to the destination must never show start-dock alternatives. Test app termination/relaunch, offline refresh, larger text, and both real and simulated journeys. Xcode builds and paired-device verification remain manual.

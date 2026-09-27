@@ -2,8 +2,6 @@ import Combine
 import SwiftUI
 import WidgetKit
 
-enum WatchJourneyDestination: Hashable { case activity, alternatives, liveActivity(JourneyActivityContext) }
-
 @MainActor
 func updateCachedJourney(after action: String) {
     var snapshot = JourneyStore.snapshot
@@ -51,7 +49,6 @@ final class WatchJourneyViewModel: ObservableObject {
 }
 
 struct WatchJourneyView: View {
-    var showAlternatives = false
     @StateObject private var model: WatchJourneyViewModel
     @ObservedObject private var locationService = WatchLocationService.shared
     @Environment(\.scenePhase) private var scenePhase
@@ -60,20 +57,12 @@ struct WatchJourneyView: View {
     @State private var isPerformingJourneyAction = false
     @State private var journeyActionMessage: String?
 
-    init(showAlternatives: Bool = false, activityContext: JourneyActivityContext? = nil) {
-        self.showAlternatives = showAlternatives
+    init(activityContext: JourneyActivityContext? = nil) {
         _model = StateObject(wrappedValue: WatchJourneyViewModel(activityContext: activityContext))
     }
 
-    private var isRiding: Bool { !showAlternatives && model.state.selection?.run?.phase == .riding }
-
-    private var showsLowAvailability: Bool {
-        !showAlternatives && model.state.hasLowActiveDockAvailability
-    }
-
     private var embedsDockDetail: Bool {
-        guard model.state.selection != nil, !model.state.isSimulation else { return false }
-        return showsLowAvailability || showAlternatives
+        model.state.selection != nil && !model.state.isSimulation
     }
 
     private var currentSimulation: JourneySimulation? {
@@ -84,78 +73,28 @@ struct WatchJourneyView: View {
 
     var body: some View {
         Group {
-            if showsLowAvailability, let selection = model.state.selection, model.state.isSimulation {
-                simulationLowAvailabilityView(selection: selection)
-            } else if showsLowAvailability, let selection = model.state.selection {
+            if let selection = model.state.selection, model.state.isSimulation {
+                simulationAlternativesView(selection: selection)
+            } else if let selection = model.state.selection {
                 WatchWidgetDetailView(
                     primaryDockId: selection.dock.id,
                     journeyMetricRawValue: selection.metric.rawValue,
-                    showsJourneyActions: true,
+                    showsJourneyActions: selection.source == .active,
                     autoRefresh: true,
                     compactCards: true,
-                    alwaysShowsEndAction: true
+                    alwaysShowsEndAction: true,
+                    initialDock: selection.dock,
+                    initialAvailability: model.state.availability,
+                    journeyProgress: model.state.progress
                 )
                 .id(selection.dock.id + selection.metric.rawValue)
-            } else if isRiding, let selection = model.state.selection {
-                TabView {
-                    JourneyRideDashboard(dockName: selection.dock.displayName, availability: model.state.availability,
-                                         threshold: model.state.snapshot.threshold(for: .spaces), progress: model.state.progress,
-                                         isSimulation: model.state.isSimulation)
-                    ScrollView {
-                        VStack(spacing: 12) {
-                            Text(selection.dock.displayName).font(.headline)
-                            NavigationLink("Alternative docks") {
-                                WatchJourneyView(showAlternatives: true, activityContext: model.activityContext)
-                            }
-                            journeyActionControls(for: selection)
-                            Button("Back to docks") { dismiss() }
-#if DEBUG
-                            NavigationLink("Test a journey") { WatchJourneyTestView() }
-#endif
-                        }.buttonStyle(.bordered).padding(.horizontal, 8)
-                    }
-                }
-                .tabViewStyle(.verticalPage)
-            } else if showAlternatives, let selection = model.state.selection, !model.state.isSimulation {
-                WatchWidgetDetailView(primaryDockId: selection.dock.id, journeyMetricRawValue: selection.metric.rawValue,
-                                      showsJourneyActions: selection.source == .active, autoRefresh: true)
-                    .id(selection.dock.id + selection.metric.rawValue)
             } else {
                 ScrollView {
                     VStack(spacing: 12) {
                         if model.state.isSimulation {
                             Text("TEST JOURNEY").font(.caption2).foregroundStyle(.orange)
                         }
-                        if let selection = model.state.selection {
-                            Text(selection.dock.displayName).font(.headline).multilineTextAlignment(.center)
-                            JourneyDonut(availability: model.state.availability, metric: selection.metric, size: 100)
-                            JourneyAvailabilityLabel(availability: model.state.availability, metric: selection.metric,
-                                                     threshold: model.state.snapshot.threshold(for: selection.metric))
-                            if selection.run?.phase == .riding {
-                                JourneyProgressBar(progress: model.state.progress)
-                            } else if let scheduledAt = selection.scheduledAt {
-                                Text(scheduledAt, format: .dateTime.weekday(.abbreviated).hour().minute())
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            } else {
-                                Text(selection.source == .favorite ? "Nearest favourite" : selection.source == .nearby ? "Nearest dock" : "Collect your bike")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            }
-                            if let availability = model.state.availability {
-                                HStack(spacing: 3) {
-                                    Text(availability.isStale() ? "Last known ·" : "Updated")
-                                    Text(availability.updatedAt, style: .relative)
-                                }.font(.system(size: 10)).foregroundStyle(.secondary)
-                            }
-                            if showAlternatives {
-                                simulationAlternativeSection(selection: selection)
-                            } else {
-                                NavigationLink("Alternative docks") {
-                                    WatchJourneyView(showAlternatives: true, activityContext: model.activityContext)
-                                }
-                                    .buttonStyle(.bordered)
-                                journeyActionControls(for: selection)
-                            }
-                        } else if model.activityContext != nil {
+                        if model.activityContext != nil {
                             Text("Activity ended").font(.headline)
                             Text("Start a new journey or test to see its activity.")
                                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -178,7 +117,7 @@ struct WatchJourneyView: View {
                 }
             }
         }
-        .navigationTitle(showAlternatives ? "Alternatives" : "Journey")
+        .navigationTitle("Journey")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .toolbar {
@@ -219,6 +158,7 @@ struct WatchJourneyView: View {
         if selection.source == .active {
             VStack(spacing: 6) {
                 if selection.run?.phase == .pickup {
+                    Text("Watching start dock").font(.caption2).foregroundStyle(.secondary)
                     Button {
                         Task { await performJourneyAction("advance", dockId: selection.dock.id) }
                     } label: {
@@ -226,6 +166,7 @@ struct WatchJourneyView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(isPerformingJourneyAction)
+                    .accessibilityHint("Start watching availability at the destination dock")
                 }
 
                 Button {
@@ -275,7 +216,7 @@ struct WatchJourneyView: View {
     }
 
     @ViewBuilder
-    private func simulationLowAvailabilityView(selection: JourneySelection) -> some View {
+    private func simulationAlternativesView(selection: JourneySelection) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 Text("TEST JOURNEY")
@@ -298,6 +239,10 @@ struct WatchJourneyView: View {
                         .frame(maxWidth: .infinity)
                 }
 
+                if selection.run?.phase == .riding {
+                    JourneyProgressBar(progress: model.state.progress)
+                }
+
                 simulationAlternativeSection(selection: selection)
                 journeyActionControls(for: selection)
             }
@@ -312,7 +257,8 @@ struct WatchJourneyView: View {
            simulation.expiresAt > Date(),
            simulation.updatedAt >= (model.activityContext?.updatedAt ?? .distantPast) {
             let customDockIDs = WatchFavoritesService.shared.customDockIDs(for: selection.dock.id)
-            let alternatives = simulation.alternativeDocks(
+            let alternatives = customDockIDs != nil && !WatchFavoritesService.shared.customAlternativesEnabled
+                ? [] : simulation.alternativeDocks(
                 from: selection.dock,
                 metric: selection.metric,
                 customDockIDs: customDockIDs,

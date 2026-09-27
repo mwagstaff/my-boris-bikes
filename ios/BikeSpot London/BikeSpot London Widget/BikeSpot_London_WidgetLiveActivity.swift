@@ -323,6 +323,7 @@ private struct WatchLiveActivityView: View {
         if let journeyMetric {
             components.host = "journey"
             components.path = ""
+            components.queryItems?.append(URLQueryItem(name: "view", value: "alternatives"))
             components.queryItems?.append(URLQueryItem(name: "journeyMetric", value: journeyMetric.queryValue))
             if let item = journeyHandoff?.activityContext.queryItem {
                 components.queryItems?.append(item)
@@ -344,7 +345,8 @@ private struct WatchLiveActivityView: View {
                     threshold: journeySummary.threshold,
                     phase: journeyMetric.queryValue == "spaces" ? .riding : .pickup,
                     progress: state.journeyProgress,
-                    isStale: isStale)
+                    isStale: isStale,
+                    destination: state.destinationAvailability)
             } else {
                 HStack(spacing: 10) {
                     WidgetDonutChart(
@@ -580,7 +582,8 @@ private struct DockLiveActivityView: View {
                             spaces: state.emptySpaces,
                             updatedAt: Date(timeIntervalSince1970: Double(state.availabilityUpdatedAtEpochSeconds ?? 0))),
                         metric: JourneyMetric(rawValue: journeyMetric.queryValue) ?? .bikes,
-                        threshold: journeySummary.threshold, progress: state.journeyProgress, compact: false)
+                        threshold: journeySummary.threshold, progress: state.journeyProgress, isStale: isStale, compact: false,
+                        destination: journeyMetric.queryValue == "spaces" ? nil : state.destinationAvailability)
                 } else {
                     HStack(spacing: 14) {
                         WidgetDonutChart(
@@ -926,10 +929,15 @@ struct BikeSpot_London_WidgetLiveActivity: Widget {
                     )
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    ExpandedBottomView(
-                        attributes: context.attributes,
-                        state: context.state
-                    )
+                    HStack(spacing: 12) {
+                        ExpandedBottomView(attributes: context.attributes, state: context.state)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if activeJourneyPhase(attributes: context.attributes, state: context.state) == "start",
+                           let destination = context.state.destinationAvailability {
+                            JourneyDestinationSummary(destination: destination, isStale: context.isStale)
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                        }
+                    }
                 }
             } compactLeading: {
                 CompactDonutView(attributes: context.attributes, state: context.state)
@@ -996,4 +1004,14 @@ extension DockActivityAttributes.ContentState {
 } contentStates: {
     DockActivityAttributes.ContentState.sample
     DockActivityAttributes.ContentState.lowBikes
+}
+
+#Preview("Journey · collection", as: .content, using: DockActivityAttributes.preview) {
+    BikeSpot_London_WidgetLiveActivity()
+} contentStates: {
+    DockActivityAttributes.ContentState(standardBikes: 6, eBikes: 4, emptySpaces: 12,
+        activeJourneyPhase: "start", primaryDisplay: "allBikes",
+        availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970),
+        destinationAvailability: JourneyDestinationAvailability(id: "BikePoints_2", name: "Victoria Station",
+            spaces: 8, updatedAtEpochSeconds: Date().timeIntervalSince1970))
 }

@@ -384,3 +384,16 @@ enum JourneyStore {
         read(JourneyAvailability.self, key: "journeyAvailability.\(id)")
     }
 }
+
+/// A separately timestamped destination snapshot; missing counts remain unknown.
+struct JourneyDestinationAvailability: Codable, Hashable {
+    var id: String
+    var name: String
+    var spaces: Int?
+    var updatedAtEpochSeconds: Double?
+
+    var isStale: Bool {
+        guard let updatedAtEpochSeconds else { return true }
+        return Date().timeIntervalSince1970 - updatedAtEpochSeconds > 120
+    }
+}

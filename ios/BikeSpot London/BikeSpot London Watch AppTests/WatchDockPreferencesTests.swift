@@ -59,6 +59,38 @@ struct WatchDockPreferencesTests {
         #expect(journeys.first?.endDock.displayName == "Work")
     }
 
+    @Test func journeyCacheRetainsOnlyRecentCountsAndDoesNotRenewTheirAge() throws {
+        let now = Date(timeIntervalSince1970: 2000)
+        let dock = WatchBikePoint(id: "start", commonName: "Start", alias: nil, lat: 51.5, lon: -0.1,
+            additionalProperties: [WatchAdditionalProperty(key: "Installed", value: "true")])
+        let cache = WatchJourneyDetailCache(primary: dock, primaryUpdatedAt: now.addingTimeInterval(-60),
+            alternatives: [dock], alternativesUpdatedAt: now.addingTimeInterval(-250), preferencesKey: "saved")
+        let decoded = try JSONDecoder().decode(WatchJourneyDetailCache.self, from: JSONEncoder().encode(cache))
+        let recent = decoded.recent(preferencesKey: "saved", at: now)
+        #expect(recent.primary == dock)
+        #expect(recent.alternatives == [dock])
+        #expect(recent.primaryUpdatedAt == cache.primaryUpdatedAt)
+        #expect(recent.alternativesUpdatedAt == cache.alternativesUpdatedAt)
+        let later = decoded.recent(preferencesKey: "saved", at: now.addingTimeInterval(60))
+        #expect(later.primary == dock)
+        #expect(later.alternatives == nil)
+        #expect(decoded.recent(preferencesKey: "saved", at: now.addingTimeInterval(301)).primary == nil)
+    }
+
+    @Test func changedPreferencesInvalidateAlternativesAndEmptyListsStayEmpty() {
+        let now = Date()
+        let cache = WatchJourneyDetailCache(primary: nil, primaryUpdatedAt: nil, alternatives: [],
+            alternativesUpdatedAt: now, preferencesKey: "saved")
+        #expect(cache.recent(preferencesKey: "saved", at: now).alternatives == [])
+        #expect(cache.recent(preferencesKey: "changed", at: now).alternatives == nil)
+        #expect(!WatchJourneyDetailCache.isRecent(nil, at: now))
+        #expect(!WatchJourneyDetailCache.isRecent(now.addingTimeInterval(20), at: now))
+        #expect(WatchJourneyDetailCache.key(dockID: "start", metric: "bikes") !=
+                WatchJourneyDetailCache.key(dockID: "end", metric: "spaces"))
+        #expect(WatchJourneyDetailCache.key(dockID: "start", metric: "bikes") !=
+                WatchJourneyDetailCache.key(dockID: "start", metric: "eBikes"))
+    }
+
     private func decode(_ json: String) throws -> WatchDockPreferencesSnapshot {
         try JSONDecoder().decode(WatchDockPreferencesSnapshot.self, from: Data(json.utf8))
     }

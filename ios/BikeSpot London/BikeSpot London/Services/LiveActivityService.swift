@@ -361,6 +361,7 @@ class LiveActivityService: ObservableObject {
 
     /// Track observation tasks to cancel them when activities end
     private var observationTasks: [String: [Task<Void, Never>]] = [:]
+    private var manuallyAdvancingDockIDs: Set<String> = []
     private var observedActivityIdsByDock: [String: String] = [:]
     private var activityObservedAtById: [String: Date] = [:]
     private var tokenRegistrationTracker = LiveActivityTokenRegistrationTracker()
@@ -961,6 +962,14 @@ class LiveActivityService: ObservableObject {
         // Store up to 5 nearby alternatives; the watch view caps display at 2–3 based on filter preference.
         let alternativeDocks = selectedAlternatives.prefix(5).map(alternativeSnapshot)
 
+        let destinationAvailability: JourneyDestinationAvailability?
+        if scheduledJourneyPhase == .start, let destinationDock {
+            destinationAvailability = JourneyDestinationAvailability(id: destinationDock.id,
+                name: DockPreferencesService.shared.alias(for: destinationDock.id) ?? destinationDock.name)
+        } else {
+            destinationAvailability = nil
+        }
+
         let initialState = DockActivityAttributes.ContentState(
             standardBikes: bikePoint.standardBikes,
             eBikes: bikePoint.eBikes,
@@ -975,7 +984,8 @@ class LiveActivityService: ObservableObject {
                 scheduledJourneyPhase: scheduledJourneyPhase
             ),
             availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970),
-            rideStartedAtEpochSeconds: scheduledJourneyPhase == .end ? Date().timeIntervalSince1970 : nil
+            rideStartedAtEpochSeconds: scheduledJourneyPhase == .end ? Date().timeIntervalSince1970 : nil,
+            destinationAvailability: destinationAvailability
         )
 
         // `staleDate` represents availability freshness. The server separately owns
@@ -1066,6 +1076,19 @@ class LiveActivityService: ObservableObject {
             }
 
             ensureActivityObservation(for: activity, source: "local_start")
+            if scheduledJourneyPhase == .start, let destinationDock {
+                Task {
+                    let destination = await fetchDestinationAvailability(dock: destinationDock)
+                    guard !Task.isCancelled, activity.activityState == .active,
+                          self.scheduledJourneyPhase(for: activity) == .start else { return }
+                    var state = activity.content.state
+                    if (destination.updatedAtEpochSeconds ?? 0) >= (state.destinationAvailability?.updatedAtEpochSeconds ?? 0) {
+                        state.destinationAvailability = destination
+                        await activity.update(ActivityContent(state: state, staleDate: activity.content.staleDate))
+                    }
+                }
+            }
+
         } catch {
             logger.error("Failed to start live activity: \(error.localizedDescription)")
             TroubleshootingLogStore.shared.record(
@@ -1246,6 +1269,20 @@ class LiveActivityService: ObservableObject {
                 }
             }
 
+            var destinationAvailability = currentState.destinationAvailability
+            if var destination = destinationAvailability {
+                destination.name = DockPreferencesService.shared.alias(for: destination.id)
+                    ?? activity.attributes.destinationDockName ?? destination.name
+                if !refreshPreferences, let point = bikePointsById[destination.id],
+                   point.isAvailable,
+                   let raw = point.additionalProperties.first(where: { $0.key == "NbEmptyDocks" })?.value,
+                   let spaces = Int(raw), spaces >= 0 {
+                    destination.spaces = spaces
+                    destination.updatedAtEpochSeconds = Date().timeIntervalSince1970
+                }
+                destinationAvailability = destination
+            }
+
             let availabilityChanged =
                 currentState.standardBikes != bikePoint.standardBikes ||
                 currentState.eBikes != bikePoint.eBikes ||
@@ -1267,9 +1304,10 @@ class LiveActivityService: ObservableObject {
                     ? currentState.availabilityUpdatedAtEpochSeconds
                     : Int(Date().timeIntervalSince1970),
                 journeyProgress: currentState.journeyProgress,
-                rideStartedAtEpochSeconds: currentState.rideStartedAtEpochSeconds
+                rideStartedAtEpochSeconds: currentState.rideStartedAtEpochSeconds,
+                destinationAvailability: destinationAvailability
             )
-            guard refreshPreferences || availabilityChanged || alternativesChanged || updatedState.resolvedAlias != currentState.resolvedAlias else {
+            guard refreshPreferences || availabilityChanged || alternativesChanged || destinationAvailability != currentState.destinationAvailability || updatedState.resolvedAlias != currentState.resolvedAlias else {
                 continue
             }
             let staleDate = refreshPreferences
@@ -1492,16 +1530,20 @@ class LiveActivityService: ObservableObject {
     }
 
     func advanceJourneyFromStart(dockId: String, source: String = "unknown") async -> Bool {
-        guard let activity = activeActivities[dockId] ?? activeActivities.values.first(where: {
-            $0.attributes.scheduledJourneyPhase == ScheduledJourney.ActiveRun.Phase.start.rawValue
+        guard let activity = activeActivityCandidates().first(where: {
+            isTrackableActivityState($0.activityState) &&
+                ($0.content.state.resolvedDockId ?? $0.attributes.dockId) == dockId &&
+                scheduledJourneyPhase(for: $0) == .start
         }),
-              activity.attributes.scheduledJourneyPhase == ScheduledJourney.ActiveRun.Phase.start.rawValue,
               let destinationDockId = activity.attributes.destinationDockId,
               let destinationDockName = activity.attributes.destinationDockName,
               let destinationLatitude = activity.attributes.destinationLatitude,
               let destinationLongitude = activity.attributes.destinationLongitude else {
             return false
         }
+
+        guard manuallyAdvancingDockIDs.insert(dockId).inserted else { return false }
+        defer { manuallyAdvancingDockIDs.remove(dockId) }
 
         let endDock = ScheduledJourneyDock(
             id: destinationDockId,
@@ -2059,7 +2101,8 @@ class LiveActivityService: ObservableObject {
             primaryDisplay: activity.content.state.primaryDisplay,
             availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970),
             journeyProgress: activity.content.state.journeyProgress,
-            rideStartedAtEpochSeconds: activity.content.state.rideStartedAtEpochSeconds
+            rideStartedAtEpochSeconds: activity.content.state.rideStartedAtEpochSeconds,
+            destinationAvailability: activity.content.state.destinationAvailability
         )
         let updatedContent = ActivityContent(
             state: updatedState,
@@ -2101,6 +2144,24 @@ class LiveActivityService: ObservableObject {
            let revision = response.dockPreferencesRevision {
             DockPreferencesService.shared.markSynced(revision: revision)
         }
+    }
+
+    private func fetchDestinationAvailability(dock: ScheduledJourneyDock) async -> JourneyDestinationAvailability {
+        var result = JourneyDestinationAvailability(id: dock.id,
+            name: DockPreferencesService.shared.alias(for: dock.id) ?? dock.name)
+        guard let url = URL(string: "\(AppConstants.API.baseURL)\(AppConstants.API.placeEndpoint)/\(dock.id)") else { return result }
+        do {
+            let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Task.checkCancellation()
+            guard let response = response as? HTTPURLResponse, (200...299).contains(response.statusCode) else { return result }
+            let point = try JSONDecoder().decode(APIJourneyDock.self, from: data)
+            if point.id == dock.id, point.isAvailable, let spaces = point.count("NbEmptyDocks") {
+                result.spaces = spaces
+                result.updatedAtEpochSeconds = Date().timeIntervalSince1970
+            }
+        } catch { /* Unknown destination availability stays unavailable, never zero. */ }
+        return result
     }
 
     private func fetchBikePointIfPossible(dock: ScheduledJourneyDock) async -> BikePoint {
@@ -2243,7 +2304,8 @@ class LiveActivityService: ObservableObject {
                     primaryDisplay: display.rawValue,
                     availabilityUpdatedAtEpochSeconds: currentState.availabilityUpdatedAtEpochSeconds,
                     journeyProgress: currentState.journeyProgress,
-                    rideStartedAtEpochSeconds: currentState.rideStartedAtEpochSeconds
+                    rideStartedAtEpochSeconds: currentState.rideStartedAtEpochSeconds,
+                    destinationAvailability: currentState.destinationAvailability
                 )
                 let preservedStaleDate = self.staleDates[dockId]
                 let newContent = ActivityContent(state: updatedState, staleDate: preservedStaleDate)
@@ -2488,6 +2550,10 @@ class LiveActivityService: ObservableObject {
             body["activeDockAlias"] = currentState.activeDockAlias
             body["activeJourneyPhase"] = currentState.activeJourneyPhase
             body["rideStartedAtEpochSeconds"] = currentState.rideStartedAtEpochSeconds
+            let attributes = activeActivities[dockId]?.attributes
+                ?? Activity<DockActivityAttributes>.activities.first { $0.attributes.dockId == dockId }?.attributes
+            body["destinationDockId"] = currentState.destinationAvailability?.id ?? attributes?.destinationDockId
+            body["destinationDockName"] = currentState.destinationAvailability?.name ?? attributes?.destinationDockName
             if let progress = currentState.journeyProgress,
                let data = try? JSONEncoder().encode(progress) {
                 body["journeyProgress"] = try? JSONSerialization.jsonObject(with: data)
@@ -2680,6 +2746,10 @@ class LiveActivityService: ObservableObject {
             body["activeDockAlias"] = currentState.activeDockAlias
             body["activeJourneyPhase"] = currentState.activeJourneyPhase
             body["rideStartedAtEpochSeconds"] = currentState.rideStartedAtEpochSeconds
+            let attributes = activeActivities[dockId]?.attributes
+                ?? Activity<DockActivityAttributes>.activities.first { $0.attributes.dockId == dockId }?.attributes
+            body["destinationDockId"] = currentState.destinationAvailability?.id ?? attributes?.destinationDockId
+            body["destinationDockName"] = currentState.destinationAvailability?.name ?? attributes?.destinationDockName
             if let progress = currentState.journeyProgress,
                let data = try? JSONEncoder().encode(progress) {
                 body["journeyProgress"] = try? JSONSerialization.jsonObject(with: data)

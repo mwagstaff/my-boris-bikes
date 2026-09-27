@@ -39,6 +39,8 @@ struct ContentView: View {
   @State private var showingDockSelection = false
   @State private var navigationId = UUID()
   @State private var journeyState = JourneyDataSource.cached()
+  @State private var opensJourney = false
+  @State private var presentedJourneyContext: JourneyActivityContext?
 
   var body: some View {
     contentView
@@ -68,13 +70,6 @@ struct ContentView: View {
             journeyMetricRawValue: destination.journeyMetricRawValue
           )
         }
-        .navigationDestination(for: WatchJourneyDestination.self) { destination in
-          switch destination {
-          case .activity: WatchJourneyView()
-          case .alternatives: WatchJourneyView(showAlternatives: true)
-          case .liveActivity(let context): WatchJourneyView(activityContext: context)
-          }
-        }
         .navigationDestination(for: WatchLoadingIndicator.self) { loadingIndicator in
           WatchLoadingView(dockName: loadingIndicator.dockName)
         }
@@ -82,7 +77,15 @@ struct ContentView: View {
           handleSelectedDockChange(newDockId)
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("journeySnapshotChanged"))) { _ in
+          let wasActive = hasActiveJourney
           journeyState = JourneyDataSource.cached()
+          if opensJourney {
+            let state = presentedJourneyContext.map { JourneyDataSource.activityState($0) } ?? journeyState
+            if state.selection == nil || (presentedJourneyContext == nil && wasActive && !hasActiveJourney) {
+              opensJourney = false
+              presentedJourneyContext = nil
+            }
+          }
         }
         .sheet(isPresented: $showingDockSelection) {
           buildDockSelectionView()
@@ -95,8 +98,9 @@ struct ContentView: View {
   
   @ViewBuilder
   private var mainContent: some View {
-    if hasActiveJourney {
-      WatchJourneyView()
+    if hasActiveJourney || opensJourney {
+      WatchJourneyView(activityContext: presentedJourneyContext)
+        .id(presentedJourneyContext)
     } else if hasFavoriteJourneys && hasFavoriteDocks {
       WatchStartMenu()
     } else if hasFavoriteJourneys {
@@ -125,7 +129,7 @@ struct ContentView: View {
   }
 
   private var rootTitle: String {
-    if hasActiveJourney { return "Journey" }
+    if hasActiveJourney || opensJourney { return "Journey" }
     if hasFavoriteJourneys && hasFavoriteDocks { return "BikeSpot" }
     return hasFavoriteJourneys ? "Journeys" : "Favourites"
   }
@@ -151,7 +155,7 @@ struct ContentView: View {
   
   @ToolbarContentBuilder
   private var toolbarContent: some ToolbarContent {
-    if !hasActiveJourney {
+    if !hasActiveJourney && !opensJourney {
       ToolbarItem(placement: .topBarTrailing) {
         WatchRefreshButton(
             isLoading: viewModel.isLoading || favoriteJourneysViewModel.isLoading,
@@ -175,11 +179,8 @@ struct ContentView: View {
 
     if dockId == "JOURNEY_ACTIVITY" || dockId == "JOURNEY_ALTERNATIVES" {
       navigationPath = NavigationPath()
-      if dockId == "JOURNEY_ACTIVITY", let activityContext {
-        navigationPath.append(WatchJourneyDestination.liveActivity(activityContext))
-      } else {
-        navigationPath.append(dockId == "JOURNEY_ALTERNATIVES" ? WatchJourneyDestination.alternatives : .activity)
-      }
+      presentedJourneyContext = activityContext
+      opensJourney = true
       customWidgetContext = nil
       journeyMetricRawValue = nil
       selectedDockId = nil
@@ -229,8 +230,8 @@ struct ContentView: View {
     // Request data from iPhone via WatchConnectivity
     requestFavoritesFromiPhone()
 
-    Task {
-      await refreshAllData()
+    if !hasActiveJourney && !opensJourney {
+      Task { await refreshAllData() }
     }
   }
 

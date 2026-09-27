@@ -48,6 +48,7 @@ private struct JourneyDemoActivityContent: View {
     private var watchURL: URL? {
         var components = URLComponents(string: "myborisbikes://journey")!
         components.queryItems = [
+            URLQueryItem(name: "view", value: "alternatives"),
             URLQueryItem(name: "minBikes", value: String(minBikes)),
             URLQueryItem(name: "minEBikes", value: String(minEBikes)),
             URLQueryItem(name: "minSpaces", value: String(minSpaces))
@@ -67,12 +68,12 @@ private struct JourneyDemoActivityContent: View {
                     availability: availability, metric: metric, threshold: threshold(for: metric),
                     phase: state.activeJourneyPhase == "end" ? .riding : .pickup,
                     progress: state.journeyProgress,
-                    isStale: context.isStale, isSimulation: true)
+                    isStale: context.isStale, isSimulation: true, destination: state.destinationAvailability)
             } else {
                 JourneyActivityCard(dockName: state.activeDockAlias ?? state.activeDockName ?? "Journey",
                                     availability: availability, metric: metric, threshold: threshold(for: metric),
                                     progress: state.journeyProgress, isSimulation: true, isStale: context.isStale,
-                                    compact: activityFamily == .small)
+                                    compact: activityFamily == .small, destination: state.destinationAvailability)
             }
         }
         .padding(activityFamily == .small ? 8 : 16)

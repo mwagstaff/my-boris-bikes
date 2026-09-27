@@ -27,6 +27,13 @@ struct JourneyTimelineProvider: TimelineProvider {
             if let staleDate = state.availability?.updatedAt.addingTimeInterval(121), staleDate > now {
                 entries.append(JourneyEntry(date: staleDate, state: state))
             }
+            if let timestamp = state.destinationAvailability?.updatedAtEpochSeconds {
+                let staleDate = Date(timeIntervalSince1970: timestamp + 121)
+                if staleDate > now, !entries.contains(where: { $0.date == staleDate }) {
+                    entries.append(JourneyEntry(date: staleDate, state: state))
+                }
+            }
+            entries.sort { $0.date < $1.date }
             completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(300))))
         }
     }
@@ -49,7 +56,7 @@ struct JourneyComplicationView: View {
                         }
                 } else {
                     HStack(spacing: 8) {
-                        JourneyDonut(availability: entry.state.availability, metric: selection.metric, size: 36)
+                        JourneyDonut(availability: entry.state.availability, metric: selection.metric, size: entry.state.destinationAvailability == nil ? 36 : 24)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(selection.dock.displayName)
                                 .font(.system(.caption, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.75)
@@ -60,6 +67,10 @@ struct JourneyComplicationView: View {
                             } else if entry.state.availability?.isStale(at: entry.date) == true {
                                 Text("Last known").font(.system(size: 9)).foregroundStyle(.secondary)
                             }
+                        }
+                        if let destination = entry.state.destinationAvailability {
+                            JourneyDestinationSummary(destination: destination, compact: true)
+                                .frame(maxWidth: .infinity, alignment: .trailing)
                         }
                         Spacer(minLength: 0)
                     }
@@ -84,7 +95,16 @@ struct JourneyComplicationView: View {
         let status = count == 0 ? "none available" : count < entry.state.snapshot.threshold(for: selection.metric) ? "low availability" : "available"
         return "\(selection.dock.displayName), \(count) \(selection.metric.label(count: count)), \(status)"
             + (availability.isStale(at: entry.date) ? ", last known data" : "")
+            + (family == .accessoryRectangular ? destinationAccessibilitySummary : "")
     }
+
+    private var destinationAccessibilitySummary: String {
+        guard let destination = entry.state.destinationAvailability else { return "" }
+        return ", Destination: \(destination.name), "
+            + (destination.spaces.map { "\($0) spaces" } ?? "availability unavailable")
+            + (destination.spaces != nil && destination.isStale ? ", last known data" : "")
+    }
+
 }
 
 struct JourneyComplication: Widget {

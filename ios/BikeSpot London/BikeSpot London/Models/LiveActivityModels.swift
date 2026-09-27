@@ -71,6 +71,7 @@ struct DockActivityAttributes: ActivityAttributes {
         let activeDockAlias: String?
         let activeJourneyPhase: String?
         let primaryDisplay: String?
+        var destinationAvailability: JourneyDestinationAvailability?
         var journeyProgress: JourneyProgress?
         var journeyActivityContext: JourneyActivityContext?
         /// Actual bike collection time, distinct from the pickup activity's start time.
@@ -92,8 +93,10 @@ struct DockActivityAttributes: ActivityAttributes {
             availabilityUpdatedAtEpochSeconds: Int? = nil,
             journeyProgress: JourneyProgress? = nil,
             journeyActivityContext: JourneyActivityContext? = nil,
-            rideStartedAtEpochSeconds: Double? = nil
+            rideStartedAtEpochSeconds: Double? = nil,
+            destinationAvailability: JourneyDestinationAvailability? = nil
         ) {
+            self.destinationAvailability = destinationAvailability
             self.standardBikes = standardBikes
             self.eBikes = eBikes
             self.emptySpaces = emptySpaces
@@ -121,6 +124,7 @@ struct DockActivityAttributes: ActivityAttributes {
             activeDockAlias = try container.decodeIfPresent(String.self, forKey: .activeDockAlias)?.liveActivityDisplayText
             activeJourneyPhase = try container.decodeIfPresent(String.self, forKey: .activeJourneyPhase)
             primaryDisplay = try container.decodeIfPresent(String.self, forKey: .primaryDisplay)
+            destinationAvailability = try container.decodeIfPresent(JourneyDestinationAvailability.self, forKey: .destinationAvailability)
             journeyProgress = try container.decodeIfPresent(JourneyProgress.self, forKey: .journeyProgress)
             journeyActivityContext = try container.decodeIfPresent(JourneyActivityContext.self, forKey: .journeyActivityContext)
             rideStartedAtEpochSeconds = try container.decodeIfPresent(Double.self, forKey: .rideStartedAtEpochSeconds)

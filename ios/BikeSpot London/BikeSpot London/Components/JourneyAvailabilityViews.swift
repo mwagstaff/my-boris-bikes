@@ -101,6 +101,40 @@ private struct JourneyLinearProgressStyle: ProgressViewStyle {
     }
 }
 
+/// Secondary destination information stays quieter than the collection dock.
+struct JourneyDestinationSummary: View {
+    let destination: JourneyDestinationAvailability
+    var compact = false
+    var isStale = false
+
+    @AppStorage("alternativeDocksMinSpaces", store: JourneyStore.defaults)
+    private var minSpaces = JourneyStore.snapshot.minSpaces
+
+    private var spacesColor: Color {
+        guard let spaces = destination.spaces else { return .secondary }
+        return spaces == 0 ? .red : spaces < minSpaces ? .orange : .green
+    }
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            Text("Destination").font(compact ? .system(size: 9) : .caption2)
+            Text(destination.name)
+                .font(compact ? .system(size: 10, weight: .medium) : .caption.weight(.medium))
+                .lineLimit(2).minimumScaleFactor(0.8)
+            Text(destination.spaces.map { "\($0) \($0 == 1 ? "space" : "spaces")" } ?? "Unavailable")
+                .font(compact ? .system(size: 11, weight: .medium) : .subheadline.weight(.medium))
+                .foregroundStyle(spacesColor)
+                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+            if destination.spaces != nil && (isStale || destination.isStale) {
+                Text("Last known").font(.system(size: 9))
+            }
+        }
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.trailing)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct JourneyActivityCard: View {
     let dockName: String
     let availability: JourneyAvailability?
@@ -110,10 +144,11 @@ struct JourneyActivityCard: View {
     var isSimulation = false
     var isStale = false
     var compact = true
+    var destination: JourneyDestinationAvailability? = nil
 
     var body: some View {
         HStack(spacing: compact ? 8 : 18) {
-            JourneyDonut(availability: availability, metric: metric, size: compact ? 40 : 80)
+            JourneyDonut(availability: availability, metric: metric, size: compact ? 40 : (destination == nil ? 80 : 56))
             VStack(alignment: .leading, spacing: compact ? 3 : 8) {
                 Text(isSimulation ? "TEST · \(dockName)" : dockName)
                     .font(compact ? .system(.caption, weight: .semibold) : .title3.weight(.semibold))
@@ -124,44 +159,12 @@ struct JourneyActivityCard: View {
                 if isStale { Text("Last known").font(.caption2).foregroundStyle(.orange) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            if metric != .spaces, let destination {
+                JourneyDestinationSummary(destination: destination, compact: compact, isStale: isStale)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// The Watch app's riding page uses the available display, independently of the Smart Stack card.
-struct JourneyRideDashboard: View {
-    let dockName: String
-    let availability: JourneyAvailability?
-    let threshold: Int
-    let progress: JourneyProgress?
-    var isSimulation = false
-
-    var body: some View {
-        GeometryReader { geometry in
-            let chartSize = max(56, min(geometry.size.width * 0.8, (geometry.size.height - 78) / 1.105))
-            ViewThatFits(in: .vertical) {
-                content(chartSize: chartSize)
-                ScrollView { content(chartSize: chartSize) }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    private func content(chartSize: CGFloat) -> some View {
-        VStack(spacing: 6) {
-            Text(isSimulation ? "TEST · \(dockName)" : dockName)
-                .font(.headline).multilineTextAlignment(.center).lineLimit(2)
-            JourneyDonut(availability: availability, metric: .spaces, size: chartSize)
-            JourneyAvailabilityLabel(availability: availability, metric: .spaces, threshold: threshold,
-                                     font: .headline)
-            JourneyProgressBar(progress: progress).padding(.horizontal, 8)
-            if availability?.isStale() == true {
-                Text("Last known availability").font(.caption2).foregroundStyle(.orange)
-            }
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
     }
 }
 

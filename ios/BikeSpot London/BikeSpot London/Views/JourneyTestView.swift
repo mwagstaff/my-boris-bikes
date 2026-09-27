@@ -79,7 +79,13 @@ final class JourneyTestService: ObservableObject {
             journeyProgress: selection.run?.progress,
             journeyActivityContext: JourneyActivityContext(selection: selection, availability: availability,
                 updatedAt: simulation.updatedAt, expiresAt: simulation.expiresAt, isSimulation: true),
-            rideStartedAtEpochSeconds: selection.run?.rideStartedAt?.timeIntervalSince1970
+            rideStartedAtEpochSeconds: selection.run?.rideStartedAt?.timeIntervalSince1970,
+            destinationAvailability: selection.run.flatMap { run in
+                guard run.phase == .pickup else { return nil }
+                let destination = simulation.availability[run.destinationDock.id]
+                return JourneyDestinationAvailability(id: run.destinationDock.id, name: run.destinationDock.displayName,
+                    spaces: destination?.spaces, updatedAtEpochSeconds: destination?.updatedAt.timeIntervalSince1970)
+            }
         )
         let content = ActivityContent(state: state, staleDate: availability.updatedAt.addingTimeInterval(120))
         if let activity = Activity<JourneyDemoAttributes>.activities.first {

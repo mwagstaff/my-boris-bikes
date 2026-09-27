@@ -363,6 +363,39 @@ private extension ScheduledJourneyDock {
     }
 }
 
+private struct JourneyNextLegButton: View {
+    let startDockId: String
+    @Binding var isAdvancing: Bool
+    @State private var showsFailure = false
+
+    var body: some View {
+        Button {
+            guard !isAdvancing else { return }
+            isAdvancing = true
+            Task {
+                defer { isAdvancing = false }
+                let advanced = await LiveActivityService.shared.advanceJourneyFromStart(
+                    dockId: startDockId, source: "journeys_screen"
+                )
+                showsFailure = !advanced
+            }
+        } label: {
+            HStack(spacing: 6) {
+                if isAdvancing { ProgressView().controlSize(.small) }
+                Text(isAdvancing ? "Moving to next leg…" : "Next leg")
+            }
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(isAdvancing)
+        .accessibilityHint("Start watching availability at the destination dock")
+        .alert("Couldn’t move to the next leg", isPresented: $showsFailure) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("The journey may have changed. Refresh Journeys and try again.")
+        }
+    }
+}
+
 private struct AdHocJourneyRow: View {
     let journey: AdHocJourney
     let distanceString: String
@@ -378,6 +411,7 @@ private struct AdHocJourneyRow: View {
     let onDockSelected: (String) -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
     @EnvironmentObject private var locationService: LocationService
+    @State private var isAdvancing = false
 
     private var numericDistance: CLLocationDistance? {
         locationService.distance(to: journey.startDock.coordinate)
@@ -434,6 +468,10 @@ private struct AdHocJourneyRow: View {
             }
 
             if journey.isActive {
+                if journey.activePhase == .start {
+                    JourneyNextLegButton(startDockId: journey.startDock.id, isAdvancing: $isAdvancing)
+                }
+
                 ActiveJourneyDockIndicators(
                     startDock: journey.activePhase == .start ? journey.startDock : nil,
                     endDock: journey.endDock,
@@ -452,6 +490,7 @@ private struct AdHocJourneyRow: View {
 
                 Button("End journey", role: .destructive, action: onStop)
                     .buttonStyle(.bordered)
+                    .disabled(isAdvancing)
             } else {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
@@ -621,6 +660,7 @@ private struct ScheduledJourneyRow: View {
     let onCreateReturn: () -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
     @EnvironmentObject private var locationService: LocationService
+    @State private var isAdvancing = false
 
     private var numericDistance: CLLocationDistance? {
         locationService.distance(to: journey.startDock.coordinate)
@@ -672,6 +712,10 @@ private struct ScheduledJourneyRow: View {
             }
 
             if journey.isActive {
+                if journey.isStartPhase {
+                    JourneyNextLegButton(startDockId: journey.startDock.id, isAdvancing: $isAdvancing)
+                }
+
                 ActiveJourneyDockIndicators(
                     startDock: journey.isStartPhase ? journey.startDock : nil,
                     endDock: journey.endDock,
@@ -710,6 +754,7 @@ private struct ScheduledJourneyRow: View {
             if journey.isActive {
                 Button("End journey", role: .destructive, action: onStop)
                     .buttonStyle(.bordered)
+                    .disabled(isAdvancing)
             } else {
                 Button("Start now", action: onActivate)
                     .buttonStyle(.borderedProminent)

@@ -39,7 +39,11 @@ struct ContentView: View {
     }
 
     private var notificationSession: LiveActivityService.ActiveNotificationSession? {
-        liveActivityService.currentNotificationSession
+        guard let session = liveActivityService.currentNotificationSession,
+              session.scheduledJourneyPhase == nil,
+              session.scheduledJourneyId == nil,
+              session.adHocJourneyId == nil else { return nil }
+        return session
     }
 
     private var hasActiveJourney: Bool {
@@ -212,31 +216,11 @@ struct ContentView: View {
 
     private func handleNotificationBannerTap(_ session: LiveActivityService.ActiveNotificationSession) {
         Task {
-            let didAdvance = session.scheduledJourneyPhase == .start
-                ? await liveActivityService.advanceJourneyFromStart(
-                    dockId: session.dockId,
-                    source: "app_banner"
-                )
-                : false
-            if didAdvance {
-                return
-            }
-            if session.scheduledJourneyPhase == .start {
-                await liveActivityService.refreshNotificationStatusFromServer()
-                return
-            }
-
             await liveActivityService.endLiveActivityFromUserAction(
                 dockId: session.dockId,
                 dockName: session.dockName,
-                reason: session.scheduledJourneyPhase == .end ? "scheduled_journey_banner_end" : "app_banner"
+                reason: "app_banner"
             )
-            if session.scheduledJourneyPhase == .end, let scheduledJourneyId = session.scheduledJourneyId {
-                await scheduledJourneyService.complete(journeyId: scheduledJourneyId)
-            }
-            if session.scheduledJourneyPhase == .end, let adHocJourneyId = session.adHocJourneyId {
-                adHocJourneyService.complete(journeyId: adHocJourneyId)
-            }
         }
     }
     
@@ -315,14 +299,7 @@ private struct ActiveNotificationsBanner: View {
     let onTap: () -> Void
 
     private var message: String {
-        switch session.scheduledJourneyPhase {
-        case .start:
-            return "Journey active for \(session.dockName) | Tap to advance"
-        case .end:
-            return "Journey active for \(session.dockName) | Tap to end"
-        case nil:
-            return "Notifications active for \(session.dockName) | Tap to end"
-        }
+        "Notifications active for \(session.dockName) | Tap to end"
     }
 
     var body: some View {

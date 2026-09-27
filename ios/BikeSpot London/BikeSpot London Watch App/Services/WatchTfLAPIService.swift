@@ -121,10 +121,10 @@ class WatchTfLAPIService: ObservableObject {
     }
 
     /// Explicit choices can be outside the nearby search radius; retain their saved order.
-    func fetchBikePointsInOrder(ids: [String]) async throws -> [WatchBikePoint] {
+    func fetchBikePointsInOrder(ids: [String], cacheBusting: Bool = false) async throws -> [WatchBikePoint] {
         guard !ids.isEmpty else { return [] }
         try Task.checkCancellation()
-        for try await bikePoints in fetchMultipleBikePoints(ids: ids).values {
+        for try await bikePoints in fetchMultipleBikePoints(ids: ids, cacheBusting: cacheBusting).values {
             try Task.checkCancellation()
             guard !bikePoints.isEmpty else { throw WatchNetworkError.noData }
             let pointsByID = Dictionary(bikePoints.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -202,16 +202,19 @@ class WatchTfLAPIService: ObservableObject {
 
     /// Fetches all bike points within `radiusMeters` of a coordinate using TfL's Place API.
     /// Far more efficient than loading all ~800 London docks and filtering locally.
-    func fetchNearbyBikePoints(lat: Double, lon: Double, radiusMeters: Int = 500) async throws -> [WatchBikePoint] {
+    func fetchNearbyBikePoints(lat: Double, lon: Double, radiusMeters: Int = 500, cacheBusting: Bool = false) async throws -> [WatchBikePoint] {
         let cacheKey = nearbyCacheKey(lat: lat, lon: lon, radiusMeters: radiusMeters)
-        if let cached = nearbyCache[cacheKey],
+        if !cacheBusting, let cached = nearbyCache[cacheKey],
            Date().timeIntervalSince(cached.timestamp) < nearbyCacheExpirationInterval {
             return cached.data
         }
 
         let urlString = "\(baseURL)/Place?lat=\(lat)&lon=\(lon)&radius=\(radiusMeters)&type=BikePoint"
         guard let url = URL(string: urlString) else { throw WatchNetworkError.invalidURL }
-        let (data, response) = try await URLSession.shared.data(from: url)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        if cacheBusting { request.cachePolicy = .reloadIgnoringLocalCacheData }
+        let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw WatchNetworkError.httpError((response as? HTTPURLResponse)?.statusCode ?? 0)
         }

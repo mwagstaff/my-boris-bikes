@@ -38,6 +38,37 @@ private enum WatchJourneyAlternativePurpose: String {
     }
 }
 
+/// Persist the rendered list with independent retrieval times; failed refreshes never renew it.
+struct WatchJourneyDetailCache: Codable {
+    var primary: WatchBikePoint?
+    var primaryUpdatedAt: Date?
+    var alternatives: [WatchBikePoint]?
+    var alternativesUpdatedAt: Date?
+    var preferencesKey: String
+
+    static func isRecent(_ date: Date?, at now: Date = Date()) -> Bool {
+        guard let date else { return false }
+        return (-10...300).contains(now.timeIntervalSince(date))
+    }
+
+    func recent(preferencesKey: String, at now: Date = Date()) -> Self {
+        var result = self
+        if !Self.isRecent(primaryUpdatedAt, at: now) {
+            result.primary = nil
+            result.primaryUpdatedAt = nil
+        }
+        if self.preferencesKey != preferencesKey || !Self.isRecent(alternativesUpdatedAt, at: now) {
+            result.alternatives = nil
+            result.alternativesUpdatedAt = nil
+        }
+        return result
+    }
+
+    static func key(dockID: String, metric: String?) -> String {
+        "watchJourneyDetail.v1.\(dockID).\(metric ?? "dock")"
+    }
+}
+
 struct WatchWidgetDetailView: View {
     let primaryDockId: String
     let journeyMetricRawValue: String?
@@ -45,12 +76,16 @@ struct WatchWidgetDetailView: View {
     let autoRefresh: Bool
     let compactCards: Bool
     let alwaysShowsEndAction: Bool
+    let journeyProgress: JourneyProgress?
     @Environment(\.scenePhase) private var scenePhase
     @State private var isVisible = false
 
     init(primaryDockId: String, journeyMetricRawValue: String? = nil,
          showsJourneyActions: Bool = true, autoRefresh: Bool = false,
-         compactCards: Bool = false, alwaysShowsEndAction: Bool = false) {
+         compactCards: Bool = false, alwaysShowsEndAction: Bool = false,
+         initialDock: JourneyDock? = nil, initialAvailability: JourneyAvailability? = nil,
+         journeyProgress: JourneyProgress? = nil) {
+        self.journeyProgress = journeyProgress
         self.showsJourneyActions = showsJourneyActions
         self.autoRefresh = autoRefresh
         self.compactCards = compactCards
@@ -59,12 +94,46 @@ struct WatchWidgetDetailView: View {
         self.journeyMetricRawValue = journeyMetricRawValue
         _displayedDockId = State(initialValue: primaryDockId)
         _displayedJourneyMetricRawValue = State(initialValue: journeyMetricRawValue)
+        let cached = JourneyStore.read(WatchJourneyDetailCache.self,
+            key: WatchJourneyDetailCache.key(dockID: primaryDockId, metric: journeyMetricRawValue))?
+            .recent(preferencesKey: Self.preferencesKey)
+        var primary = cached?.primary
+        var updatedAt = cached?.primaryUpdatedAt
+        if let dock = initialDock, dock.id == primaryDockId, let availability = initialAvailability,
+           WatchJourneyDetailCache.isRecent(availability.updatedAt),
+           availability.updatedAt > (updatedAt ?? .distantPast) {
+            primary = WatchBikePoint(id: dock.id, commonName: dock.name, alias: dock.alias,
+                lat: dock.coordinate?.latitude ?? 0, lon: dock.coordinate?.longitude ?? 0,
+                additionalProperties: [
+                    WatchAdditionalProperty(key: "NbStandardBikes", value: String(availability.standardBikes)),
+                    WatchAdditionalProperty(key: "NbEBikes", value: String(availability.eBikes)),
+                    WatchAdditionalProperty(key: "NbBikes", value: String(availability.standardBikes + availability.eBikes)),
+                    WatchAdditionalProperty(key: "NbEmptyDocks", value: String(availability.spaces)),
+                    WatchAdditionalProperty(key: "NbDocks", value: String(availability.total)),
+                    WatchAdditionalProperty(key: "Installed", value: "true"),
+                    WatchAdditionalProperty(key: "Locked", value: "false")
+                ])
+            updatedAt = availability.updatedAt
+        }
+        _primaryBikePoint = State(initialValue: primary)
+        _primaryUpdatedAt = State(initialValue: updatedAt)
+        _primaryJourneyAvailability = State(initialValue: primary.flatMap { point in
+            updatedAt.map { JourneyAvailability(standardBikes: point.standardBikes, eBikes: point.eBikes,
+                spaces: point.emptyDocks, updatedAt: $0) }
+        })
+        _alternatives = State(initialValue: cached?.alternatives ?? [])
+        _alternativesUpdatedAt = State(initialValue: cached?.alternativesUpdatedAt)
+        _hasLoadedAlternatives = State(initialValue: cached?.alternatives != nil)
+        _isLoadingPrimary = State(initialValue: primary == nil)
     }
 
     @StateObject private var viewModel = WatchFavoritesViewModel()
     @StateObject private var locationService = WatchLocationService.shared
     @ObservedObject private var favoritesService = WatchFavoritesService.shared
 
+    @State private var primaryUpdatedAt: Date?
+    @State private var alternativesUpdatedAt: Date?
+    @State private var primaryLoadFailed = false
     @State private var primaryBikePoint: WatchBikePoint?
     @State private var primaryJourneyAvailability: JourneyAvailability?
     @State private var alternatives: [WatchBikePoint] = []
@@ -91,6 +160,55 @@ struct WatchWidgetDetailView: View {
     @AppStorage(WatchThresholdSettings.useMinimumThresholdsKey, store: BikeDataFilter.userDefaultsStore)
     private var useMinimumThresholds: Bool = WatchThresholdSettings.defaultUseMinimumThresholds
 
+    private static var preferencesKey: String {
+        let defaults = BikeDataFilter.userDefaultsStore
+        let keys = [BikeDataFilter.userDefaultsKey, WatchThresholdSettings.minBikesKey,
+                    WatchThresholdSettings.minEBikesKey, WatchThresholdSettings.minSpacesKey,
+                    WatchThresholdSettings.useMinimumThresholdsKey]
+        return ([String(WatchFavoritesService.shared.dockPreferencesRevision ?? -1)]
+            + keys.map { String(describing: defaults.object(forKey: $0)) }).joined(separator: "|")
+    }
+
+    private func saveCachedDetails() {
+        guard journeyPurpose != nil else { return }
+        JourneyStore.write(WatchJourneyDetailCache(primary: primaryBikePoint, primaryUpdatedAt: primaryUpdatedAt,
+            alternatives: hasLoadedAlternatives ? alternatives : nil, alternativesUpdatedAt: alternativesUpdatedAt,
+            preferencesKey: Self.preferencesKey),
+            key: WatchJourneyDetailCache.key(dockID: displayedDockId, metric: displayedJourneyMetricRawValue))
+    }
+
+    private func discardExpiredDetails() {
+        guard journeyPurpose != nil else { return }
+        if !WatchJourneyDetailCache.isRecent(primaryUpdatedAt) {
+            primaryBikePoint = nil
+            primaryJourneyAvailability = nil
+        }
+        if !WatchJourneyDetailCache.isRecent(alternativesUpdatedAt) {
+            alternatives = []
+            hasLoadedAlternatives = false
+        }
+    }
+
+    @ViewBuilder
+    private var refreshStatus: some View {
+        if isRefreshing {
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini)
+                Text("Updating latest data…")
+            }
+            .font(.caption2).foregroundStyle(.secondary)
+        } else if primaryLoadFailed || alternativesLoadFailed {
+            Text(primaryBikePoint == nil ? "Couldn’t update dock data." : "Couldn’t update · showing saved data")
+                .font(.caption2).foregroundStyle(.orange)
+        }
+        if let date = [primaryUpdatedAt, alternativesUpdatedAt].compactMap({ $0 }).min(), primaryBikePoint != nil {
+            HStack(spacing: 3) {
+                Text("Updated")
+                Text(date, style: .relative)
+            }.font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
     private var journeyPurpose: WatchJourneyAlternativePurpose? {
         guard let displayedJourneyMetricRawValue else { return nil }
         return WatchJourneyAlternativePurpose(rawValue: displayedJourneyMetricRawValue)
@@ -110,26 +228,35 @@ struct WatchWidgetDetailView: View {
                         .frame(height: 0)
                         .id("top")
 
-                    if isLoadingPrimary {
+                    refreshStatus
+
+                    if isLoadingPrimary && primaryBikePoint == nil {
                         loadingStateView
                     } else if let station = primaryBikePoint {
                         primarySection(station)
-                        alternativesSection
-                        journeyActionSection(scrollProxy: scrollProxy)
+                        if journeyPurpose == .spaces {
+                            JourneyProgressBar(progress: journeyProgress)
+                        }
                     } else {
                         unavailableStateView
                     }
+
+                    alternativesSection
+                    journeyActionSection(scrollProxy: scrollProxy)
                 }
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
             }
         }
-        .navigationTitle(compactCards ? "Journey" : "Dock Info")
+        .navigationTitle(journeyPurpose == nil ? "Dock Info" : "Journey")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { isVisible = true }
         .onDisappear { isVisible = false }
         .onChange(of: favoritesService.dockPreferencesRevision) { _, _ in
             guard isVisible, scenePhase == .active else { return }
+            alternatives = []
+            alternativesUpdatedAt = nil
+            hasLoadedAlternatives = false
             Task { await refreshJourneyAndDock() }
         }
         .task(id: isVisible && scenePhase == .active) {
@@ -179,7 +306,7 @@ struct WatchWidgetDetailView: View {
 
     @ViewBuilder
     private var alternativesSection: some View {
-        if isLoadingAlternatives {
+        if isLoadingAlternatives && alternatives.isEmpty {
             HStack(spacing: 6) {
                 ProgressView()
                     .scaleEffect(0.8)
@@ -228,6 +355,9 @@ struct WatchWidgetDetailView: View {
     private func journeyActionSection(scrollProxy: ScrollViewProxy) -> some View {
         if !journeyActions.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
+                if journeyPurpose != .spaces {
+                    Text("Watching start dock").font(.caption2).foregroundStyle(.secondary)
+                }
                 ForEach(journeyActions) { action in
                     if action == .advance {
                         journeyActionButton(action, scrollProxy: scrollProxy)
@@ -269,6 +399,7 @@ struct WatchWidgetDetailView: View {
             .frame(maxWidth: .infinity)
         }
         .disabled(isPerformingJourneyAction)
+        .accessibilityHint(action == .advance ? "Start watching availability at the destination dock" : "End this journey")
     }
 
     private func threshold(for purpose: WatchJourneyAlternativePurpose?) -> Int {
@@ -335,36 +466,44 @@ struct WatchWidgetDetailView: View {
             if shouldRefreshAgain { Task { await refreshJourneyAndDock() } }
         }
 
+        discardExpiredDetails()
         if journeyPurpose != nil {
-            _ = await WatchFavoritesService.shared.requestJourneyRefreshFromPhone()
+            // Phone reconciliation and direct dock loading can proceed independently.
+            async let phoneRefresh = WatchFavoritesService.shared.requestJourneyRefreshFromPhone()
+            await loadDockDetails(preservingContent: primaryBikePoint != nil)
+            _ = await phoneRefresh
+        } else {
+            await loadDockDetails(preservingContent: primaryBikePoint != nil)
         }
-        guard !Task.isCancelled else { return }
-        await loadDockDetails(preservingContent: primaryBikePoint != nil)
     }
 
     private func loadDockDetails(preservingContent: Bool = false) async {
         if !preservingContent {
             await MainActor.run {
                 isLoadingPrimary = true
-                isLoadingAlternatives = false
-                hasLoadedAlternatives = false
-                alternativesLoadFailed = false
-                alternatives = []
+                if !WatchJourneyDetailCache.isRecent(alternativesUpdatedAt) {
+                    isLoadingAlternatives = false
+                    hasLoadedAlternatives = false
+                    alternativesLoadFailed = false
+                    alternatives = []
+                }
             }
         }
         // Use existing in-memory favorites first for fast first paint.
         var primary = viewModel.favoriteBikePoints.first(where: { $0.id == displayedDockId })
         let isJourneyDock = journeyPurpose != nil
         var freshJourneyAvailability: JourneyAvailability?
+        var fetchedAt: Date?
         if preservingContent || isJourneyDock {
             if let refreshed = try? await WatchTfLAPIService.shared.fetchBikePoint(id: displayedDockId, cacheBusting: true).async() {
                 primary = refreshed
+                fetchedAt = Date()
                 if isJourneyDock { freshJourneyAvailability = journeyAvailability(for: refreshed) }
             } else {
-                primary = primaryBikePoint ?? primary
+                primary = primaryBikePoint
             }
         }
-        if primary == nil {
+        if primary == nil && !isJourneyDock {
             primary = try? await WatchTfLAPIService.shared
                 .fetchBikePoint(id: displayedDockId)
                 .async()
@@ -384,6 +523,8 @@ struct WatchWidgetDetailView: View {
 
         await MainActor.run {
             primaryBikePoint = primary
+            primaryLoadFailed = fetchedAt == nil && isJourneyDock
+            if let fetchedAt { primaryUpdatedAt = fetchedAt }
             isLoadingPrimary = false
             if let primary, isJourneyDock {
                 let cached = JourneyStore.availability(for: primary.id)
@@ -395,15 +536,16 @@ struct WatchWidgetDetailView: View {
                     NotificationCenter.default.post(name: Notification.Name("journeySnapshotChanged"), object: nil)
                 } else {
                     // An offline/cache fallback must not replace the parent's newer count.
-                    primaryJourneyAvailability = cached ?? freshJourneyAvailability
+                    let recentCached = cached.flatMap { WatchJourneyDetailCache.isRecent($0.updatedAt) ? $0 : nil }
+                    primaryJourneyAvailability = recentCached ?? primaryJourneyAvailability ?? freshJourneyAvailability
                 }
             }
         }
 
-        // Refresh full favorites in the background for cache warming / widget freshness.
-        Task { await viewModel.refreshData() }
-
-        guard let primary else { return }
+        if !isJourneyDock { Task { await viewModel.refreshData() } }
+        discardExpiredDetails()
+        saveCachedDetails()
+        guard let primary = primaryBikePoint else { return }
         await loadAlternatives(near: primary)
     }
 
@@ -422,7 +564,7 @@ struct WatchWidgetDetailView: View {
             var sortedAlternatives: [WatchBikePoint]
             if let customDockIDs {
                 let chosenDocks = favoritesService.customAlternativesEnabled
-                    ? try await WatchTfLAPIService.shared.fetchBikePointsInOrder(ids: customDockIDs)
+                    ? try await WatchTfLAPIService.shared.fetchBikePointsInOrder(ids: customDockIDs, cacheBusting: true)
                     : []
                 // Keep the user's configured order and show their choices even when a
                 // preferred alternative is currently below the availability threshold.
@@ -431,7 +573,7 @@ struct WatchWidgetDetailView: View {
                 let nearby = try await WatchTfLAPIService.shared.fetchNearbyBikePoints(
                     lat: primary.lat,
                     lon: primary.lon,
-                    radiusMeters: 500
+                    radiusMeters: 500, cacheBusting: true
                 )
                 sortedAlternatives = sortedAlternativeCandidates(from: nearby, primary: primary)
 
@@ -440,7 +582,7 @@ struct WatchWidgetDetailView: View {
                     let expandedNearby = try await WatchTfLAPIService.shared.fetchNearbyBikePoints(
                         lat: primary.lat,
                         lon: primary.lon,
-                        radiusMeters: 1000
+                        radiusMeters: 1000, cacheBusting: true
                     )
                     sortedAlternatives = sortedAlternativeCandidates(from: expandedNearby, primary: primary)
                 }
@@ -461,16 +603,18 @@ struct WatchWidgetDetailView: View {
                       primary.id == displayedDockId,
                       preferencesRevision == favoritesService.dockPreferencesRevision else { return }
                 alternatives = Array(displayedAlternatives)
+                alternativesUpdatedAt = Date()
                 hasLoadedAlternatives = true
                 alternativesLoadFailed = false
                 isLoadingAlternatives = false
+                saveCachedDetails()
             }
         } catch {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard primary.id == displayedDockId,
                       preferencesRevision == favoritesService.dockPreferencesRevision else { return }
-                alternatives = []
+                discardExpiredDetails()
                 hasLoadedAlternatives = true
                 alternativesLoadFailed = true
                 isLoadingAlternatives = false
@@ -546,6 +690,12 @@ struct WatchWidgetDetailView: View {
 
         if action == .advance, let nextDockId = result.dockId {
             await MainActor.run {
+                primaryBikePoint = nil
+                primaryJourneyAvailability = nil
+                primaryUpdatedAt = nil
+                alternatives = []
+                alternativesUpdatedAt = nil
+                hasLoadedAlternatives = false
                 displayedDockId = nextDockId
                 displayedJourneyMetricRawValue = result.journeyMetricRawValue ?? WatchJourneyAlternativePurpose.spaces.rawValue
                 journeyActionMessage = nil
@@ -591,10 +741,18 @@ struct CompactJourneyDockAvailabilityCard: View {
     let threshold: Int
     let isPrimary: Bool
 
+    @AppStorage(WatchThresholdSettings.minBikesKey, store: BikeDataFilter.userDefaultsStore)
+    private var minBikes = WatchThresholdSettings.defaultMinBikes
+
+    @AppStorage(WatchThresholdSettings.minEBikesKey, store: BikeDataFilter.userDefaultsStore)
+    private var minEBikes = WatchThresholdSettings.defaultMinEBikes
+
     private var isLow: Bool {
-        // Compact primary cards are shown only when the journey dock is low.
         // With both bike types selected, a shortage of either type is enough.
-        isPrimary || metric.count(in: availability) < threshold
+        if metric == .allBikes {
+            return availability.standardBikes < minBikes || availability.eBikes < minEBikes
+        }
+        return metric.count(in: availability) < threshold
     }
 
     var body: some View {

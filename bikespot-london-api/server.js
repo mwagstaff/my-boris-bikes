@@ -10,6 +10,7 @@ const promClient = require("prom-client");
 const { MongoClient, ObjectId } = require("mongodb");
 const {
   fetchVerifiedDestinationAvailability,
+  fetchJourneyDestinationAvailability,
 } = require("./destination-availability");
 const {
   validateDockPreferences,
@@ -589,6 +590,10 @@ async function loadDeviceDockPreferences(deviceId, preferences) {
 }
 
 async function refreshSessionDockPreferences(session, dockId, primaryData) {
+  if (session.scheduledJourneyPhase === "start" && session.destinationDockId) {
+    session.destinationAvailability = await fetchJourneyDestinationAvailability(session, fetchDockData);
+  }
+
   const preferences = session.dockPreferences;
   if (preferences) session.activeDockAlias = compactPushDockText(preferences.aliases[dockId]) || null;
   let docksById = new Map();
@@ -1650,6 +1655,7 @@ function contentStateWithAlternatives(data, session) {
     activeJourneyPhase: session?.scheduledJourneyPhase || null,
     primaryDisplay: sanitizePrimaryDisplay(session?.primaryDisplay),
     availabilityUpdatedAtEpochSeconds: Math.floor(Date.now() / 1000),
+    destinationAvailability: session?.scheduledJourneyPhase === "start" ? session.destinationAvailability || null : null,
     journeyProgress: session?.scheduledJourneyPhase === "end" ? session.journeyProgress || null : null,
     rideStartedAtEpochSeconds: session?.scheduledJourneyPhase === "end" ? session.rideStartedAtEpochSeconds ?? null : null,
   };
@@ -1906,7 +1912,8 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
   const dockPreferences = await loadDeviceDockPreferences(journey.deviceId);
   const primaryDisplay = journey.bikeDataFilter === "bikesOnly" ? "bikes"
     : journey.bikeDataFilter === "eBikesOnly" ? "eBikes" : "allBikes";
-  const initialSession = { dockPreferences, primaryDisplay, alternatives: [], automaticAlternatives: [] };
+  const initialSession = { dockPreferences, primaryDisplay, alternatives: [], automaticAlternatives: [],
+    scheduledJourneyPhase: "start", destinationDockId: endDock.id, destinationDockName: endDock.name };
   const initialData = {
     standardBikes: sanitizeThresholdValue(startDockData?.standardBikes),
     eBikes: sanitizeThresholdValue(startDockData?.eBikes),
@@ -1916,6 +1923,7 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
   const contentState = {
     ...initialData,
     alternatives: initialSession.alternatives,
+    destinationAvailability: initialSession.destinationAvailability,
     activeDockId: startDock.id,
     activeDockName: startDock.name,
     activeDockAlias: initialSession.activeDockAlias || null,
@@ -2503,9 +2511,9 @@ async function pollDock(dockId) {
     const data = await fetchDockData(dockId);
     let alternativesChanged = false;
     for (const session of poller.tokens.values()) {
-      const previousAlternatives = JSON.stringify([session.alternatives, session.activeDockAlias]);
+      const previousAlternatives = JSON.stringify([session.alternatives, session.activeDockAlias, session.destinationAvailability?.spaces, session.destinationAvailability?.name]);
       await refreshSessionDockPreferences(session, dockId, data);
-      if (previousAlternatives !== JSON.stringify([session.alternatives, session.activeDockAlias])) {
+      if (previousAlternatives !== JSON.stringify([session.alternatives, session.activeDockAlias, session.destinationAvailability?.spaces, session.destinationAvailability?.name])) {
         alternativesChanged = true;
       }
     }
@@ -4390,6 +4398,11 @@ app.post("/live-activity/start", async (req, res) => {
         ? scheduledJourneyId
         : null,
     scheduledJourneyPhase: normalizedScheduledJourneyPhase,
+    destinationDockId: /^BikePoints_\d+$/.test(req.body?.destinationDockId || "")
+      ? req.body.destinationDockId : existingSessionForPushToken?.destinationDockId || null,
+    destinationDockName: typeof req.body?.destinationDockName === "string"
+      ? compactPushDockText(req.body.destinationDockName) : existingSessionForPushToken?.destinationDockName || null,
+    destinationAvailability: existingSessionForPushToken?.destinationAvailability || null,
     rideStartedAtEpochSeconds: rideStartedAtForPhase(normalizedScheduledJourneyPhase,
       existingSessionForPushToken, req.body?.rideStartedAtEpochSeconds),
     adHocJourneyId:
@@ -4623,6 +4636,13 @@ app.post("/live-activity/session/update", async (req, res) => {
     session.rideStartedAtEpochSeconds = rideStartedAtForPhase(normalizedScheduledJourneyPhase,
       session, req.body?.rideStartedAtEpochSeconds);
     session.scheduledJourneyPhase = normalizedScheduledJourneyPhase;
+  }
+
+  if (/^BikePoints_\d+$/.test(req.body?.destinationDockId || "")) {
+    session.destinationDockId = req.body.destinationDockId;
+    if (typeof req.body?.destinationDockName === "string") {
+      session.destinationDockName = compactPushDockText(req.body.destinationDockName);
+    }
   }
 
   updateJourneyProgress(session, req.body?.journeyProgress);

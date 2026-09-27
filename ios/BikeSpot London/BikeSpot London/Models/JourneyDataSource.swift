@@ -6,6 +6,7 @@ struct JourneyDisplayState {
     var availability: JourneyAvailability?
     var location: JourneyLocation?
     var isSimulation = false
+    var destinationAvailability: JourneyDestinationAvailability? = nil
 
     var progress: JourneyProgress? {
         guard let run = selection?.run, run.phase == .riding else { return nil }
@@ -40,7 +41,8 @@ enum JourneyDataSource {
             let selection = simulation.snapshot.selection(at: now, location: simulation.location, nearby: simulation.nearby)
             return JourneyDisplayState(snapshot: simulation.snapshot, selection: selection,
                                        availability: selection.flatMap { simulation.availability[$0.dock.id] },
-                                       location: simulation.location, isSimulation: true)
+                                       location: simulation.location, isSimulation: true,
+                                       destinationAvailability: destinationSnapshot(selection: selection) { simulation.availability[$0] })
         }
         var snapshot = JourneyStore.snapshot
         snapshot.applyAvailabilityPreferences()
@@ -61,7 +63,17 @@ enum JourneyDataSource {
         let selection = snapshot.selection(at: now, location: JourneyStore.location, nearby: index)
         return JourneyDisplayState(snapshot: snapshot, selection: selection,
                                    availability: selection.flatMap { JourneyStore.availability(for: $0.dock.id) },
-                                   location: JourneyStore.location)
+                                   location: JourneyStore.location,
+                                   destinationAvailability: destinationSnapshot(selection: selection) { JourneyStore.availability(for: $0) })
+    }
+
+    private static func destinationSnapshot(selection: JourneySelection?,
+                                            availability: (String) -> JourneyAvailability?) -> JourneyDestinationAvailability? {
+        guard let run = selection?.run, run.phase == .pickup else { return nil }
+        let dock = run.destinationDock
+        let value = availability(dock.id)
+        return JourneyDestinationAvailability(id: dock.id, name: dock.displayName,
+            spaces: value?.spaces, updatedAtEpochSeconds: value?.updatedAt.timeIntervalSince1970)
     }
 
     static func activityState(_ context: JourneyActivityContext, at now: Date = Date(),
@@ -115,15 +127,22 @@ enum JourneyDataSource {
             }
         }
         guard !Task.isCancelled, let selection = state.selection else { return state }
-        do {
-            let point = try await request(APIJourneyDock.self, path: "/BikePoint/\(selection.dock.id)")
-            try Task.checkCancellation()
-            if point.isAvailable, let availability = point.availability {
-                JourneyStore.write(availability, key: "journeyAvailability.\(selection.dock.id)")
-            } else {
-                JourneyStore.defaults.removeObject(forKey: "journeyAvailability.\(selection.dock.id)")
-            }
-        } catch { /* A failed request must not turn last-known availability into zero. */ }
+        var dockIDs = [selection.dock.id]
+        if let run = selection.run, run.phase == .pickup, run.destinationDock.id != selection.dock.id {
+            dockIDs.append(run.destinationDock.id)
+        }
+        for dockID in dockIDs {
+            guard !Task.isCancelled else { break }
+            do {
+                let point = try await request(APIJourneyDock.self, path: "/BikePoint/\(dockID)")
+                try Task.checkCancellation()
+                if point.isAvailable, let availability = point.availability {
+                    JourneyStore.write(availability, key: "journeyAvailability.\(dockID)")
+                } else {
+                    JourneyStore.defaults.removeObject(forKey: "journeyAvailability.\(dockID)")
+                }
+            } catch { /* Keep last-known availability and its original timestamp when offline. */ }
+        }
         // Re-resolve after suspension: pickup, completion or a newer sync may have changed the dock.
         return activityContext.map { activityState($0) } ?? cached()
     }
