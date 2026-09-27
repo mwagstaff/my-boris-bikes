@@ -33,10 +33,10 @@ enum SiriDockResolver {
                         explicit: JourneyDock? = nil, now: Date, lastSynced: Bool = false) throws -> SiriResolvedDock {
         if let explicit { return try selection(explicit, source: .explicit, revision: .distantPast, lastSynced: false) }
         guard snapshot.siriHasAmbiguousJourney != true else {
-            throw SiriAvailabilityError(message: String(localized: "Choose one current journey in BikeSpot London before checking availability."))
+            throw SiriAvailabilityError(message: String(localized: "Choose one current journey in Bikespot London before checking availability."))
         }
         guard snapshot.siriHasUnresolvedJourney != true else {
-            throw SiriAvailabilityError(message: String(localized: "Your current journey's docks are unavailable. Update the journey in BikeSpot London."))
+            throw SiriAvailabilityError(message: String(localized: "Your current journey's docks are unavailable. Update the journey in Bikespot London."))
         }
         if let active = snapshot.active, active.expiresAt > now {
             return try selection(metric == .bikes ? active.startDock : active.destinationDock,
@@ -45,19 +45,19 @@ enum SiriDockResolver {
         }
         if metric == .spaces {
             guard let dock = snapshot.siriDestination else {
-                throw SiriAvailabilityError(message: String(localized: "You haven't selected a destination dock in BikeSpot London. Set one in Siri & Shortcuts or start a journey."))
+                throw SiriAvailabilityError(message: String(localized: "You haven't selected a destination dock in Bikespot London. Set one in Siri & Shortcuts or start a journey."))
             }
             return try selection(dock, source: .savedDestination, revision: snapshot.generatedAt, lastSynced: lastSynced)
         }
         guard !snapshot.favorites.isEmpty else {
-            throw SiriAvailabilityError(message: String(localized: "Add a favourite dock in BikeSpot London or start a journey before checking bikes."))
+            throw SiriAvailabilityError(message: String(localized: "Add a favourite dock in Bikespot London or start a journey before checking bikes."))
         }
         guard let location, location.isUsable(at: now) else {
-            throw SiriAvailabilityError(message: String(localized: "I couldn't find your nearest favourite. Allow location in BikeSpot London and try again, or start a journey."))
+            throw SiriAvailabilityError(message: String(localized: "I couldn't find your nearest favourite. Allow location in Bikespot London and try again, or start a journey."))
         }
         // Missing coordinates could hide the nearest favourite. Never choose an arbitrary subset.
         guard snapshot.favorites.allSatisfy({ $0.coordinate?.isValid == true }) else {
-            throw SiriAvailabilityError(message: String(localized: "I couldn't locate your favourite docks. Open BikeSpot London to refresh them."))
+            throw SiriAvailabilityError(message: String(localized: "I couldn't locate your favourite docks. Open Bikespot London to refresh them."))
         }
         let dock = snapshot.favorites.min {
             let a = location.coordinate.distance(to: $0.coordinate!)
@@ -75,7 +75,7 @@ enum SiriDockResolver {
     private static func selection(_ dock: JourneyDock, source: SiriResolvedDock.Source,
                                   revision: Date, lastSynced: Bool) throws -> SiriResolvedDock {
         guard isValidID(dock.id) else {
-            throw SiriAvailabilityError(message: String(localized: "The selected dock is unavailable. Update it in BikeSpot London."))
+            throw SiriAvailabilityError(message: String(localized: "The selected dock is unavailable. Update it in Bikespot London."))
         }
         return SiriResolvedDock(dock: dock, source: source, revision: revision, lastSynced: lastSynced)
     }

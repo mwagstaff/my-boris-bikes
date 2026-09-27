@@ -65,7 +65,7 @@ final class TroubleshootingLogStore: ObservableObject {
 
     func exportText() -> String {
         var lines = [
-            "BikeSpot London troubleshooting log",
+            "Bikespot London troubleshooting log",
             "Generated: \(Self.displayFormatter.string(from: Date()))",
             "Device ID: \(DeviceTokenHelper.scheduledJourneyDeviceId)",
             "APNs token prefix: \(DeviceTokenHelper.apnsDeviceToken.map { String($0.prefix(8)) } ?? "none")",

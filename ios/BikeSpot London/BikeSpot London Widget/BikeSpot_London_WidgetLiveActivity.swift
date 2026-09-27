@@ -507,7 +507,10 @@ private struct DockLiveActivityView: View {
                     .activityBackgroundTint(Color.black)
             } else {
                 lockScreenContent
-                    .activityBackgroundTint(Color(.systemBackground))
+                    // Keep the card and its text in the same appearance on the Lock Screen.
+                    .environment(\.colorScheme, .dark)
+                    .activityBackgroundTint(.black)
+                    .activitySystemActionForegroundColor(.white)
                     .widgetURL(lockScreenDetailURL)
             }
         }

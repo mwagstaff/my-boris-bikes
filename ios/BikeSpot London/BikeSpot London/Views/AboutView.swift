@@ -39,7 +39,7 @@ struct AboutView: View {
 
                 AboutCard(background: cardColor, stroke: cardStroke, shadow: cardShadow) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("BikeSpot London")
+                        Text("Bikespot London")
                             .font(.title2)
                             .fontWeight(.semibold)
 

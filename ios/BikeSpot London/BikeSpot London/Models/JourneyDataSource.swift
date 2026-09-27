@@ -193,7 +193,7 @@ enum JourneyDataSource {
                 let (data, response) = try await session.data(for: request)
                 guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
                 if http.statusCode == 404 {
-                    throw SiriAvailabilityError(message: String(localized: "The selected dock is unavailable. Update it in BikeSpot London."))
+                    throw SiriAvailabilityError(message: String(localized: "The selected dock is unavailable. Update it in Bikespot London."))
                 }
                 guard (200...299).contains(http.statusCode) else { throw URLError(.badServerResponse) }
                 return (data, http, Date())

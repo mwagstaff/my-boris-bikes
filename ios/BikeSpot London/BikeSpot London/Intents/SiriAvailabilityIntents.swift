@@ -3,7 +3,7 @@ import SwiftUI
 
 struct GetSpacesAtDestinationIntent: AppIntent {
     static var title: LocalizedStringResource = "Get Spaces at Destination"
-    static var description = IntentDescription("Check spaces at your active journey's destination, or your saved Siri destination. The dock is resolved each time.")
+    static var description = IntentDescription("Check spaces at your active journey's destination, or your saved destination. The dock is resolved each time.")
     static var openAppWhenRun: Bool = false
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
 

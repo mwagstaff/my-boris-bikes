@@ -19,7 +19,7 @@ struct MediumWidgetView: View {
             VStack(spacing: 0) {
                 // Header
                 HStack {
-                    Text("BikeSpot London")
+                    Text("Bikespot London")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.primary)
                     Spacer()

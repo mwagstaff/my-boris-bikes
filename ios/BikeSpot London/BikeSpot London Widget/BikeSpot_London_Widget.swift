@@ -402,7 +402,7 @@ struct BikeSpot_London_Widget: Widget {
             BikeSpot_London_WidgetEntryView(entry: entry)
                 .containerBackground(.fill.tertiary, for: .widget)
         }
-        .configurationDisplayName("BikeSpot London")
+        .configurationDisplayName("Bikespot London")
         .description("View your favorite bike docks at a glance")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }

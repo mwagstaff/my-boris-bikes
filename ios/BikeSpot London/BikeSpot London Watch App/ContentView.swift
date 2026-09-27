@@ -387,7 +387,7 @@ struct WatchEmptyView: View {
               .foregroundColor(.orange)
           }
 
-          Text("Open the BikeSpot London app on your iPhone")
+          Text("Open the Bikespot London app on your iPhone")
             .font(.caption2)
             .foregroundColor(.secondary)
             .multilineTextAlignment(.center)

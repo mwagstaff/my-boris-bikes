@@ -53,18 +53,18 @@ struct SiriShortcutsView: View {
                 if let error { Text(error).foregroundStyle(.secondary) }
             }
             Section("Say “How many spaces”") {
-                Text("1. In Shortcuts, create a new shortcut and add BikeSpot London's Get Spaces at Destination action.")
+                Text("1. In Shortcuts, create a new shortcut and add Bikespot London's Get Spaces at Destination action.")
                 Text("2. Keep the dynamic destination action; don't replace it with Get Spaces at Dock.")
                 Text("3. Name the shortcut exactly How many spaces, then say “Hey Siri, how many spaces?”")
             }
             Section("Say “How many bikes”") {
-                Text("1. Create another shortcut with BikeSpot London's Get Bikes at Start action.")
+                Text("1. Create another shortcut with Bikespot London's Get Bikes at Start action.")
                 Text("2. Keep the dynamic start action. It uses the active start dock, or your nearest favourite when no journey is active.")
                 Text("3. Name it exactly How many bikes, then say “Hey Siri, how many bikes?”")
             }
             Section("App shortcuts") {
                 ShortcutsLink()
-                Text("You can also say “How many spaces in BikeSpot London?” or “How many bikes in BikeSpot London?” without creating a personal shortcut.")
+                Text("You can also say “How many spaces in Bikespot London?” or “How many bikes in Bikespot London?” without creating a personal shortcut.")
                 Text("Use just one action in each personal shortcut. No Open App or Speak Text action is needed. Test that Siri speaks the full answer once.")
             }
             Section("Privacy and Apple Watch") {

@@ -20,7 +20,7 @@ enum SiriAvailabilityRuntime {
             }
             lastSynced = !(await watch.requestJourneyRefreshFromPhone(timeout: .seconds(2), requireSiriContext: true))
             guard JourneyStore.snapshot.siriSchemaVersion == 1 else {
-                throw SiriAvailabilityError(message: String(localized: "Open BikeSpot London on your iPhone and Watch to sync Siri dock selections."))
+                throw SiriAvailabilityError(message: String(localized: "Open Bikespot London on your iPhone and Watch to sync Siri dock selections."))
             }
         }
 #else
@@ -33,7 +33,10 @@ enum SiriAvailabilityRuntime {
         if explicit == nil, metric == .bikes, snapshot.active?.expiresAt ?? .distantPast <= Date(),
            !snapshot.favorites.isEmpty, snapshot.siriHasAmbiguousJourney != true {
             // No permission dialog from Siri. Use the existing grant and a bounded one-shot fix.
-            location = await SiriLocationRequest().sample(timeout: min(2, max(0, deadline.timeIntervalSinceNow)))
+            let locationRequest = SiriLocationRequest()
+            // Core Location holds its delegate weakly; retain it until sampling finishes.
+            defer { withExtendedLifetime(locationRequest) {} }
+            location = await locationRequest.sample(timeout: min(2, max(0, deadline.timeIntervalSinceNow)))
             if snapshot.favorites.contains(where: { $0.coordinate?.isValid != true }), deadline.timeIntervalSinceNow > 0 {
                 if let catalogue = try? await JourneyDataSource.siriDockCatalogue(timeout: deadline.timeIntervalSinceNow) {
                     snapshot.favorites = snapshot.favorites.map { favorite in

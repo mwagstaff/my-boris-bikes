@@ -1714,7 +1714,7 @@ struct MyBorisBikesSimpleComplication: Widget {
             BorisBikesSimpleComplicationView(entry: entry)
         }
         .configurationDisplayName("View Favorites")
-        .description("Tap to open BikeSpot London app")
+        .description("Tap to open Bikespot London app")
         .supportedFamilies([.accessoryCircular])
     }
 }
