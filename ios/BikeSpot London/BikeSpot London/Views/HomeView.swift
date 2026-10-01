@@ -51,7 +51,9 @@ struct HomeView: View {
                         )
                     }
                 }
+                .bikeSpotBackground()
                 .navigationTitle("Favourites")
+                .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         if let banner = bannerService.currentBanner {
@@ -61,6 +63,12 @@ struct HomeView: View {
                         }
                     }
 
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button { isShowingAddJourney = true } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel("New journey")
+                    }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         if isJourneySectionHidden && !favoriteJourneyService.journeys.isEmpty {
                             Button {
@@ -161,11 +169,11 @@ struct EmptyFavoritesView: View {
                 .font(.system(size: 64))
                 .foregroundColor(.gray)
             
-            Text("No Favorites Yet")
+            Text("No favourites yet")
                 .font(.title2)
                 .fontWeight(.semibold)
             
-            Text("Use the map to find and add bike points to your favorites")
+            Text("Use the map to find and save your favourite docks.")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -195,7 +203,8 @@ struct FavoritesListView: View {
     @State private var isShowingAllFavoriteJourneys = false
     @State private var alternativeBikePointOverrides: [String: BikePoint] = [:]
     @State private var expandedNearbyAlternatives: Set<String> = []
-    @State private var showingAllCustomAlternatives: Set<String> = []
+    @State private var allAlternativesDock: BikePoint?
+    @State private var showsOtherNearbyDocks = false
     @State private var dismissedAutoExpandedAlternatives: Set<String> = []
     @State private var alternativeDockRefreshRequest: AnyCancellable?
     @ObservedObject private var liveActivityService = LiveActivityService.shared
@@ -263,19 +272,19 @@ struct FavoritesListView: View {
                     for: favorite.id,
                     savedDocks: savedDocks,
                     allBikePoints: availableData,
-                    showAll: showingAllCustomAlternatives.contains(favorite.id)
+                    showAll: true
                 ))
             }
             let display = effectivePrimaryDisplay(for: favorite.id)
             let hasLiveActivity = liveActivityService.isActivityActive(for: favorite.id)
-            let isExpanded = expandedNearbyAlternatives.contains(favorite.id)
             return (favorite.id, alternatives(
                 for: favorite,
                 favoriteIds: favoriteIds,
                 startingPointFavoriteIds: startingPointIds,
                 primaryDisplay: display,
                 hasLiveActivity: hasLiveActivity,
-                forceShow: isExpanded
+                forceShow: true,
+                maximumCount: 20
             ))
         })
     }
@@ -310,10 +319,26 @@ struct FavoritesListView: View {
         })
     }
 
+    private var visibleAlternativeDockIDs: [String] {
+        let visibleIDs = alternativeDockMap.flatMap { dockID, alternatives in
+            alternatives.prefix(allAlternativesDock?.id == dockID ? alternatives.count : 3).map(\.id)
+        }
+        let customIDs = bikePoints.flatMap { dockPreferences.customDockIDs(for: $0.id) ?? [] }
+        let otherIDs = allAlternativesDock.map { showsOtherNearbyDocks ? otherNearbyDocks(for: $0).map(\.id) : [] } ?? []
+        return Array(Set(visibleIDs + customIDs + otherIDs)).sorted()
+    }
+
+    private func otherNearbyDocks(for dock: BikePoint) -> [BikePoint] {
+        AlternativeDockSelectionService.otherNearbyDocks(
+            for: dock,
+            allBikePoints: Array(availableBikePointsByID
+                .merging(alternativeBikePointOverrides, uniquingKeysWith: { _, refreshed in refreshed }).values),
+            excludingDockIDs: Set(dockPreferences.customDockIDs(for: dock.id) ?? [])
+        )
+    }
+
     private var alternativeDockIDsSignature: String {
-        Set(alternativeDockMap.values.flatMap { $0.map(\.id) })
-            .sorted()
-            .joined(separator: ",")
+        visibleAlternativeDockIDs.joined(separator: ",")
     }
 
     /// Changes when allBikePoints is refreshed, triggering a re-fetch of alternative dock data
@@ -391,19 +416,7 @@ struct FavoritesListView: View {
     }
     
     private var autoExpandedAlternativeDockIds: Set<String> {
-        guard alternativeDocksEnabled else { return [] }
-        let startingPointIds = startingPointFavoriteIds()
-
-        return Set(bikePoints.compactMap { favorite in
-            let hasLiveActivity = liveActivityService.isActivityActive(for: favorite.id)
-            let display = effectivePrimaryDisplay(for: favorite.id)
-            return shouldShowAlternatives(
-                for: favorite,
-                primaryDisplay: display,
-                startingPointFavoriteIds: startingPointIds,
-                hasLiveActivity: hasLiveActivity
-            ) ? favorite.id : nil
-        })
+        alternativeDocksEnabled ? Set(bikePoints.map(\.id)) : []
     }
 
     var body: some View {
@@ -417,9 +430,8 @@ struct FavoritesListView: View {
 
             ForEach(bikePoints, id: \.id) { bikePoint in
                 let alternatives = displayedAlternativeDockMap[bikePoint.id] ?? []
-                let hasMoreCustomAlternatives = (dockPreferences.customDockIDs(for: bikePoint.id)?.count ?? 0)
-                    > AlternativeDockSelectionService.favoritePreviewCount
-                let isShowingAllCustomAlternatives = showingAllCustomAlternatives.contains(bikePoint.id)
+                let previewAlternatives = Array(alternatives.prefix(AlternativeDockSelectionService.favoritePreviewCount))
+                let hasMoreAlternatives = alternatives.count > previewAlternatives.count
                 let liveActivityAlternatives = displayedLiveActivityStartAlternativeDockMap[bikePoint.id] ?? []
                 let hasFavoriteLiveActivity = liveActivityService.isActivityActive(for: bikePoint.id)
                 let isNearbyAlternativesExpanded = isNearbyAlternativesExpanded(
@@ -458,26 +470,37 @@ struct FavoritesListView: View {
                         } label: {
                             Label("Edit Name", systemImage: "pencil")
                         }
-                        .tint(.blue)
+                        .tint(.gray)
 
                         Button { editingAlternatives = bikePoint } label: {
                             Label("Alternatives", systemImage: "list.bullet")
                         }
-                        .tint(.indigo)
+                        .tint(.accentColor)
                     }
 
-                    AlternativeDocksEditButton(dock: ScheduledJourneyDock(bikePoint: bikePoint))
-                        .font(.footnote)
-                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+                    if hasFavoriteLiveActivity {
+                        Button { allAlternativesDock = bikePoint } label: {
+                            HStack {
+                                Text("Alternative docks").font(.subheadline.weight(.semibold))
+                                Spacer(minLength: 4)
+                                Text("See all").font(.caption)
+                                Image(systemName: "chevron.right").font(.caption)
+                            }
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
                         .listRowSeparator(.hidden)
+                    }
 
                     if hasFavoriteLiveActivity {
-                        LiveActivityControlRow(bikePoint: bikePoint)
+                        LiveActivityControlRow(bikePoint: bikePoint, compact: true)
                             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
                     } else {
                         NearbyDockFilterRow(
                             bikePoint: bikePoint,
                             isExpanded: isNearbyAlternativesExpanded,
+                            onSeeAll: { allAlternativesDock = bikePoint },
                             onToggleExpanded: {
                                 toggleNearbyAlternatives(
                                     for: bikePoint.id,
@@ -498,10 +521,10 @@ struct FavoritesListView: View {
                                     .font(.footnote)
                                     .foregroundColor(.secondary)
                             }
-                            .listRowInsets(EdgeInsets(top: 6, leading: 32, bottom: 6, trailing: 16))
+                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                         } else if !alternatives.isEmpty {
-                            ForEach(Array(alternatives.enumerated()), id: \.element.id) { index, alternative in
-                                let isLastAlternative = index == alternatives.count - 1 && !hasMoreCustomAlternatives
+                            ForEach(Array(previewAlternatives.enumerated()), id: \.element.id) { index, alternative in
+                                let isLastAlternative = index == previewAlternatives.count - 1 && !hasMoreAlternatives
                                 let hasLiveActivity = liveActivityService.isActivityActive(for: alternative.id)
                                 AlternativeDockRowView(
                                     bikePoint: alternative,
@@ -514,48 +537,24 @@ struct FavoritesListView: View {
                                     Button { editingBikePoint = alternative } label: {
                                         Label("Edit Name", systemImage: "pencil")
                                     }
-                                    .tint(.blue)
+                                    .tint(.gray)
                                 }
                                 .alignmentGuide(.listRowSeparatorLeading) { _ in 16 }
                                 .alignmentGuide(.listRowSeparatorTrailing) { dimensions in
                                     dimensions.width - 16
                                 }
-                                .listRowInsets(EdgeInsets(top: 4, leading: 32, bottom: isLastAlternative ? 16 : 4, trailing: 16))
+                                .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: isLastAlternative ? 6 : 2, trailing: 16))
                                 .listRowSeparator(isLastAlternative && !hasLiveActivity ? .visible : .hidden)
 
                                 if hasLiveActivity {
-                                    LiveActivityControlRow(bikePoint: alternative)
+                                    LiveActivityControlRow(bikePoint: alternative, compact: true)
                                         .alignmentGuide(.listRowSeparatorLeading) { _ in 16 }
                                         .alignmentGuide(.listRowSeparatorTrailing) { dimensions in
                                             dimensions.width - 16
                                         }
-                                        .listRowInsets(EdgeInsets(top: 0, leading: 32, bottom: isLastAlternative ? 16 : 8, trailing: 16))
+                                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: isLastAlternative ? 16 : 8, trailing: 16))
                                         .listRowSeparator(isLastAlternative ? .visible : .hidden)
                                 }
-                            }
-                            if hasMoreCustomAlternatives {
-                                Button {
-                                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                                        expandedNearbyAlternatives.insert(bikePoint.id)
-                                        dismissedAutoExpandedAlternatives.remove(bikePoint.id)
-                                        if isShowingAllCustomAlternatives {
-                                            showingAllCustomAlternatives.remove(bikePoint.id)
-                                        } else {
-                                            showingAllCustomAlternatives.insert(bikePoint.id)
-                                        }
-                                    }
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Text(isShowingAllCustomAlternatives ? "View fewer alternate docks" : "View more alternate docks")
-                                        Image(systemName: isShowingAllCustomAlternatives ? "chevron.up" : "chevron.down")
-                                    }
-                                    .font(.footnote)
-                                    .foregroundStyle(.tint)
-                                    .frame(minHeight: 44, alignment: .leading)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityValue(isShowingAllCustomAlternatives ? "Expanded" : "Collapsed")
-                                .listRowInsets(EdgeInsets(top: 0, leading: 32, bottom: 8, trailing: 16))
                             }
                         } else {
                             Text(dockPreferences.customDockIDs(for: bikePoint.id) == nil
@@ -563,14 +562,62 @@ struct FavoritesListView: View {
                                  : "No custom alternatives selected.")
                                 .font(.footnote)
                                 .foregroundColor(.secondary)
-                                .listRowInsets(EdgeInsets(top: 2, leading: 32, bottom: 12, trailing: 16))
+                                .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 12, trailing: 16))
                         }
                     }
                 }
             }
             .onDelete(perform: removeFavorites)
         }
-        .listStyle(PlainListStyle())
+        .listStyle(.insetGrouped)
+        .listSectionSpacing(10)
+        .scrollContentBackground(.hidden)
+        .sheet(item: $allAlternativesDock, onDismiss: { showsOtherNearbyDocks = false }) { dock in
+            NavigationStack {
+                List {
+                    if dockPreferences.customDockIDs(for: dock.id) != nil {
+                        Toggle("Other nearby docks", isOn: $showsOtherNearbyDocks)
+                    }
+                    Section {
+                        let displayedDocks = showsOtherNearbyDocks ? otherNearbyDocks(for: dock)
+                            : displayedAlternativeDockMap[dock.id] ?? []
+                        if displayedDocks.isEmpty {
+                            Text(showsOtherNearbyDocks ? "No other nearby docks available." : "No alternatives selected.")
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(displayedDocks) { alternative in
+                            let distanceFromDock = CLLocation(latitude: dock.lat, longitude: dock.lon)
+                                .distance(from: CLLocation(latitude: alternative.lat, longitude: alternative.lon))
+                            AlternativeDockRowView(
+                                bikePoint: alternative,
+                                distance: showsOtherNearbyDocks
+                                    ? (distanceFromDock < 1000 ? String(format: "%.0f m from this dock", distanceFromDock)
+                                       : String(format: "%.1f miles from this dock", distanceFromDock / 1609.344))
+                                    : locationService.distanceString(to: alternative.coordinate),
+                                onTap: {
+                                    allAlternativesDock = nil
+                                    onBikePointSelected?(alternative)
+                                }
+                            )
+                        }
+                    } header: {
+                        Text(showsOtherNearbyDocks ? "Other nearby docks · closest first" : favoritesService.displayName(for: dock))
+                    }
+                    AlternativeDocksEditButton(dock: ScheduledJourneyDock(bikePoint: dock))
+                }
+                .bikeSpotBackground(showsPhoto: false)
+                .onChange(of: dockPreferences.customDockIDs(for: dock.id)) { _, ids in
+                    if ids == nil { showsOtherNearbyDocks = false }
+                }
+                .navigationTitle("Alternative docks")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { allAlternativesDock = nil }
+                    }
+                }
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
                 if let warning = tflDataStaleWarning {
@@ -586,13 +633,13 @@ struct FavoritesListView: View {
                             Image(systemName: "clock")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
-                            Text("Updated \(formatTime(lastUpdate))")
+                            Text("Updated \(DockUpdateTime.string(from: lastUpdate))")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(Color(.systemBackground))
+                        .padding(.vertical, 4)
+                        .background(.regularMaterial, in: Capsule())
                         Spacer()
                     }
                     .padding(.bottom, 8)
@@ -663,7 +710,7 @@ struct FavoritesListView: View {
             refreshVisibleAlternativeDockData()
             if !alternativeDocksEnabled {
                 expandedNearbyAlternatives.removeAll()
-                showingAllCustomAlternatives.removeAll()
+                allAlternativesDock = nil
                 dismissedAutoExpandedAlternatives.removeAll()
             }
         }
@@ -718,7 +765,7 @@ struct FavoritesListView: View {
                 if hasAdditionalFavoriteJourneys {
                     Button(action: toggleAllFavoriteJourneys) {
                         HStack(spacing: 3) {
-                            Text(isShowingAllFavoriteJourneys ? collapsedFavoriteJourneysLabel : "View all")
+                            Text(isShowingAllFavoriteJourneys ? collapsedFavoriteJourneysLabel : "See all")
                             Image(systemName: isShowingAllFavoriteJourneys ? "chevron.up" : "chevron.down")
                         }
                         .font(.caption.weight(.semibold))
@@ -784,8 +831,7 @@ struct FavoritesListView: View {
             return
         }
 
-        let customIDs = bikePoints.flatMap { dockPreferences.customDockIDs(for: $0.id) ?? [] }
-        let ids = Set(alternativeDockMap.values.flatMap { $0.map(\.id) } + customIDs)
+        let ids = Set(visibleAlternativeDockIDs)
         guard !ids.isEmpty else {
             alternativeDockRefreshRequest?.cancel()
             alternativeDockRefreshRequest = nil
@@ -822,7 +868,6 @@ struct FavoritesListView: View {
 
         if isExpanded {
             expandedNearbyAlternatives.remove(dockId)
-            showingAllCustomAlternatives.remove(dockId)
             if isAutoExpanded {
                 dismissedAutoExpandedAlternatives.insert(dockId)
             }
@@ -835,10 +880,6 @@ struct FavoritesListView: View {
     private func pruneExpandedAlternatives() {
         let favoriteIds = Set(bikePoints.map(\.id))
         expandedNearbyAlternatives = Set(expandedNearbyAlternatives.filter { favoriteIds.contains($0) })
-        showingAllCustomAlternatives = showingAllCustomAlternatives.filter {
-            favoriteIds.contains($0) && (dockPreferences.customDockIDs(for: $0)?.count ?? 0)
-                > AlternativeDockSelectionService.favoritePreviewCount
-        }
         let autoExpandedDockIds = autoExpandedAlternativeDockIds
         dismissedAutoExpandedAlternatives = Set(
             dismissedAutoExpandedAlternatives.filter { dockId in
@@ -904,7 +945,8 @@ struct FavoritesListView: View {
         startingPointFavoriteIds: Set<String>,
         primaryDisplay: LiveActivityPrimaryDisplay,
         hasLiveActivity: Bool,
-        forceShow: Bool = false
+        forceShow: Bool = false,
+        maximumCount: Int? = nil
     ) -> [BikePoint] {
         let shouldShowAlternatives = shouldShowAlternatives(
             for: favorite,
@@ -925,7 +967,7 @@ struct FavoritesListView: View {
         let filteredCandidates = candidates.filter { bikePoint in
             meetsPrimaryDisplayRequirement(for: bikePoint, primaryDisplay: primaryDisplay)
         }
-        return Array(filteredCandidates.prefix(max(1, alternativeDocksMaxCount)))
+        return Array(filteredCandidates.prefix(max(1, maximumCount ?? alternativeDocksMaxCount)))
     }
 
     private func startingPointFavoriteIds() -> Set<String> {
@@ -992,12 +1034,6 @@ struct FavoritesListView: View {
             return bikePoint.emptyDocks > 0
         }
     }
-    
-    private func formatTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: date)
-    }
 }
 
 private struct FavoriteJourneyCompactRow: View {
@@ -1011,41 +1047,32 @@ private struct FavoriteJourneyCompactRow: View {
     @EnvironmentObject private var favoritesService: FavoritesService
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 12) {
             SimplifiedDonutChart(
                 standardBikes: startBikePoint?.standardBikes ?? 0,
                 eBikes: startBikePoint?.eBikes ?? 0,
                 emptySpaces: startBikePoint?.emptyDocks ?? 0,
-                size: 34,
-                displayMode: .bikes,
-                bikeDataFilter: bikeDataFilter
+                size: 44, displayMode: .bikes, bikeDataFilter: bikeDataFilter,
+                hasAvailability: startBikePoint?.hasAvailabilityData == true
             )
-            .accessibilityElement(children: .ignore)
             .accessibilityLabel(availabilityAccessibilityLabel)
-
-            Text("\(startDock.favoriteJourneyDisplayName(using: favoritesService)) → \(endDock.favoriteJourneyDisplayName(using: favoritesService))")
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .layoutPriority(1)
-
-            Spacer(minLength: 4)
-
-            DistanceIndicator(distance: distance, distanceString: distanceString)
-                .fixedSize(horizontal: true, vertical: false)
-
+            VStack(alignment: .leading, spacing: 6) {
+                Text("\(startDock.favoriteJourneyDisplayName(using: favoritesService)) → \(endDock.favoriteJourneyDisplayName(using: favoritesService))")
+                    .font(.subheadline.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                DistanceIndicator(distance: distance, distanceString: distanceString)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             Button(action: onStart) {
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 28))
+                Image(systemName: "play.fill")
+                    .font(.body.weight(.semibold))
                     .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+                    .background(Color.accentColor.opacity(0.1), in: Circle())
             }
             .buttonStyle(.borderless)
-            .accessibilityLabel(
-                "Start journey from \(startDock.favoriteJourneyDisplayName(using: favoritesService)) to \(endDock.favoriteJourneyDisplayName(using: favoritesService))"
-            )
+            .accessibilityLabel("Start journey from \(startDock.favoriteJourneyDisplayName(using: favoritesService)) to \(endDock.favoriteJourneyDisplayName(using: favoritesService))")
         }
-        .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 16))
+        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
     }
 
     private var availabilityAccessibilityLabel: String {
@@ -1078,193 +1105,26 @@ struct FavoriteRowView: View {
     let onTap: (() -> Void)?
     var liveActivityAlternatives: [BikePoint] = []
     @EnvironmentObject var favoritesService: FavoritesService
-    @EnvironmentObject var locationService: LocationService
     @EnvironmentObject var liveActivityService: LiveActivityService
 
-    @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
-    private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
-    
-    @State private var previousStandardBikes: Int?
-    @State private var previousEBikes: Int?
-    @State private var previousEmptyDocks: Int?
-    @State private var isFlashing = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    private var bikeDataFilter: BikeDataFilter {
-        BikeDataFilter(rawValue: bikeDataFilterRawValue) ?? .both
-    }
-
-    private var filteredCounts: BikeAvailabilityCounts {
-        bikeDataFilter.filteredCounts(
-            standardBikes: bikePoint.standardBikes,
-            eBikes: bikePoint.eBikes,
-            emptySpaces: bikePoint.emptyDocks
-        )
-    }
-    
-    private var numericDistance: CLLocationDistance? {
-        locationService.distance(to: bikePoint.coordinate)
-    }
-    
-    private var hasDataChanged: Bool {
-        guard let prevStandard = previousStandardBikes,
-              let prevEBikes = previousEBikes,
-              let prevEmpty = previousEmptyDocks else {
-            return false
-        }
-        
-        return prevStandard != filteredCounts.standardBikes ||
-               prevEBikes != filteredCounts.eBikes ||
-               prevEmpty != filteredCounts.emptySpaces
-    }
-    
     var body: some View {
-        Button(action: {
-            AnalyticsService.shared.trackDockTap(
-                screen: .favourites,
-                bikePoint: bikePoint,
-                source: "favorites_list"
-            )
-            onTap?()
-        }) {
-            HStack(spacing: 16) {
-                DonutChart(
-                    standardBikes: bikePoint.standardBikes,
-                    eBikes: bikePoint.eBikes,
-                    emptySpaces: bikePoint.emptyDocks,
-                    size: 50
-                )
-                
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Favourite dock")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundColor(.secondary)
-
-                    if let alias = favoritesService.alias(for: bikePoint.id) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(alias)
-                                .font(.title3)
-                                .fontWeight(.semibold)
-                                .lineLimit(1)
-                            
-                            Text(bikePoint.commonName)
-                                .font(.footnote)
-                                .foregroundColor(.secondary)
-                                .lineLimit(2)
-                        }
-                    } else {
-                        Text(bikePoint.commonName)
-                            .font(.headline)
-                            .lineLimit(2)
-                    }
-                    
-                    HStack(alignment: .top) {
-                        DonutChartLegend(
-                            standardBikes: bikePoint.standardBikes,
-                            eBikes: bikePoint.eBikes,
-                            emptySpaces: bikePoint.emptyDocks,
-                            showLabels: true,
-                            spacesOnSecondLine: true,
-                            useStatusColors: true
-                        )
-                        
-                        Spacer()
-                        
-                        DistanceIndicator(
-                            distance: numericDistance,
-                            distanceString: distance
-                        )
-                    }
-                }
-                
-                Button {
-                    let alias = favoritesService.alias(for: bikePoint.id)
-                    let isActive = liveActivityService.isActivityActive(for: bikePoint.id)
-                    let action: AnalyticsAction = isActive ? .liveActivityEnd : .liveActivityStart
-                    AnalyticsService.shared.track(
-                        action: action,
-                        screen: .favourites,
-                        dock: AnalyticsDockInfo.from(bikePoint),
-                        metadata: ["source": "favorites_row"]
-                    )
-                    liveActivityService.startLiveActivity(
-                        for: bikePoint,
-                        alias: alias,
-                        alternatives: liveActivityAlternatives
-                    )
-                } label: {
-                    let isActive = liveActivityService.isActivityActive(for: bikePoint.id)
-                    Image(systemName: "waveform.path.ecg")
-                        .font(.caption)
-                        .foregroundColor(isActive ? .white : .accentColor.opacity(0.7))
-                        .symbolEffect(.pulse, isActive: isActive)
-                        .frame(width: 28, height: 28)
-                        .background(isActive ? Color.blue : Color.clear)
-                        .clipShape(Circle())
-                        .overlay(
-                            Circle()
-                                .stroke(isActive ? Color.blue : Color.accentColor.opacity(0.3), lineWidth: 1)
-                        )
-                }
-                .buttonStyle(PlainButtonStyle())
-
-                if !bikePoint.isAvailable {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundColor(.orange)
-                        .font(.caption)
-                }
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 4))
+        layout {
+            Button {
+                AnalyticsService.shared.trackDockTap(screen: .favourites, bikePoint: bikePoint, source: "favorites_list")
+                onTap?()
+            } label: {
+                DockSummaryView(bikePoint: bikePoint, name: favoritesService.displayName(for: bikePoint),
+                                distance: distance, isFavourite: true)
             }
+            .buttonStyle(.plain)
+            DockMonitoringButton(bikePoint: bikePoint, alternatives: liveActivityAlternatives, source: "favorites_row")
         }
-        .buttonStyle(PlainButtonStyle())
         .padding(.vertical, 4)
-        .opacity(bikePoint.isAvailable ? 1.0 : 0.6)
-        .background(
-            Rectangle()
-                .fill(Color.blue.opacity(isFlashing ? 0.2 : 0.0))
-                .animation(.easeInOut(duration: 0.3), value: isFlashing)
-        )
-        .onAppear {
-            // Initialize previous values on first appearance
-            updatePreviousCounts()
-        }
-        .onChange(of: bikeDataFilterRawValue) { _, _ in
-            updatePreviousCounts()
-        }
-        .onChange(of: bikePoint.standardBikes) { _, _ in
-            checkForChangesAndFlash()
-        }
-        .onChange(of: bikePoint.eBikes) { _, _ in
-            checkForChangesAndFlash()
-        }
-        .onChange(of: bikePoint.emptyDocks) { _, _ in
-            checkForChangesAndFlash()
-        }
-    }
-    
-    private func checkForChangesAndFlash() {
-        // Only flash if we have previous values and data actually changed
-        if hasDataChanged {
-            // Trigger flash effect
-            withAnimation(.easeInOut(duration: 0.15)) {
-                isFlashing = true
-            }
-            
-            // Flash off after brief delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    isFlashing = false
-                }
-            }
-        }
-        
-        // Update previous values for next comparison
-        updatePreviousCounts()
-    }
-
-    private func updatePreviousCounts() {
-        previousStandardBikes = filteredCounts.standardBikes
-        previousEBikes = filteredCounts.eBikes
-        previousEmptyDocks = filteredCounts.emptySpaces
     }
 }
 
@@ -1273,128 +1133,55 @@ struct AlternativeDockRowView: View {
     let distance: String
     let onTap: (() -> Void)?
     @EnvironmentObject var favoritesService: FavoritesService
-    @EnvironmentObject var locationService: LocationService
-    @EnvironmentObject var liveActivityService: LiveActivityService
 
-    private var numericDistance: CLLocationDistance? {
-        locationService.distance(to: bikePoint.coordinate)
-    }
-
-    private var hasAvailabilityData: Bool {
-        bikePoint.additionalProperties.contains {
-            $0.key == "NbStandardBikes" || $0.key == "NbEBikes" || $0.key == "NbEmptyDocks"
-        }
-    }
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        Button(action: {
-            AnalyticsService.shared.trackDockTap(
-                screen: .favourites,
-                bikePoint: bikePoint,
-                source: "alternative_dock"
-            )
-            onTap?()
-        }) {
-            HStack(spacing: 12) {
-                if hasAvailabilityData {
-                    DonutChart(
-                        standardBikes: bikePoint.standardBikes,
-                        eBikes: bikePoint.eBikes,
-                        emptySpaces: bikePoint.emptyDocks,
-                        size: 44,
-                        strokeWidth: 12
-                    )
-                } else {
-                    Image(systemName: "questionmark.circle")
-                        .font(.system(size: 34))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44, height: 44)
-                        .accessibilityLabel("Availability unavailable")
-                }
-                
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(favoritesService.displayName(for: bikePoint))
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .lineLimit(2)
-                    
-                    if favoritesService.alias(for: bikePoint.id) != nil {
-                        Text(bikePoint.commonName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-
-                    HStack(alignment: .top) {
-                        if hasAvailabilityData {
-                            DonutChartLegend(
-                                standardBikes: bikePoint.standardBikes,
-                                eBikes: bikePoint.eBikes,
-                                emptySpaces: bikePoint.emptyDocks,
-                                showLabels: true,
-                                spacesOnSecondLine: true,
-                                useStatusColors: true
-                            )
-                            .scaleEffect(0.9, anchor: .leading)
-                        } else {
-                            Text("Availability unavailable")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        
-                        Spacer()
-                        
-                        DistanceIndicator(
-                            distance: numericDistance,
-                            distanceString: distance
-                        )
-                        .scaleEffect(0.9, anchor: .trailing)
-                    }
-                }
-                
-                Button {
-                    let isActive = liveActivityService.isActivityActive(for: bikePoint.id)
-                    let action: AnalyticsAction = isActive ? .liveActivityEnd : .liveActivityStart
-                    AnalyticsService.shared.track(
-                        action: action,
-                        screen: .favourites,
-                        dock: AnalyticsDockInfo.from(bikePoint),
-                        metadata: ["source": "alternative_row"]
-                    )
-                    liveActivityService.startLiveActivity(for: bikePoint, alias: favoritesService.alias(for: bikePoint.id))
-                } label: {
-                    let isActive = liveActivityService.isActivityActive(for: bikePoint.id)
-                    Image(systemName: "waveform.path.ecg")
-                        .font(.system(size: 9))
-                        .foregroundColor(isActive ? .white : .accentColor.opacity(0.7))
-                        .symbolEffect(.pulse, isActive: isActive)
-                        .frame(width: 24, height: 24)
-                        .background(isActive ? Color.blue : Color.clear)
-                        .clipShape(Circle())
-                        .overlay(
-                            Circle()
-                                .stroke(isActive ? Color.blue : Color.accentColor.opacity(0.3), lineWidth: 1)
-                        )
-                }
-                .buttonStyle(PlainButtonStyle())
-                .disabled(!hasAvailabilityData && !liveActivityService.isActivityActive(for: bikePoint.id))
-
-                if hasAvailabilityData && !bikePoint.isAvailable {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundColor(.orange)
-                        .font(.caption2)
-                        .accessibilityLabel("Dock unavailable")
-                }
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 4))
+        layout {
+            Button {
+                AnalyticsService.shared.trackDockTap(screen: .favourites, bikePoint: bikePoint, source: "alternative_dock")
+                onTap?()
+            } label: {
+                DockSummaryView(bikePoint: bikePoint, name: favoritesService.displayName(for: bikePoint), distance: distance)
             }
+            .buttonStyle(.plain)
+            DockMonitoringButton(bikePoint: bikePoint, source: "alternative_row")
         }
-        .buttonStyle(PlainButtonStyle())
-        .padding(.vertical, 2)
-        .padding(.horizontal, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.accentColor.opacity(0.08))
-        )
-        .opacity(!hasAvailabilityData || bikePoint.isAvailable ? 0.9 : 0.6)
+        .padding(.vertical, 4)
+    }
+}
+
+private struct DockMonitoringButton: View {
+    let bikePoint: BikePoint
+    var alternatives: [BikePoint] = []
+    let source: String
+    @EnvironmentObject private var favoritesService: FavoritesService
+    @EnvironmentObject private var liveActivityService: LiveActivityService
+
+    private var isActive: Bool { liveActivityService.isActivityActive(for: bikePoint.id) }
+
+    var body: some View {
+        Button {
+            AnalyticsService.shared.track(
+                action: isActive ? .liveActivityEnd : .liveActivityStart,
+                screen: .favourites, dock: AnalyticsDockInfo.from(bikePoint),
+                metadata: ["source": source]
+            )
+            liveActivityService.startLiveActivity(for: bikePoint,
+                alias: favoritesService.alias(for: bikePoint.id), alternatives: alternatives)
+        } label: {
+            Image(systemName: isActive ? "waveform.path.ecg.rectangle.fill" : "waveform.path.ecg")
+                .font(.body)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 44, height: 44)
+                .background(isActive ? Color.accentColor.opacity(0.1) : .clear, in: Circle())
+        }
+        .buttonStyle(.borderless)
+        .disabled(!bikePoint.hasAvailabilityData && !isActive)
+        .accessibilityLabel("\(isActive ? "Stop" : "Start") monitoring \(favoritesService.displayName(for: bikePoint))")
     }
 }
 
@@ -1484,6 +1271,7 @@ struct FavoriteAliasEditor: View {
                     }
                 }
             }
+            .bikeSpotBackground(showsPhoto: false)
             .navigationTitle("Edit Name")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

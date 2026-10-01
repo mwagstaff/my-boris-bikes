@@ -202,6 +202,7 @@ struct DockPickerView: View {
                     .searchable(text: $searchText, prompt: "Search dock name")
                 }
             }
+            .bikeSpotBackground(showsPhoto: false)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -490,9 +491,7 @@ private struct DockPickerMapControls: View {
                     .font(.title2)
                     .foregroundColor(.accentColor)
                     .padding(12)
-                    .background(Color(.systemBackground))
-                    .clipShape(Circle())
-                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+                    .bikeSpotFloatingControl()
             }
             .disabled(!hasLocation || !hasBikePoints)
             .opacity(hasLocation && hasBikePoints ? 1.0 : 0.5)
@@ -503,9 +502,7 @@ private struct DockPickerMapControls: View {
                     .font(.title2)
                     .foregroundColor(.accentColor)
                     .padding(12)
-                    .background(Color(.systemBackground))
-                    .clipShape(Circle())
-                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+                    .bikeSpotFloatingControl()
             }
             .disabled(!hasLocation)
             .opacity(hasLocation ? 1.0 : 0.5)
@@ -564,9 +561,12 @@ private struct DockPickerRow: View {
                         Text(bikePoint.commonName)
                             .foregroundStyle(.primary)
                     }
-                    Text(availabilityText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if bikePoint.hasAvailabilityData {
+                        DonutChartLegend(standardBikes: bikePoint.standardBikes,
+                            eBikes: bikePoint.eBikes, emptySpaces: bikePoint.emptyDocks)
+                    } else {
+                        Text("Availability unavailable").font(.caption).foregroundStyle(.secondary)
+                    }
                     if let detailText {
                         Text(detailText)
                             .font(.caption)
@@ -579,43 +579,16 @@ private struct DockPickerRow: View {
 
                     DistanceIndicator(
                         distance: numericDistance,
-                        distanceString: referenceDock == nil ? locationService.distanceString(to: bikePoint.coordinate) : numericDistance.map { $0 < 1000 ? String(format: "%.0fm", $0) : String(format: "%.1f miles", $0 / 1609.344) } ?? ""
+                        distanceString: referenceDock == nil ? locationService.distanceString(to: bikePoint.coordinate) : numericDistance.map { $0 < 1000 ? String(format: "%.0fm", $0) : String(format: "%.1f miles", $0 / 1609.344) } ?? "",
+                        reference: referenceDock == nil ? "your location" : "this dock"
                     )
                 }
             }
         }
     }
 
-    private var availabilityText: String {
-        switch availabilityMode {
-        case .start:
-            return bikeAvailabilityText
-        case .end:
-            return "\(bikePoint.emptyDocks) \(bikePoint.emptyDocks == 1 ? "space" : "spaces")"
-        }
-    }
-
     private var bikeDataFilter: BikeDataFilter {
         BikeDataFilter(rawValue: bikeDataFilterRawValue) ?? .both
-    }
-
-    private var bikeAvailabilityText: String {
-        let counts = bikeDataFilter.filteredCounts(
-            standardBikes: bikePoint.standardBikes,
-            eBikes: bikePoint.eBikes,
-            emptySpaces: bikePoint.emptyDocks
-        )
-        var parts: [String] = []
-
-        if bikeDataFilter.showsStandardBikes {
-            parts.append("\(counts.standardBikes) \(counts.standardBikes == 1 ? "bike" : "bikes")")
-        }
-
-        if bikeDataFilter.showsEBikes {
-            parts.append("\(counts.eBikes) \(counts.eBikes == 1 ? "e-bike" : "e-bikes")")
-        }
-
-        return parts.joined(separator: " • ")
     }
 }
 

@@ -1307,7 +1307,8 @@ class LiveActivityService: ObservableObject {
                 rideStartedAtEpochSeconds: currentState.rideStartedAtEpochSeconds,
                 destinationAvailability: destinationAvailability
             )
-            guard refreshPreferences || availabilityChanged || alternativesChanged || destinationAvailability != currentState.destinationAvailability || updatedState.resolvedAlias != currentState.resolvedAlias else {
+            let freshnessChanged = updatedState.availabilityUpdatedAtEpochSeconds != currentState.availabilityUpdatedAtEpochSeconds
+            guard refreshPreferences || freshnessChanged || availabilityChanged || alternativesChanged || destinationAvailability != currentState.destinationAvailability || updatedState.resolvedAlias != currentState.resolvedAlias else {
                 continue
             }
             let staleDate = refreshPreferences
@@ -1516,16 +1517,30 @@ class LiveActivityService: ObservableObject {
         }
     }
 
+    var canStartJourneyActivity: Bool {
+        ActivityAuthorizationInfo().areActivitiesEnabled
+    }
+
     func startAdHocJourney(_ journey: AdHocJourney) async {
-        let bikePoint = await fetchBikePointIfPossible(dock: journey.startDock)
-        let alternatives = await scheduledJourneyAlternatives(for: bikePoint, phase: .start)
+        let phase = journey.activePhase ?? .start
+        let dock = phase == .start ? journey.startDock : journey.endDock
+        let bikePoint = await fetchBikePointIfPossible(dock: dock)
+        let alternatives = await scheduledJourneyAlternatives(for: bikePoint, phase: phase)
+        guard !Task.isCancelled else { return }
+        // A journey replaces a standalone watch at the same dock; it is not a toggle-off action.
+        if isActivityActive(for: dock.id) {
+            await endLiveActivityFromUserAction(
+                dockId: dock.id, dockName: dock.name, reason: "ad_hoc_journey_start"
+            )
+        }
+        guard !Task.isCancelled else { return }
         startLiveActivity(
             for: bikePoint,
             alias: nil,
             alternatives: alternatives,
-            scheduledJourneyPhase: .start,
+            scheduledJourneyPhase: phase,
             adHocJourneyId: journey.id,
-            destinationDock: journey.endDock
+            destinationDock: phase == .start ? journey.endDock : nil
         )
     }
 

@@ -7,7 +7,7 @@ struct ServiceStatusButton: View {
     private var iconColor: Color {
         switch severity {
         case .info:
-            return .blue
+            return .accentColor
         case .warning:
             return .orange
         case .error:

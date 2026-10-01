@@ -206,6 +206,8 @@ class MapViewModel {
         }
     }
 
+    var dockDirectory: [BikePoint] { Array(allBikePointsByID.values) }
+
     func bikePoint(for id: String) -> BikePoint? {
         allBikePointsByID[id]
     }

@@ -6,6 +6,8 @@ final class JourneyDockAvailabilityStore: ObservableObject {
     @Published private(set) var bikePointsByID: [String: BikePoint]
     @Published private(set) var allBikePoints: [BikePoint]
     @Published private(set) var isRefreshing = false
+    @Published private(set) var lastUpdateTime: Date?
+    private var updatedAtByID: [String: Date] = [:]
     private var cancellable: AnyCancellable?
     private var refreshID = UUID()
 
@@ -52,6 +54,7 @@ final class JourneyDockAvailabilityStore: ObservableObject {
 
         guard !dockIDs.isEmpty else {
             bikePointsByID = [:]
+            lastUpdateTime = nil
             isRefreshing = false
             return
         }
@@ -65,16 +68,22 @@ final class JourneyDockAvailabilityStore: ObservableObject {
             availableBikePoints[bikePoint.id] = bikePoint
         }
         bikePointsByID = availableBikePoints
+        lastUpdateTime = requestedIDs.allSatisfy { updatedAtByID[$0] != nil }
+            ? requestedIDs.compactMap { updatedAtByID[$0] }.min() : nil
         isRefreshing = true
 
         // Nearby alternatives come from the full directory, so refreshing only
         // the journey's selected docks leaves their availability frozen in time.
+        var directoryFetchedAt: Date?
+        var selectedFetchedAt: Date?
         let allBikePointsPublisher = fetchAllBikePoints(cacheBusting)
+            .handleEvents(receiveOutput: { _ in directoryFetchedAt = Date() })
             .map { $0.isEmpty ? nil : $0 }
             .replaceError(with: nil)
             .prepend(nil)
             .removeDuplicates()
         let selectedBikePointsPublisher = fetchBikePoints(uniqueDockIDs, cacheBusting)
+            .handleEvents(receiveOutput: { _ in selectedFetchedAt = Date() })
             .replaceError(with: [])
             .prepend([])
             .removeDuplicates()
@@ -108,6 +117,13 @@ final class JourneyDockAvailabilityStore: ObservableObject {
                     )
 
                     let refreshedRequestedPoints = uniqueDockIDs.compactMap { refreshedByID[$0] }
+                    let selectedIDs = Set(selectedBikePoints.map(\.id))
+                    for point in refreshedRequestedPoints {
+                        self.updatedAtByID[point.id] = selectedIDs.contains(point.id)
+                            ? selectedFetchedAt : directoryFetchedAt
+                    }
+                    self.lastUpdateTime = requestedIDs.allSatisfy { self.updatedAtByID[$0] != nil }
+                        ? requestedIDs.compactMap { self.updatedAtByID[$0] }.min() : nil
                     // Partial refreshes must not mark old nearby counts as a fresh cache.
                     self.didRefresh(refreshedRequestedPoints, snapshot == nil ? nil : self.allBikePoints)
                 }

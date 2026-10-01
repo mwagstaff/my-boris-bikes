@@ -11,6 +11,26 @@ enum AlternativeDockPurpose {
 struct AlternativeDockSelectionService {
     static let favoritePreviewCount = 3
 
+    /// Browsing beyond a custom list does not change its membership or order.
+    static func otherNearbyDocks(
+        for dock: BikePoint,
+        allBikePoints: [BikePoint],
+        excludingDockIDs: Set<String>
+    ) -> [BikePoint] {
+        let unique = Dictionary(allBikePoints.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        let origin = CLLocation(latitude: dock.lat, longitude: dock.lon)
+        let candidates = unique.values.filter {
+            $0.id != dock.id && !excludingDockIDs.contains($0.id) && $0.isAvailable
+        }
+        let distances: [(point: BikePoint, distance: CLLocationDistance)] = candidates.map { point in
+            (point, origin.distance(from: CLLocation(latitude: point.lat, longitude: point.lon)))
+        }
+        let ordered = distances.sorted {
+            $0.distance == $1.distance ? $0.point.id < $1.point.id : $0.distance < $1.distance
+        }
+        return ordered.prefix(20).map { $0.point }
+    }
+
     /// The editable Favourites list keeps saved positions, even when availability is zero or unknown.
     /// Availability-based recommendations for widgets and Live Activities use `alternatives` instead.
     static func savedAlternativesForFavorites(
@@ -35,7 +55,8 @@ struct AlternativeDockSelectionService {
         purpose: AlternativeDockPurpose,
         forceShow: Bool = false,
         maximumCount: Int? = nil,
-        filterCustomDocksByAvailability: Bool = true
+        filterCustomDocksByAvailability: Bool = true,
+        includeNearbyBeyondCustom: Bool = false
     ) -> [BikePoint] {
         let settings = settingsSnapshot()
         guard settings.enabled else { return [] }
@@ -51,9 +72,20 @@ struct AlternativeDockSelectionService {
             excludingFavoriteIDs: Set(favorites.map(\.id)),
             customDockIDs: customDockIDs
         )
-        let displayedCandidates = customDockIDs != nil && !filterCustomDocksByAvailability
+        var displayedCandidates = customDockIDs != nil && !filterCustomDocksByAvailability
             ? candidates
             : candidates.filter { meetsRequirement($0, purpose: purpose, settings: settings) }
+
+        if includeNearbyBeyondCustom, let customDockIDs {
+            let excludedIDs = Set(favorites.map(\.id)).union(customDockIDs)
+            let nearby = orderedCandidates(
+                for: bikePoint,
+                allBikePoints: allBikePoints,
+                excludingFavoriteIDs: excludedIDs,
+                customDockIDs: nil
+            ).filter { meetsRequirement($0, purpose: purpose, settings: settings) }
+            displayedCandidates.append(contentsOf: nearby)
+        }
 
         return Array(displayedCandidates.prefix(max(1, maximumCount ?? settings.maxCount)))
     }

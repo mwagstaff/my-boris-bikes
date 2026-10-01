@@ -1,0 +1,5 @@
+{
+  "tool": "Built-in image_gen",
+  "prompt": "Use case: photorealistic-natural. Asset type: a subtle bundled header background photograph for an iOS London cycle dock availability app. Create a photorealistic editorial photograph of a red Santander Cycles-style London hire bicycle, with its characteristic sturdy silver frame, red rear wheel guard, black saddle and dark front basket/handlebars, parked beside a quiet pale stone London streetscape. Landscape composition 3:2; bicycle occupies the right half, left half soft empty pale warm-grey space for a large black navigation title. Soft overcast daylight, neutral off-white and warm grey palette with restrained real red bicycle accents. Shallow depth of field, low contrast, gentle realistic detail, calm and minimal. No blue cast or blue sky. No people, no text, no logos, no watermark, no app UI. Keep useful photographic detail near the upper-right/centre-right; the lower portion should be softly unfocused and pale so the application can fade it into its background.",
+  "asset": "../BikeSpot London/BikeSpot London/Assets.xcassets/CycleHeader.imageset/cycle-header.jpg"
+}

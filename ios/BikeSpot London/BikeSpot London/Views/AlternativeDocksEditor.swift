@@ -89,6 +89,7 @@ struct AlternativeDocksEditor: View {
                 }
             }
             .environment(\.editMode, .constant(.active))
+            .bikeSpotBackground(showsPhoto: false)
             .navigationTitle("Nearby alternatives")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -184,11 +185,18 @@ struct AlternativeDocksEditButton: View {
     let dock: ScheduledJourneyDock
     var title = "Edit alternatives"
     var availabilityMode: DockPickerView.AvailabilityMode = .start
+    var onReveal: (() -> Void)? = nil
     @ObservedObject private var preferences = DockPreferencesService.shared
     @State private var isPresented = false
 
     var body: some View {
-        Button { isPresented = true } label: {
+        Button {
+            if let onReveal {
+                onReveal()
+            } else {
+                isPresented = true
+            }
+        } label: {
             HStack {
                 Label(title, systemImage: "list.bullet")
                 Spacer(minLength: 8)

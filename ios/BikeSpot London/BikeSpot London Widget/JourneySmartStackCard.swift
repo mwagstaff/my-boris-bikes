@@ -131,7 +131,7 @@ struct JourneySmartStackCard: View {
             Image(systemName: stale ? "clock.badge.exclamationmark" : "arrow.clockwise")
             if let date = lastUpdated {
                 Text(stale ? "Last update" : "Updated")
-                Text(date, style: .time)
+                Text(DockUpdateTime.string(from: date))
             } else {
                 Text("Awaiting dock data")
             }

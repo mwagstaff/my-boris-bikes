@@ -446,6 +446,7 @@ struct PreferencesView: View {
                 }
 #endif
             }
+            .bikeSpotBackground(showsPhoto: false)
             .navigationTitle("Preferences")
         }
 

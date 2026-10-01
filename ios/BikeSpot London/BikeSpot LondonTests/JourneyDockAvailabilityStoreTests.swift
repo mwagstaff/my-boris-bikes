@@ -5,6 +5,42 @@ import Testing
 
 @MainActor
 struct JourneyDockAvailabilityStoreTests {
+    @Test func updateTimeRequiresSuccessfulFetchAndSurvivesFailures() throws {
+        let start = try bikePoint("start", bikes: 7)
+        var shouldFail = false
+        let store = JourneyDockAvailabilityStore(
+            cachedBikePoints: [start],
+            fetchAllBikePoints: { _ in failure() },
+            fetchBikePoints: { _, _ in shouldFail ? failure() : success([start]) },
+            didRefresh: { _, _ in }
+        )
+        #expect(store.lastUpdateTime == nil)
+        store.refresh(dockIDs: [start.id], cacheBusting: true)
+        let firstUpdate = try #require(store.lastUpdateTime)
+        shouldFail = true
+        store.refresh(dockIDs: [start.id], cacheBusting: true)
+        #expect(store.lastUpdateTime == firstUpdate)
+        shouldFail = false
+        store.refresh(dockIDs: [start.id], cacheBusting: true)
+        #expect(try #require(store.lastUpdateTime) >= firstUpdate)
+        store.refresh(dockIDs: [])
+        #expect(store.lastUpdateTime == nil)
+    }
+
+    @Test func partialResponseDoesNotClaimAllDocksAreFresh() throws {
+        let start = try bikePoint("start", bikes: 7)
+        let end = try bikePoint("end", bikes: 2)
+        let store = JourneyDockAvailabilityStore(
+            cachedBikePoints: [start, end],
+            fetchAllBikePoints: { _ in failure() },
+            fetchBikePoints: { _, _ in success([start]) },
+            didRefresh: { _, _ in }
+        )
+        store.refresh(dockIDs: [start.id, end.id], cacheBusting: true)
+        #expect(store.lastUpdateTime == nil)
+        #expect(store.bikePointsByID[end.id] == end)
+    }
+
     @Test func refreshesNearbyDocksThatAreNotExplicitlyRequestedOnEveryRefresh() throws {
         let start = try bikePoint("start", bikes: 0)
         let oldBuckinghamGate = try bikePoint("buckingham-gate", bikes: 12, spaces: 3)

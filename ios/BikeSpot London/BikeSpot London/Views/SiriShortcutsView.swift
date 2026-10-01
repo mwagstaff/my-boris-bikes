@@ -73,7 +73,8 @@ struct SiriShortcutsView: View {
                 Text("A missing count or failed check is reported as unavailable, never as zero. Test Siri, AirPods and Watch while stationary.")
             }
         }
-        .navigationTitle("Siri & Shortcuts")
+        .bikeSpotBackground(showsPhoto: false)
+            .navigationTitle("Siri & Shortcuts")
         .sheet(isPresented: $pickingDestination) {
             DockPickerView(title: "Siri destination", availabilityMode: .end) { dock in
                 saveDestination(JourneyDock(id: dock.id, name: dock.name,

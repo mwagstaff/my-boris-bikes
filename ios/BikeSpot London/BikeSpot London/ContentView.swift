@@ -78,7 +78,8 @@ struct ContentView: View {
                     selectedDockId: $selectedDockId,
                     onShowServiceStatus: {
                         isServiceBannerDismissed = false
-                    }
+                    },
+                    onJourneyStarted: { selectedTabIndex = 2 }
                 )
                 .tabItem {
                     Image(systemName: "map")

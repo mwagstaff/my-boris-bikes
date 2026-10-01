@@ -3,6 +3,8 @@ import UIKit
 
 struct LiveActivityControlRow: View {
     let bikePoint: BikePoint
+    var compact = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var liveActivityService = LiveActivityService.shared
     @StateObject private var locationService = LocationService.shared
 
@@ -41,55 +43,23 @@ struct LiveActivityControlRow: View {
     }
 
     var body: some View {
-        let isActivityActive = liveActivityService.isActivityActive(for: bikePoint.id)
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "waveform.path.ecg")
-                    .font(.system(size: 13))
-                    .foregroundColor(.blue)
-                    .symbolEffect(.pulse, isActive: isActivityActive)
-
-                Text("Live Activity")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.secondary)
-
-                Spacer()
-
-                ForEach(availableDisplays) { display in
-                    let isSelected = currentDisplay == display
-                    Button {
-                        AnalyticsService.shared.track(
-                            action: .preferenceUpdate,
-                            screen: .favourites,
-                            dock: AnalyticsDockInfo.from(bikePoint),
-                            metadata: [
-                                "preference": "live_activity_primary_display_dock",
-                                "value": display.rawValue,
-                                "source": "favorites_row"
-                            ]
-                        )
-                        liveActivityService.setPrimaryDisplay(display, for: bikePoint.id)
-                        currentDisplay = display
-                    } label: {
-                        Text(display.title)
-                            .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                            .foregroundColor(isSelected ? .white : .blue)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(isSelected ? Color.blue : Color.blue.opacity(0.12))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(isSelected ? Color.blue : Color.blue.opacity(0.45), lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
+            let layout = compact && !dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(HStackLayout(spacing: 8))
+                : AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            layout {
+                Label("Live Activity", systemImage: "waveform.path.ecg")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                if compact {
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
+                    availabilityPicker.pickerStyle(.menu).labelsHidden()
+                } else {
+                    availabilityPicker.pickerStyle(.segmented)
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.vertical, compact ? 0 : 8)
 
             if shouldShowAlwaysAuthorizationWarning, let settingsURL {
                 Divider()
@@ -111,12 +81,29 @@ struct LiveActivityControlRow: View {
                 .padding(.vertical, 8)
             }
         }
-        .background(Color(.secondarySystemGroupedBackground))
         .onAppear {
             currentDisplay = liveActivityService.getPrimaryDisplay(for: bikePoint.id)
         }
         .onChange(of: liveActivityService.primaryDisplayChangeToken) { _, _ in
             currentDisplay = liveActivityService.getPrimaryDisplay(for: bikePoint.id)
+        }
+    }
+
+    private var availabilityPicker: some View {
+        Picker("Live Activity availability", selection: Binding(
+            get: { currentDisplay },
+            set: { display in
+                AnalyticsService.shared.track(
+                    action: .preferenceUpdate, screen: .favourites,
+                    dock: AnalyticsDockInfo.from(bikePoint),
+                    metadata: ["preference": "live_activity_primary_display_dock",
+                               "value": display.rawValue, "source": "favorites_row"]
+                )
+                liveActivityService.setPrimaryDisplay(display, for: bikePoint.id)
+                currentDisplay = display
+            }
+        )) {
+            ForEach(availableDisplays) { display in Text(display.title).tag(display) }
         }
     }
 }

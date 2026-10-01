@@ -4,73 +4,13 @@ import CoreLocation
 struct DistanceIndicator: View {
     let distance: CLLocationDistance?
     let distanceString: String
-    
-    private var distanceCategory: DistanceCategory {
-        guard let distance = distance else { return .unknown }
-        
-        switch distance {
-        case 0..<500:
-            return .veryClose
-        case 500..<1000:
-            return .close
-        case 1000..<1500:
-            return .moderate
-        case 1500..<3000:
-            return .far
-        default:
-            return .veryFar
-        }
-    }
+    var reference = "your location"
     
     var body: some View {
-        HStack(spacing: 6) {
-            // Visual distance indicator - horizontal bars
-            HStack(spacing: 2) {
-                ForEach(0..<5, id: \.self) { index in
-                    Rectangle()
-                        .fill(index < distanceCategory.barCount ? distanceCategory.color : Color.gray.opacity(0.3))
-                        .frame(width: 4, height: index < distanceCategory.barCount ? 12 - CGFloat(index) * 2 : 8)
-                        .clipShape(Capsule())
-                }
-            }
-            
-            // Distance text
-            Text(distanceString)
-                .font(.caption)
-                .foregroundColor(distanceCategory.color)
-                .fontWeight(.medium)
-        }
-    }
-}
-
-private enum DistanceCategory {
-    case veryClose
-    case close
-    case moderate
-    case far
-    case veryFar
-    case unknown
-    
-    var barCount: Int {
-        switch self {
-        case .veryClose: return 5
-        case .close: return 4
-        case .moderate: return 3
-        case .far: return 2
-        case .veryFar: return 1
-        case .unknown: return 0
-        }
-    }
-    
-    var color: Color {
-        switch self {
-        case .veryClose: return .green
-        case .close: return .mint
-        case .moderate: return .orange
-        case .far: return .purple
-        case .veryFar: return .red
-        case .unknown: return .gray
-        }
+        Label(distanceString, systemImage: distance == nil ? "location.slash" : "location")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel(distance == nil ? "Distance unavailable" : "\(distanceString) from \(reference)")
     }
 }
 

@@ -22,6 +22,16 @@ final class FavoriteJourneyService: ObservableObject {
         persist()
     }
 
+    func update(_ journey: FavoriteJourney, startDock: ScheduledJourneyDock, endDock: ScheduledJourneyDock) {
+        guard startDock.id != endDock.id,
+              let index = journeys.firstIndex(where: { $0.id == journey.id }) else { return }
+        journeys[index] = FavoriteJourney(
+            id: journey.id, startDock: startDock, endDock: endDock, createdAt: journey.createdAt
+        )
+        journeys.removeAll { $0.id != journey.id && $0.matches(startDock: startDock, endDock: endDock) }
+        persist()
+    }
+
     func remove(_ journey: FavoriteJourney) {
         journeys.removeAll { $0.id == journey.id }
         persist()

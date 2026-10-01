@@ -147,7 +147,8 @@ struct JourneyTestView: View {
                     .font(.footnote)
             }
         }
-        .navigationTitle("Test a Journey")
+        .bikeSpotBackground(showsPhoto: false)
+            .navigationTitle("Test a Journey")
         .onChange(of: settings) { _, updated in
             editTask?.cancel()
             guard service.enabled else { return }

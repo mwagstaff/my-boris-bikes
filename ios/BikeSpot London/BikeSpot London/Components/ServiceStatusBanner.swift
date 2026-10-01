@@ -7,7 +7,7 @@ struct ServiceStatusBanner: View {
     private var backgroundColor: Color {
         switch banner.severity {
         case .info:
-            return Color.blue.opacity(0.1)
+            return Color.secondary.opacity(0.08)
         case .warning:
             return Color.orange.opacity(0.1)
         case .error:
@@ -18,7 +18,7 @@ struct ServiceStatusBanner: View {
     private var iconColor: Color {
         switch banner.severity {
         case .info:
-            return Color.blue
+            return Color.accentColor
         case .warning:
             return Color.orange
         case .error:

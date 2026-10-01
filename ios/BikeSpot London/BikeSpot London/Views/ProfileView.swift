@@ -36,6 +36,7 @@ struct ProfileView: View {
                         .listRowSeparator(.hidden)
                 }
             }
+            .bikeSpotBackground()
             .navigationTitle("Profile")
             .navigationDestination(isPresented: $isShowingPreferences) {
                 PreferencesView()
@@ -103,7 +104,7 @@ private struct ProfileNavigationCard: View {
             }
             .buttonStyle(.plain)
         }
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .bikeSpotCard()
     }
 }
 

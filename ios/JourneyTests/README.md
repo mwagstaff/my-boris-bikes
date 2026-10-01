@@ -94,3 +94,65 @@ For both scheduled and ad hoc journeys, start at Watching start dock. On iPhone,
 ## Unified Watch Journey and cached loading
 
 Widget taps open the root Journey screen directly, combining the active dock, progress, alternatives and bottom actions. Verify there is no second Journey screen behind a back button. Reopen within five minutes: the previous primary and alternative counts should appear immediately with Updated age and Updating latest data while refreshing. A newer tapped activity may seed the primary dock before any network response. Older cached rows must be omitted. On network failure, recent rows remain with a saved-data warning and unchanged retrieval times. Changing bike preferences, thresholds or custom alternatives must invalidate the cached alternative list; advancing to the destination must never show start-dock alternatives. Test app termination/relaunch, offline refresh, larger text, and both real and simulated journeys. Xcode builds and paired-device verification remain manual.
+
+## Journey editing and alternative selection
+
+Run the focused service checks without building the Xcode project:
+
+```sh
+swiftc \
+  'ios/BikeSpot London/BikeSpot London/Models/BikePoint.swift' \
+  'ios/BikeSpot London/BikeSpot London/Models/ScheduledJourney.swift' \
+  'ios/BikeSpot London/BikeSpot London/Models/FavoriteJourney.swift' \
+  'ios/BikeSpot London/BikeSpot London/Models/AdHocJourney.swift' \
+  'ios/BikeSpot London/BikeSpot London/Services/FavoriteJourneyService.swift' \
+  'ios/BikeSpot London/BikeSpot London/Services/AdHocJourneyService.swift' \
+  ios/JourneyTests/JourneyEditingChecks.swift -o /tmp/bikespot-journey-editing-checks
+/tmp/bikespot-journey-editing-checks
+```
+
+These exercise production journey services with test doubles for Live Activities, server calls and Watch sync. They check favourite persistence and duplicate handling, alternative selection in both phases, stale actions, disabled Live Activities and scheduled-stop failure. They do not exercise ActivityKit or real server connectivity.
+
+After a manual Xcode build, verify:
+
+- Edit a favourite, change either dock, save, and relaunch. Cancel should leave the route unchanged.
+- From a map dock, use both journey actions, choose the missing dock, and save with “Start journey now” enabled. The app should open Journeys. Repeat while already watching the chosen start dock.
+- Open “Edit alternatives” from the map and confirm the saved list is also used in Journeys.
+- Select “Start journey here” during collection, then use Next leg. The selected start dock should be watched, followed by the original destination.
+- Select “End journey here” during the destination stage. The Live Activity, arrival monitoring and notifications should move to the selected dock without returning to collection.
+- For a scheduled trip, the current run stops and continues as an ad-hoc trip; the recurring route remains unchanged. Test loss of network during the stop and confirm an error is shown without starting a second trip.
+- Check larger Dynamic Type, VoiceOver and light/dark appearances. The map sheet must scroll to all actions, and alternative actions must wrap with usable touch targets.
+
+## Dock freshness labels and nearby refresh
+
+Favourites, the active iPhone Journey screen, and the Live Activity show **Updated HH:mm** in the device's time zone. The time is the last successful availability fetch, not confirmation that TfL's feed matches the physical dock. Failed requests retain the previous time; cached or seeded Live Activity counts without a known fetch time do not invent one.
+
+Foreground availability refreshes every 30 seconds, or approximately 15 seconds within 500 metres of a displayed dock when location is recent and accurate. Existing arrival-location callbacks also request the monitored dock directly, at most once every 15 seconds within 500 metres. This supplements server pushes when background location delivery is available; it does not guarantee background execution. Server polling remains 15 seconds with a 60-second unchanged-count heartbeat by default.
+
+Build manually in Xcode and verify:
+- Favourites, active Journey, Lock Screen, expanded Dynamic Island and Watch Smart Stack show the correct 24-hour time, including with a 12-hour device setting.
+- Unchanged counts still advance the time after successful refreshes. Going offline retains the old time.
+- Simulated fresh locations inside/outside 500 metres switch foreground cadence; stale/inaccurate location does not enable faster polling.
+- Ending or switching a monitored journey cancels/ignores the old dock's pending nearby request.
+- Check long dock aliases, larger Dynamic Type, Dark Mode and VoiceOver on device.
+
+Deploy the API change with the app so cached/end pushes preserve the original availability fetch time. iOS push delivery and TfL source freshness can still cause delays.
+
+
+## Alternative dock browsing
+
+Run from the repository root without an Xcode build:
+
+```sh
+swiftc \
+  'ios/BikeSpot London/BikeSpot London/Models/BikePoint.swift' \
+  'ios/BikeSpot London/BikeSpot London/Models/ScheduledJourney.swift' \
+  'ios/BikeSpot London/BikeSpot London/Models/FavoriteBikePoint.swift' \
+  'ios/BikeSpot London/BikeSpot London/Services/AlternativeDockSelectionService.swift' \
+  ios/JourneyTests/AlternativeDockSelectionChecks.swift -o /tmp/bikespot-alternative-checks
+/tmp/bikespot-alternative-checks
+```
+
+Checks custom ordering, missing and zero availability, exclusion of custom/primary docks, duplicate IDs, nearest-first ordering, stable distance ties and the 20-dock browsing limit.
+
+After a manual build, check Favourites and each Journey dock's **See all** dialog with a custom list (including an empty custom list). **Other nearby docks** must exclude custom entries without changing them. Verify map donuts persist across zoom levels: close-up labels show preferred bike types without a journey and spaces during a journey. Check the compact Favourites layout, alternative donut charts and full-width End journey buttons with light/dark appearances and larger text.

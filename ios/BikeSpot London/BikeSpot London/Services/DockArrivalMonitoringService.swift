@@ -1,3 +1,4 @@
+import Combine
 import CoreLocation
 import Foundation
 import UIKit
@@ -384,6 +385,10 @@ final class DockArrivalMonitoringService: NSObject {
     private var destinationApproachSpaceAvailabilityRequested = false
     private var locationUpdatesWerePaused = false
     private var innerRegionIsInside = false
+    private var nearbyAvailabilityRequest: AnyCancellable?
+    private var nearbyAvailabilityDockID: String?
+    private var lastNearbyAvailabilityAttempt: Date?
+    private var nearbyAvailabilityInFlight = false
 
     private override init() {
         super.init()
@@ -664,6 +669,11 @@ final class DockArrivalMonitoringService: NSObject {
         }
         logLocationEvent("monitor_stop", dock: monitoredDock, message: reason)
 
+        nearbyAvailabilityRequest?.cancel()
+        nearbyAvailabilityRequest = nil
+        nearbyAvailabilityInFlight = false
+        lastNearbyAvailabilityAttempt = nil
+        nearbyAvailabilityDockID = nil
         stopAllLocationUpdates()
         stopMonitoringDockRegion()
         stopBackgroundActivitySession()
@@ -1231,12 +1241,48 @@ final class DockArrivalMonitoringService: NSObject {
         return true
     }
 
+    /// Uses existing location delivery; does not keep the app awake solely to poll.
+    private func refreshNearbyAvailability(for dock: MonitoredDock, location: CLLocation, distance: CLLocationDistance) {
+        guard distance <= AppConstants.App.nearbyDockDistanceMeters,
+              location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 100,
+              abs(location.timestamp.timeIntervalSinceNow) <= 60 else { return }
+        if nearbyAvailabilityDockID != dock.dockId {
+            nearbyAvailabilityRequest?.cancel()
+            nearbyAvailabilityInFlight = false
+            lastNearbyAvailabilityAttempt = nil
+            nearbyAvailabilityDockID = dock.dockId
+        }
+        guard !nearbyAvailabilityInFlight,
+              lastNearbyAvailabilityAttempt.map({
+                  Date().timeIntervalSince($0) >= AppConstants.App.nearbyDockRefreshInterval
+              }) ?? true else { return }
+        lastNearbyAvailabilityAttempt = Date()
+        nearbyAvailabilityInFlight = true
+        nearbyAvailabilityRequest = TfLAPIService.shared.fetchBikePoint(id: dock.dockId, cacheBusting: true)
+            .sink(
+                receiveCompletion: { [weak self] completion in
+                    self?.nearbyAvailabilityInFlight = false
+                    if case .failure(let error) = completion {
+                        self?.logger.info("Nearby dock refresh failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                },
+                receiveValue: { [weak self] point in
+                    guard self?.monitoredDock?.dockId == dock.dockId else { return }
+                    Task { @MainActor [weak self] in
+                        guard self?.monitoredDock?.dockId == dock.dockId else { return }
+                        await LiveActivityService.shared.updateActiveActivitiesIfNeeded(using: [point])
+                    }
+                }
+            )
+    }
+
     private func checkArrival(with location: CLLocation) {
         Task { @MainActor in JourneySyncService.shared.updateLocation(location) }
         guard let dock = monitoredDock else { return }
 
         let dockLocation = CLLocation(latitude: dock.latitude, longitude: dock.longitude)
         let distance = location.distance(from: dockLocation)
+        refreshNearbyAvailability(for: dock, location: location, distance: distance)
         let compensatedDistance = DockArrivalHeuristics.compensatedDistance(
             from: distance,
             horizontalAccuracy: location.horizontalAccuracy

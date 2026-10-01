@@ -19,6 +19,19 @@ class HomeViewModel: BaseViewModel {
     private var lastAllBikePointsRefreshTime: Date?
     private var isAllBikePointsRefreshInFlight = false
     private var isSetup = false
+    private var isFavoriteRefreshInFlight = false
+    private var lastFavoriteRefreshAttempt: Date?
+
+    private var favoriteRefreshInterval: TimeInterval {
+        guard let location = locationService?.location,
+              location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 100,
+              abs(location.timestamp.timeIntervalSinceNow) <= 60 else { return AppConstants.App.refreshInterval }
+        let nearby = favoriteBikePoints.contains {
+            location.distance(from: CLLocation(latitude: $0.lat, longitude: $0.lon))
+                <= AppConstants.App.nearbyDockDistanceMeters
+        }
+        return nearby ? AppConstants.App.nearbyDockRefreshInterval : AppConstants.App.refreshInterval
+    }
     
     func setup(favoritesService: FavoritesService, locationService: LocationService) {
         guard !isSetup else { return }
@@ -87,8 +100,8 @@ class HomeViewModel: BaseViewModel {
     }
     
     func refreshIfStale() async {
-        // Check if data is stale (older than 60 seconds)
-        let staleThreshold: TimeInterval = 60
+        // Use the same freshness threshold as foreground polling.
+        let staleThreshold = favoriteRefreshInterval
         
         if let lastUpdate = lastUpdateTime {
             let timeSinceLastUpdate = Date().timeIntervalSince(lastUpdate)
@@ -139,9 +152,11 @@ class HomeViewModel: BaseViewModel {
     
     private func loadFavoriteData(forceRefresh: Bool = false) async {
         guard let favoritesService = favoritesService else { return }
-        
+        guard !isFavoriteRefreshInFlight else { return }
+
         let favoriteIds = favoritesService.favorites.map { $0.id }
         guard !favoriteIds.isEmpty else {
+            lastFavoriteRefreshAttempt = Date()
             favoriteBikePoints = []
             loadAllBikePointsIfNeeded(forceRefresh: forceRefresh)
             return
@@ -170,6 +185,8 @@ class HomeViewModel: BaseViewModel {
         // Fetch fresh data if needed
         if !idsToFetch.isEmpty {
             isLoading = true
+            isFavoriteRefreshInFlight = true
+            lastFavoriteRefreshAttempt = Date()
             clearError()
             
             TfLAPIService.shared
@@ -177,6 +194,7 @@ class HomeViewModel: BaseViewModel {
                 .sink(
                     receiveCompletion: { [weak self] completion in
                         self?.isLoading = false
+                        self?.isFavoriteRefreshInFlight = false
                         if case .failure(let error) = completion {
                             self?.setError(error)
                         }
@@ -272,18 +290,22 @@ class HomeViewModel: BaseViewModel {
     }
     
     private func startAutoRefresh() {
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: AppConstants.App.refreshInterval, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: AppConstants.App.nearbyDockRefreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 // Skip network refreshes while backgrounded — the app can stay
                 // alive in the background during dock arrival monitoring, and
                 // fresh data is loaded on return to foreground.
                 guard UIApplication.shared.applicationState != .background else { return }
-                self?.loadAllBikePointsIfNeeded(forceRefresh: false)
+                guard let self else { return }
+                guard self.lastFavoriteRefreshAttempt.map({
+                    Date().timeIntervalSince($0) >= self.favoriteRefreshInterval - 1
+                }) ?? true else { return }
+                self.loadAllBikePointsIfNeeded(forceRefresh: false)
                 // Always force refresh to ensure fresh data at every interval
-                await self?.loadFavoriteData(forceRefresh: true)
+                await self.loadFavoriteData(forceRefresh: true)
             }
         }
-        refreshTimer?.tolerance = AppConstants.App.refreshInterval * 0.1
+        refreshTimer?.tolerance = 1
         // Fire the timer immediately to ensure first update happens right away
         refreshTimer?.fire()
     }
@@ -322,6 +344,9 @@ class HomeViewModel: BaseViewModel {
                     self?.allBikePoints = installedBikePoints
                     let fetchedAt = Date()
                     self?.lastAllBikePointsRefreshTime = fetchedAt
+                    if self?.favoritesService?.favorites.isEmpty == true {
+                        self?.lastUpdateTime = fetchedAt
+                    }
                     self?.updateTflDataStaleWarning(from: installedBikePoints, fetchedAt: fetchedAt)
                     AllBikePointsCache.shared.save(installedBikePoints, savedAt: fetchedAt)
                     Task {

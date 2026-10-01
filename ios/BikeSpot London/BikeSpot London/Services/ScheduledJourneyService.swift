@@ -225,6 +225,12 @@ final class ScheduledJourneyService: ObservableObject {
                 responseType: ListResponse.self
             )
             journeys = response.journeys
+            for journey in journeys {
+                guard let run = journey.activeRun, let startedAt = run.startedAt else { continue }
+                let runKey = run.runKey ?? ISO8601DateFormatter().string(from: startedAt)
+                JourneyHistoryService.shared.record(id: "scheduled-\(journey.id)-\(runKey)", journeyID: journey.id,
+                    start: journey.startDock, end: journey.endDock, startedAt: startedAt, kind: .scheduled)
+            }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -312,6 +318,66 @@ final class ScheduledJourneyService: ObservableObject {
         ]
     }
 
+    private struct HistoryResponse: Decodable {
+        let entries: [JourneyHistoryEntry]
+        let hasMore: Bool
+    }
+
+    @Published private(set) var isLoadingHistory = false
+    @Published private(set) var hasMoreHistory = true
+    @Published private(set) var historyError: String?
+    private var historyCursor: JourneyHistoryEntry?
+
+    func refreshHistory() async {
+        guard !isLoadingHistory else { return }
+        historyCursor = nil
+        hasMoreHistory = true
+        await loadMoreHistory()
+    }
+
+    func loadMoreHistory() async {
+        guard !isLoadingHistory, hasMoreHistory else { return }
+        isLoadingHistory = true
+        defer { isLoadingHistory = false }
+        do {
+            try Task.checkCancellation()
+            var components = URLComponents()
+            components.queryItems = [URLQueryItem(name: "deviceId", value: deviceId)]
+            if let cursor = historyCursor {
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                components.queryItems?.append(URLQueryItem(name: "before", value: formatter.string(from: cursor.startedAt)))
+                components.queryItems?.append(URLQueryItem(name: "afterID", value: cursor.id))
+            }
+            let response = try await request(path: "/journey-history?\(components.percentEncodedQuery ?? "")",
+                method: "GET", body: nil, responseType: HistoryResponse.self)
+            try Task.checkCancellation()
+            JourneyHistoryService.shared.merge(response.entries)
+            historyCursor = response.entries.last
+            hasMoreHistory = response.hasMore && historyCursor != nil
+            historyError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            historyError = "Couldn’t load older scheduled trips. Your saved history is still available."
+            logger.warning("Couldn’t refresh journey history: \(error.localizedDescription)")
+        }
+    }
+
+    func unschedule(_ journey: ScheduledJourney, draft: ScheduledJourneyDraft) async throws {
+        guard let start = draft.startDock, let end = draft.endDock else { throw ScheduledJourneyError.invalidDraft }
+        // Keep a favourite before removing its schedule so the route can never be lost.
+        FavoriteJourneyService.shared.add(startDock: start, endDock: end)
+        _ = try await request(path: "/scheduled-journeys/\(journey.id)?deviceId=\(deviceId)",
+            method: "DELETE", body: nil, responseType: EmptyResponse.self)
+        if let dock = journey.activeRun?.dockId {
+            await LiveActivityService.shared.endLiveActivityFromUserAction(dockId: dock,
+                dockName: journey.activeRun?.dockName, reason: "journey_unscheduled")
+            JourneyHistoryService.shared.finish(journeyID: journey.id)
+        }
+        journeys.removeAll { $0.id == journey.id }
+    }
+
     func delete(_ journey: ScheduledJourney) async {
         do {
             _ = try await request(
@@ -326,7 +392,8 @@ final class ScheduledJourneyService: ObservableObject {
         }
     }
 
-    func stop(_ journey: ScheduledJourney) async {
+    @discardableResult
+    func stop(_ journey: ScheduledJourney) async -> Bool {
         do {
             _ = try await request(
                 path: "/scheduled-journeys/\(journey.id)/stop",
@@ -341,9 +408,12 @@ final class ScheduledJourneyService: ObservableObject {
                     reason: "scheduled_journey_stop"
                 )
             }
+            JourneyHistoryService.shared.finish(journeyID: journey.id)
             await refresh()
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -418,6 +488,7 @@ final class ScheduledJourneyService: ObservableObject {
     }
 
     func complete(journeyId: String) async {
+        JourneyHistoryService.shared.finish(journeyID: journeyId)
         do {
             _ = try await request(
                 path: "/scheduled-journeys/\(journeyId)/complete",

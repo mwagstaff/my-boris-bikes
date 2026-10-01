@@ -9,6 +9,19 @@ import ActivityKit
 import WidgetKit
 import SwiftUI
 
+private struct DockUpdatedLabel: View {
+    let timestamp: Int?
+
+    var body: some View {
+        if let timestamp, timestamp > 0 {
+            Text("Updated \(DockUpdateTime.string(from: Date(timeIntervalSince1970: Double(timestamp))))")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+    }
+}
+
 // MARK: - Helper Functions
 
 private func extractInitials(from text: String) -> String {
@@ -406,6 +419,10 @@ private struct WatchLiveActivityView: View {
                 }
             }
 
+            if journeyMetric == nil {
+                DockUpdatedLabel(timestamp: state.availabilityUpdatedAtEpochSeconds)
+            }
+
             // Nearby alternatives: up to 3 donut charts centered horizontally
             if journeyMetric == nil && !displayedAlternatives.isEmpty {
                 Divider()
@@ -713,6 +730,9 @@ private struct DockLiveActivityView: View {
             .padding(.top, 12)
             .padding(.bottom, 10)
 
+            DockUpdatedLabel(timestamp: state.availabilityUpdatedAtEpochSeconds)
+                .padding(.bottom, 6)
+
             Text("Tap to manage")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.white)
@@ -852,6 +872,8 @@ private struct ExpandedBottomView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            DockUpdatedLabel(timestamp: state.availabilityUpdatedAtEpochSeconds)
+
             Text(displayTitle(attributes: attributes, state: state))
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)

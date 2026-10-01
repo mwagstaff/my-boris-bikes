@@ -8,6 +8,16 @@
 import ActivityKit
 import Foundation
 
+/// The time availability was fetched, in the device's current time zone.
+enum DockUpdateTime {
+    static func string(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
 #if DEBUG
 /// Separate activity type so the simulator never registers a real server session or arrival monitor.
 struct JourneyDemoAttributes: ActivityAttributes {

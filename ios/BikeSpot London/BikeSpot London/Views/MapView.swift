@@ -1,40 +1,6 @@
 import SwiftUI
 import MapKit
 
-enum MapAvailabilityDisplayMode: String, CaseIterable, Identifiable {
-    case bikesOnly
-    case docksAndSpaces
-    
-    var id: String { rawValue }
-    
-    var label: String {
-        switch self { 
-        case .bikesOnly:
-            return "Bikes"
-        case .docksAndSpaces:
-            return "Docks + Spaces"
-        }
-    }
-    
-    var menuDescription: String {
-        switch self {
-        case .bikesOnly:
-            return "Show bike availability only"
-        case .docksAndSpaces:
-            return "Show free spaces as well as bikes"
-        }
-    }
-    
-    var iconName: String {
-        switch self {
-        case .bikesOnly:
-            return "bicycle"
-        case .docksAndSpaces:
-            return "square.grid.2x2"
-        }
-    }
-}
-
 struct MapView: View {
     @State private var viewModel = MapViewModel()
     @EnvironmentObject var locationService: LocationService
@@ -45,19 +11,22 @@ struct MapView: View {
     @State private var pendingDockDetailId: String?
     @Binding var selectedBikePointForMap: BikePoint?
     @Binding var selectedDockId: String?
-    @AppStorage(AppConstants.UserDefaults.mapDisplayModeKey) private var mapAvailabilityDisplayModeRawValue = MapAvailabilityDisplayMode.docksAndSpaces.rawValue
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue = BikeDataFilter.both.rawValue
     let onShowServiceStatus: (() -> Void)?
+    let onJourneyStarted: () -> Void
+    @State private var didStartJourney = false
 
     init(
         selectedBikePoint: Binding<BikePoint?> = .constant(nil),
         selectedDockId: Binding<String?> = .constant(nil),
-        onShowServiceStatus: (() -> Void)? = nil
+        onShowServiceStatus: (() -> Void)? = nil,
+        onJourneyStarted: @escaping () -> Void = {}
     ) {
         self._selectedBikePointForMap = selectedBikePoint
         self._selectedDockId = selectedDockId
         self.onShowServiceStatus = onShowServiceStatus
+        self.onJourneyStarted = onJourneyStarted
     }
     
     var body: some View {
@@ -71,25 +40,16 @@ struct MapView: View {
                     ForEach(viewModel.visibleBikePoints, id: \.id) { bikePoint in
                         let isFavorite = favoriteDockIds.contains(bikePoint.id)
 
-                        if viewModel.showsDetailedPins {
-                            Annotation(bikePoint.commonName, coordinate: bikePoint.coordinate) {
-                                BikePointMapPin(
-                                    bikePoint: bikePoint,
-                                    isFavorite: isFavorite,
-                                    displayMode: mapAvailabilityDisplayMode,
-                                    bikeDataFilter: bikeDataFilter
-                                )
-                            }
-                            .tag(bikePoint.id)
-                        } else {
-                            Marker(
-                                bikePoint.commonName,
-                                systemImage: "bicycle",
-                                coordinate: bikePoint.coordinate
+                        Annotation(bikePoint.commonName, coordinate: bikePoint.coordinate) {
+                            BikePointMapPin(
+                                bikePoint: bikePoint,
+                                isFavorite: isFavorite,
+                                isDetailed: viewModel.showsDetailedPins,
+                                bikeDataFilter: bikeDataFilter
                             )
-                            .tint(markerTint(isAvailable: bikePoint.isAvailable, isFavorite: isFavorite))
-                            .tag(bikePoint.id)
                         }
+                        .annotationTitles(viewModel.showsDetailedPins ? .automatic : .hidden)
+                        .tag(bikePoint.id)
                     }
 
                     UserAnnotation()
@@ -145,21 +105,8 @@ struct MapView: View {
                         self.pendingDockDetailId = nil
                     }
                 }
-                .onChange(of: mapAvailabilityDisplayModeRawValue) { _, newValue in
-                    AnalyticsService.shared.track(
-                        action: .mapDisplayModeUpdate,
-                        screen: .map,
-                        metadata: [
-                            "preference": AppConstants.UserDefaults.mapDisplayModeKey,
-                            "value": newValue
-                        ]
-                    )
-                }
-                
                 VStack {
                     HStack {
-                        pinDisplayModeMenu
-
                         Spacer()
 
                         if let banner = bannerService.currentBanner {
@@ -167,8 +114,7 @@ struct MapView: View {
                                 onShowServiceStatus?()
                             }
                             .padding(8)
-                            .background(Color(.systemBackground).opacity(0.9), in: Circle())
-                            .shadow(radius: 2, y: 1)
+                            .bikeSpotFloatingControl()
                         }
                     }
                     Spacer()
@@ -236,11 +182,10 @@ struct MapView: View {
                                     .font(.title2)
                                     .foregroundColor(.accentColor)
                                     .frame(width: 44, height: 44)
-                                    .background(Color(.systemBackground))
-                                    .clipShape(Circle())
-                                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+                                    .bikeSpotFloatingControl()
                                     .symbolEffect(.rotate, isActive: viewModel.isLoading)
                             }
+                            .accessibilityLabel("Refresh dock availability")
                             .disabled(viewModel.isLoading)
                             .opacity(viewModel.isLoading ? 0.7 : 1.0)
                             .padding(.bottom, 10)
@@ -251,10 +196,9 @@ struct MapView: View {
                                     .font(.title2)
                                     .foregroundColor(.accentColor)
                                     .padding(12)
-                                    .background(Color(.systemBackground))
-                                    .clipShape(Circle())
-                                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+                                    .bikeSpotFloatingControl()
                             }
+                            .accessibilityLabel("Show nearest dock")
                             .disabled(locationService.location == nil)
                             .opacity(locationService.location == nil ? 0.5 : 1.0)
                             .padding(.bottom, 10)
@@ -267,10 +211,9 @@ struct MapView: View {
                                     .font(.title2)
                                     .foregroundColor(.accentColor)
                                     .padding(12)
-                                    .background(Color(.systemBackground))
-                                    .clipShape(Circle())
-                                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+                                    .bikeSpotFloatingControl()
                             }
+                            .accessibilityLabel("Show my location")
                             .disabled(locationService.location == nil)
                             .opacity(locationService.location == nil ? 0.5 : 1.0)
                         }
@@ -292,15 +235,31 @@ struct MapView: View {
                     }
                 }
             }
-            .sheet(item: $selectedBikePointForDetail) { bikePoint in
-                BikePointDetailView(
-                    bikePoint: bikePoint,
-                    isFavorite: favoritesService.isFavorite(bikePoint.id)
-                ) { bikePoint in
-                    favoritesService.toggleFavorite(bikePoint)
+            .sheet(item: $selectedBikePointForDetail, onDismiss: {
+                if didStartJourney {
+                    didStartJourney = false
+                    onJourneyStarted()
                 }
-                .presentationDetents([.height(340), .medium])
+            }) { bikePoint in
+                BikePointDetailView(
+                    bikePoint: viewModel.bikePoint(for: bikePoint.id) ?? bikePoint,
+                    allBikePoints: viewModel.dockDirectory,
+                    updatedAt: viewModel.lastUpdateTime,
+                    isFavorite: favoritesService.isFavorite(bikePoint.id),
+                    onToggleFavorite: { favoritesService.toggleFavorite($0) },
+                    onDockSelected: { dock in
+                        viewModel.centerOnBikePoint(id: dock.id)
+                        selectedBikePointForDetail = dock
+                    },
+                    onJourneyStarted: {
+                        didStartJourney = true
+                        selectedBikePointForDetail = nil
+                    }
+                )
+                .id(bikePoint.id)
+                .presentationDetents([.fraction(0.8), .large])
                 .presentationDragIndicator(.visible)
+                .presentationCornerRadius(32)
             }
         }
     }
@@ -311,41 +270,6 @@ struct MapView: View {
         return formatter.string(from: date)
     }
     
-    private var mapAvailabilityDisplayMode: MapAvailabilityDisplayMode {
-        get { MapAvailabilityDisplayMode(rawValue: mapAvailabilityDisplayModeRawValue) ?? .bikesOnly }
-        set { mapAvailabilityDisplayModeRawValue = newValue.rawValue }
-    }
-    
-    private var mapAvailabilityDisplayModeBinding: Binding<MapAvailabilityDisplayMode> {
-        Binding(
-            get: { mapAvailabilityDisplayMode },
-            set: { mapAvailabilityDisplayModeRawValue = $0.rawValue }
-        )
-    }
-    
-    private var pinDisplayModeMenu: some View {
-        Menu {
-            Picker("Map pins show", selection: mapAvailabilityDisplayModeBinding) {
-                ForEach(MapAvailabilityDisplayMode.allCases) { mode in
-                    Label(mode.menuDescription, systemImage: mode.iconName)
-                        .tag(mode)
-                }
-            }
-        } label: { 
-            HStack(spacing: 6) {
-                Image(systemName: mapAvailabilityDisplayMode.iconName)
-                Text(mapAvailabilityDisplayMode.label)
-            }
-            .font(.caption)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color(.systemBackground).opacity(0.9), in: Capsule())
-            .shadow(radius: 2, y: 1)
-        }
-        .accessibilityLabel("Map pin data mode")
-        .accessibilityValue(mapAvailabilityDisplayMode.menuDescription)
-    }
-
     private func handleDockDeepLinkSelection(_ dockId: String) {
         viewModel.centerOnBikePoint(id: dockId)
 
@@ -367,294 +291,374 @@ struct MapView: View {
         selectedBikePointForDetail = bikePoint
     }
 
-    private func markerTint(isAvailable: Bool, isFavorite: Bool) -> Color {
-        if isFavorite {
-            return AppConstants.Colors.favoriteHighlight
-        }
-        return isAvailable ? .accentColor : .orange
-    }
+
 }
 
 struct BikePointMapPin: View {
     let bikePoint: MapBikePointSummary
     let isFavorite: Bool
-    let displayMode: MapAvailabilityDisplayMode
+    let isDetailed: Bool
     let bikeDataFilter: BikeDataFilter
-    
-    private let donutSize: CGFloat = 40
-    private var favoriteRingSize: CGFloat {
-        donutSize + 8
-    }
-    
+
+    private var donutSize: CGFloat { isDetailed ? 40 : 32 }
+
     var body: some View {
-        VStack(spacing: 4) {
-            ZStack {
-                if isFavorite {
-                        Circle()
-                            .stroke(AppConstants.Colors.favoriteHighlight, lineWidth: 3)
-                            .frame(width: favoriteRingSize, height: favoriteRingSize)
-                            .shadow(color: AppConstants.Colors.favoriteHighlight.opacity(0.4), radius: 4)
-                            .accessibilityHidden(true)
-                    }
-                    
-                    // Simplified donut chart for better performance
-                    SimplifiedDonutChart(
-                        standardBikes: bikePoint.standardBikes,
-                        eBikes: bikePoint.eBikes,
-                        emptySpaces: bikePoint.emptyDocks,
-                        size: donutSize,
-                        bikeDataFilter: bikeDataFilter
-                    )
-
-                if !bikePoint.isAvailable {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 15))
-                            .foregroundColor(.orange)
-                            .background(Color.black.opacity(0.0))
-                            .clipShape(Circle())
-                            .offset(x: -10, y: -10)
-                    }
+        ZStack {
+            if isFavorite {
+                Circle()
+                    .stroke(AppConstants.Colors.favoriteHighlight, lineWidth: 3)
+                    .frame(width: donutSize + 8, height: donutSize + 8)
+                    .accessibilityHidden(true)
             }
-            .accessibilityLabel(Text("\(bikePoint.commonName) dock details"))
-
-            if displayMode == .docksAndSpaces {
-                BikePointCapacityBadge(
-                    totalDocks: bikePoint.totalDocks,
-                    emptySpaces: bikePoint.emptyDocks
-                )
-                .allowsHitTesting(false)
+            SimplifiedDonutChart(standardBikes: bikePoint.standardBikes,
+                eBikes: bikePoint.eBikes, emptySpaces: bikePoint.emptyDocks,
+                size: donutSize, bikeDataFilter: bikeDataFilter)
+            if !bikePoint.isAvailable {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 15)).foregroundStyle(.orange)
+                    .offset(x: -10, y: -10)
             }
         }
-    }
-}
-
-struct BikePointCapacityBadge: View {
-    let totalDocks: Int
-    let emptySpaces: Int
-    
-    private var capacityColor: Color {
-        switch emptySpaces {
-        case 0:
-            return .red
-        case 1...3:
-            return .yellow
-        default:
-            return .green
-        }
-    }
-    
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(capacityColor)
-                .frame(width: 8, height: 8)
-                .foregroundColor(.secondary)
-            Text("\(emptySpaces) space\(emptySpaces == 1 ? "" : "s")")
-                .foregroundColor(.primary)
-        }
-        .font(.caption2)
-        .fontWeight(.semibold)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color(.systemBackground).opacity(0.95))
-        .clipShape(Capsule())
-        .shadow(color: .black.opacity(0.15), radius: 2, x: 0, y: 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(bikePoint.commonName) dock")
+        .accessibilityValue("\(bikeDataFilter.filteredCounts(standardBikes: bikePoint.standardBikes, eBikes: bikePoint.eBikes, emptySpaces: bikePoint.emptyDocks).totalBikes) selected bikes, \(bikePoint.emptyDocks) spaces")
+        .accessibilityHint("Show dock details")
     }
 }
 
 struct BikePointDetailView: View {
     let bikePoint: BikePoint
+    let allBikePoints: [BikePoint]
+    let updatedAt: Date?
     let isFavorite: Bool
     let onToggleFavorite: (BikePoint) -> Void
-    @EnvironmentObject var liveActivityService: LiveActivityService
+    let onDockSelected: (BikePoint) -> Void
+    var onJourneyStarted: () -> Void = {}
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @EnvironmentObject private var liveActivityService: LiveActivityService
+    @EnvironmentObject private var favoritesService: FavoritesService
+    @EnvironmentObject private var locationService: LocationService
+    @ObservedObject private var preferences = DockPreferencesService.shared
+    @State private var journeyEditorPresentation: JourneyEditorPresentation?
+    @State private var didStartJourney = false
+    @State private var showsAllDocks = false
+    @State private var showsOtherNearbyDocks = false
+    @State private var showsAlternativesEditor = false
 
-    @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
-    private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
-
-    @State private var currentPrimaryDisplay: LiveActivityPrimaryDisplay = .bikes
-
-    private var bikeDataFilter: BikeDataFilter {
-        BikeDataFilter(rawValue: bikeDataFilterRawValue) ?? .both
+    private var hasCustomAlternatives: Bool { preferences.customDockIDs(for: bikePoint.id) != nil }
+    private var nearbyDocks: [BikePoint] {
+        if let saved = preferences.customDocks(for: bikePoint.id) {
+            return AlternativeDockSelectionService.savedAlternativesForFavorites(
+                for: bikePoint.id, savedDocks: saved, allBikePoints: allBikePoints, showAll: true)
+        }
+        return AlternativeDockSelectionService.otherNearbyDocks(
+            for: bikePoint, allBikePoints: allBikePoints, excludingDockIDs: [])
     }
-
-    private var filteredCounts: BikeAvailabilityCounts {
-        bikeDataFilter.filteredCounts(
-            standardBikes: bikePoint.standardBikes,
-            eBikes: bikePoint.eBikes,
-            emptySpaces: bikePoint.emptyDocks
-        )
+    private var dialogDocks: [BikePoint] {
+        guard showsOtherNearbyDocks && hasCustomAlternatives else { return nearbyDocks }
+        return AlternativeDockSelectionService.otherNearbyDocks(for: bikePoint, allBikePoints: allBikePoints,
+            excludingDockIDs: Set(preferences.customDockIDs(for: bikePoint.id) ?? []))
     }
+    private var isWatching: Bool { liveActivityService.isActivityActive(for: bikePoint.id) }
+    private var journeyIsTracking: Bool { liveActivityService.currentNotificationSession?.scheduledJourneyPhase != nil }
 
-    private var hasAnyBikes: Bool {
-        filteredCounts.hasAnyBikes
-    }
-
-    private var hasAnyAvailability: Bool {
-        filteredCounts.hasAnyAvailability
-    }
-    
     var body: some View {
-        let isActive = liveActivityService.isActivityActive(for: bikePoint.id)
-
-        VStack(spacing: 16) {
-            VStack(spacing: 12) {
-                HStack(alignment: .top, spacing: 16) {
-                    DonutChart(
-                        standardBikes: bikePoint.standardBikes,
-                        eBikes: bikePoint.eBikes,
-                        emptySpaces: bikePoint.emptyDocks,
-                        size: 60
-                    )
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(bikePoint.commonName)
-                            .font(.headline)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                        
-                        if !bikePoint.isAvailable {
-                            Label {
-                                Text(bikePoint.isLocked ? "Locked for maintenance" : "Not available")
-                            } icon: {
-                                Image(systemName: "exclamationmark.triangle")
-                            }
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                        } else if !hasAnyBikes {
-                            Text(bikeDataFilter.noBikesMessage)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        if bikePoint.totalDocks > 0 {
-                            Text("\(bikePoint.emptyDocks) spaces available")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    
-                    Spacer()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                summary
+                actionGrid
+                if isWatching && !journeyIsTracking {
+                    LiveActivityControlRow(bikePoint: bikePoint, compact: true)
                 }
-                
-                if hasAnyAvailability {
-                    DonutChartLegend(
-                        standardBikes: bikePoint.standardBikes,
-                        eBikes: bikePoint.eBikes,
-                        emptySpaces: bikePoint.emptyDocks
-                    )
-                }
-                
-                Button {
-                    let action: AnalyticsAction = isFavorite ? .favoriteRemove : .favoriteAdd
-                    AnalyticsService.shared.track(
-                        action: action,
-                        screen: .map,
-                        dock: AnalyticsDockInfo.from(bikePoint),
-                        metadata: ["source": "detail_sheet"]
-                    )
-                    onToggleFavorite(bikePoint)
-                } label: {
-                    HStack {
-                        Image(systemName: isFavorite ? "star.fill" : "star")
-                        Text(isFavorite ? "Remove from Favorites" : "Add to Favorites")
-                    }
-                    .foregroundColor(isFavorite ? .red : .accentColor)
-                }
-                .buttonStyle(.bordered)
-
-                Button {
-                    let action: AnalyticsAction = isActive ? .liveActivityEnd : .liveActivityStart
-                    AnalyticsService.shared.track(
-                        action: action,
-                        screen: .map,
-                        dock: AnalyticsDockInfo.from(bikePoint),
-                        metadata: ["source": "detail_sheet"]
-                    )
-                    liveActivityService.startLiveActivity(for: bikePoint, alias: nil)
-                } label: {
-                    VStack(spacing: 6) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "waveform.path.ecg")
-                            Text(isActive ? "End Live Activity" : "Start Live Activity")
+                Divider()
+                nearbySection
+                Button { showsAlternativesEditor = true } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "list.bullet").font(.title2)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Edit alternatives").font(.subheadline.weight(.semibold))
+                            Text("Manage your dock options").font(.caption).foregroundStyle(.secondary)
                         }
-                        .font(.system(size: 16, weight: isActive ? .bold : .semibold))
-                        .foregroundColor(isActive ? .white : .accentColor)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .frame(maxWidth: .infinity)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(isActive ? AppConstants.Colors.standardBike : Color.clear)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .stroke(
-                                    isActive ? AppConstants.Colors.standardBike : .accentColor.opacity(0.35),
-                                    lineWidth: 1
-                                )
-                        )
-
-                        if isActive {
-                            Text("Tap this to end the live activity and stop receiving dock notifications")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: .infinity)
-                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold))
                     }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .padding(.vertical, 4)
                 }
-                .buttonStyle(.plain)
-
-                if isActive {
-                    VStack(alignment: .center, spacing: 8) {
-                        Text("Live Activity:")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.top, 8)
-
-                        HStack(spacing: 12) {
-                            ForEach(LiveActivityPrimaryDisplay.availableCases(for: bikeDataFilter)) { display in
-                                let isSelected = currentPrimaryDisplay == display
-                                Button {
-                                    AnalyticsService.shared.track(
-                                        action: .preferenceUpdate,
-                                        screen: .map,
-                                        dock: AnalyticsDockInfo.from(bikePoint),
-                                        metadata: [
-                                            "preference": "live_activity_primary_display_dock",
-                                            "value": display.rawValue
-                                        ]
-                                    )
-                                    liveActivityService.setPrimaryDisplay(display, for: bikePoint.id)
-                                    currentPrimaryDisplay = display
-                                } label: {
-                                    Text(display.title)
-                                        .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
-                                        .foregroundColor(isSelected ? .blue : .blue.opacity(0.7))
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 8)
-                                        .background(Color.clear)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .stroke(isSelected ? Color.blue.opacity(0.7) : Color.blue.opacity(0.3), lineWidth: 1)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, 4)
-                    .onAppear {
-                        currentPrimaryDisplay = liveActivityService.getPrimaryDisplay(for: bikePoint.id)
-                    }
+                .dockSheetButton()
+                if let updatedAt {
+                    Text("Updated \(DockUpdateTime.string(from: updatedAt))")
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
-            .padding()
-            .padding(.top, 16)
+            .padding(16)
+            .padding(.top, 8)
         }
-        .frame(maxHeight: 420) // Increased to accommodate live activity controls
-        .opacity(bikePoint.isAvailable ? 1.0 : 0.7)
+        .presentationBackground(reduceTransparency ? AnyShapeStyle(BikeSpotStyle.canvas) : AnyShapeStyle(.regularMaterial))
+        .sheet(item: $journeyEditorPresentation, onDismiss: {
+            if didStartJourney {
+                didStartJourney = false
+                onJourneyStarted()
+            }
+        }) { presentation in
+            AddJourneyView(presentation: presentation) { didStartJourney = true }
+        }
+        .sheet(isPresented: $showsAlternativesEditor) {
+            AlternativeDocksEditor(dock: ScheduledJourneyDock(bikePoint: bikePoint))
+        }
+        .sheet(isPresented: $showsAllDocks, onDismiss: { showsOtherNearbyDocks = false }) {
+            NavigationStack {
+                List {
+                    if hasCustomAlternatives {
+                        Toggle("Other nearby docks", isOn: $showsOtherNearbyDocks)
+                    }
+                    Section(showsOtherNearbyDocks ? "Other nearby docks · closest first" : hasCustomAlternatives ? "Custom alternatives" : "Closest first") {
+                        if dialogDocks.isEmpty {
+                            Text("No nearby docks available.").foregroundStyle(.secondary)
+                        }
+                        ForEach(dialogDocks) { dock in
+                            nearbyRow(dock)
+                        }
+                    }
+                    AlternativeDocksEditButton(dock: ScheduledJourneyDock(bikePoint: bikePoint))
+                }
+                .bikeSpotBackground(showsPhoto: false)
+                .navigationTitle("Nearby docks")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { showsAllDocks = false } }
+                }
+            }
+        }
+    }
+
+    private var summary: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            let layout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+                : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
+            layout {
+                DonutChart(standardBikes: bikePoint.standardBikes, eBikes: bikePoint.eBikes,
+                    emptySpaces: bikePoint.emptyDocks, size: 76, hasAvailability: bikePoint.hasAvailabilityData)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(favoritesService.displayName(for: bikePoint))
+                        .font(.headline).fixedSize(horizontal: false, vertical: true)
+                    if favoritesService.alias(for: bikePoint.id) != nil {
+                        Text(bikePoint.commonName).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Label(locationService.distanceString(to: bikePoint.coordinate), systemImage: "location")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").font(.body.weight(.medium))
+                        .frame(width: 32, height: 32)
+                }
+                .dockSheetButton()
+                .accessibilityLabel("Close dock details")
+            }
+            if bikePoint.hasAvailabilityData {
+                DonutChartLegend(standardBikes: bikePoint.standardBikes,
+                    eBikes: bikePoint.eBikes, emptySpaces: bikePoint.emptyDocks)
+            } else {
+                Text("Availability unavailable").font(.caption).foregroundStyle(.secondary)
+            }
+            if !bikePoint.isAvailable {
+                Label(bikePoint.isLocked ? "Locked for maintenance" : "Dock unavailable", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private var actionGrid: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 0), spacing: 10),
+                                 count: dynamicTypeSize.isAccessibilitySize ? 1 : 2), spacing: 10) {
+            Button {
+                journeyEditorPresentation = .fromDock(ScheduledJourneyDock(bikePoint: bikePoint), isStart: true)
+            } label: {
+                DockSheetActionLabel(title: "Start here", subtitle: "Choose a destination", symbol: "bicycle")
+            }
+            .dockSheetButton(prominent: true)
+            Button {
+                journeyEditorPresentation = .fromDock(ScheduledJourneyDock(bikePoint: bikePoint), isStart: false)
+            } label: {
+                DockSheetActionLabel(title: "End here", subtitle: "Choose a start dock", symbol: "flag.checkered")
+            }
+            .dockSheetButton()
+            Button {
+                AnalyticsService.shared.track(action: isWatching ? .liveActivityEnd : .liveActivityStart,
+                    screen: .map, dock: AnalyticsDockInfo.from(bikePoint), metadata: ["source": "detail_sheet"])
+                liveActivityService.startLiveActivity(for: bikePoint, alias: favoritesService.alias(for: bikePoint.id))
+            } label: {
+                DockSheetActionLabel(title: journeyIsTracking ? "Journey tracking" : isWatching ? "Stop watching" : "Watch this dock",
+                    subtitle: journeyIsTracking ? "Managed in Journeys" : isWatching ? "End live updates" : "Get live updates",
+                    symbol: "waveform.path.ecg")
+            }
+            .dockSheetButton()
+            .disabled(journeyIsTracking)
+            Button {
+                AnalyticsService.shared.track(action: isFavorite ? .favoriteRemove : .favoriteAdd,
+                    screen: .map, dock: AnalyticsDockInfo.from(bikePoint), metadata: ["source": "detail_sheet"])
+                onToggleFavorite(bikePoint)
+            } label: {
+                DockSheetActionLabel(title: isFavorite ? "Saved to favourites" : "Add to favourites",
+                    subtitle: isFavorite ? "Tap to remove" : "Save for later", symbol: isFavorite ? "star.fill" : "star")
+            }
+            .dockSheetButton()
+        }
+    }
+
+    private var nearbySection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(hasCustomAlternatives ? "Alternative docks" : "Nearby docks")
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Button { showsAllDocks = true } label: {
+                    HStack(spacing: 6) {
+                        Text("See all")
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(.caption.weight(.semibold)).frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(.tint)
+            }
+            if nearbyDocks.isEmpty {
+                Text(hasCustomAlternatives ? "No custom alternatives selected. See all to browse nearby docks." : "No nearby docks available.")
+                    .font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
+            }
+            ForEach(Array(nearbyDocks.prefix(3))) { dock in
+                Divider()
+                nearbyRow(dock).padding(.vertical, 6)
+            }
+        }
+    }
+
+    private func nearbyRow(_ dock: BikePoint) -> some View {
+        Button {
+            showsAllDocks = false
+            AnalyticsService.shared.trackDockTap(screen: .map, bikePoint: dock, source: "detail_nearby")
+            onDockSelected(dock)
+        } label: {
+            DockSheetNearbyRow(dock: dock, origin: bikePoint,
+                name: favoritesService.displayName(for: dock))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Show this dock’s details")
+    }
+}
+
+private struct DockSheetActionLabel: View {
+    let title: String
+    let subtitle: String
+    let symbol: String
+
+    var body: some View {
+        VStack(spacing: 5) {
+            Image(systemName: symbol).font(.title2)
+            Text(title).font(.subheadline.weight(.semibold))
+            Text(subtitle).font(.caption)
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity, minHeight: 68)
+        .padding(.vertical, 4)
+    }
+}
+
+private struct DockSheetNearbyRow: View {
+    let dock: BikePoint
+    let origin: BikePoint
+    let name: String
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
+    private var bikeFilterRawValue = BikeDataFilter.both.rawValue
+    @AppStorage(AlternativeDockSettings.minBikesKey, store: AlternativeDockSettings.userDefaultsStore)
+    private var minBikes = AlternativeDockSettings.defaultMinBikes
+    @AppStorage(AlternativeDockSettings.minEBikesKey, store: AlternativeDockSettings.userDefaultsStore)
+    private var minEBikes = AlternativeDockSettings.defaultMinEBikes
+    @AppStorage(AlternativeDockSettings.minSpacesKey, store: AlternativeDockSettings.userDefaultsStore)
+    private var minSpaces = AlternativeDockSettings.defaultMinSpaces
+
+    private var filter: BikeDataFilter { BikeDataFilter(rawValue: bikeFilterRawValue) ?? .both }
+    private var bikeCount: Int {
+        filter.filteredCounts(standardBikes: dock.standardBikes, eBikes: dock.eBikes, emptySpaces: dock.emptyDocks).totalBikes
+    }
+    private var threshold: Int {
+        switch filter {
+        case .both: minBikes + minEBikes
+        case .bikesOnly: minBikes
+        case .eBikesOnly: minEBikes
+        }
+    }
+
+    var body: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: 10))
+        layout {
+            DonutChart(standardBikes: dock.standardBikes, eBikes: dock.eBikes,
+                emptySpaces: dock.emptyDocks, size: 40, strokeWidth: 5, hasAvailability: dock.hasAvailabilityData)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(name).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+                let distance = CLLocation(latitude: origin.lat, longitude: origin.lon)
+                    .distance(from: CLLocation(latitude: dock.lat, longitude: dock.lon))
+                Text(distance < 1000 ? String(format: "%.0f m", distance)
+                     : String(format: "%.1f miles", distance / 1609.344))
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .accessibilityLabel("Distance from selected dock")
+                    .accessibilityValue(distance < 1000 ? String(format: "%.0f metres", distance)
+                        : String(format: "%.1f miles", distance / 1609.344))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if dock.hasAvailabilityData {
+                VStack(alignment: .leading, spacing: 4) {
+                    AvailabilityPill(count: bikeCount,
+                        label: filter == .eBikesOnly ? (bikeCount == 1 ? "e-bike" : "e-bikes") : (bikeCount == 1 ? "bike" : "bikes"),
+                        symbol: filter == .eBikesOnly ? "bolt.fill" : "bicycle", threshold: threshold)
+                    AvailabilityPill(count: dock.emptyDocks, label: dock.emptyDocks == 1 ? "space" : "spaces",
+                        symbol: "parkingsign.circle", threshold: minSpaces)
+                }
+            } else {
+                Text("Unavailable").font(.caption).foregroundStyle(.secondary)
+            }
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+        }
+        .frame(minHeight: 44)
+        .multilineTextAlignment(.leading)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct DockSheetButtonModifier: ViewModifier {
+    let prominent: Bool
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *), !reduceTransparency {
+            if prominent {
+                content.buttonStyle(.glassProminent).buttonBorderShape(.roundedRectangle(radius: 22))
+            } else {
+                content.buttonStyle(.glass).buttonBorderShape(.roundedRectangle(radius: 22))
+            }
+        } else if prominent {
+            content.buttonStyle(.borderedProminent).buttonBorderShape(.roundedRectangle(radius: 22))
+        } else {
+            content.buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 22))
+        }
+    }
+}
+
+private extension View {
+    func dockSheetButton(prominent: Bool = false) -> some View {
+        modifier(DockSheetButtonModifier(prominent: prominent))
     }
 }
 
@@ -663,4 +667,23 @@ struct BikePointDetailView: View {
         .environmentObject(LocationService.shared)
         .environmentObject(FavoritesService.shared)
         .environmentObject(BannerService.shared)
+}
+
+#Preview("Dock sheet actions") {
+    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+        Button {} label: {
+            DockSheetActionLabel(title: "Start here", subtitle: "Choose a destination", symbol: "bicycle")
+        }.dockSheetButton(prominent: true)
+        Button {} label: {
+            DockSheetActionLabel(title: "End here", subtitle: "Choose a start dock", symbol: "flag.checkered")
+        }.dockSheetButton()
+        Button {} label: {
+            DockSheetActionLabel(title: "Watch this dock", subtitle: "Get live updates", symbol: "waveform.path.ecg")
+        }.dockSheetButton()
+        Button {} label: {
+            DockSheetActionLabel(title: "Add to favourites", subtitle: "Save for later", symbol: "star")
+        }.dockSheetButton()
+    }
+    .padding().background(.regularMaterial)
+    .preferredColorScheme(.dark)
 }

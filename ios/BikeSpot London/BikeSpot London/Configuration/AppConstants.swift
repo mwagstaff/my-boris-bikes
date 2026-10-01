@@ -18,6 +18,8 @@ struct AppConstants {
     
     struct App {
         static let refreshInterval: TimeInterval = 30
+        static let nearbyDockRefreshInterval: TimeInterval = 15
+        static let nearbyDockDistanceMeters: Double = 500
         static let staleDataWarningThreshold: TimeInterval = 120
         static let tflApiStalenessThreshold: TimeInterval = 600 // 10 minutes
         static let tflApiStaleDockWarningRatio = 0.97

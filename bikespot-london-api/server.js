@@ -1,3 +1,4 @@
+const { buildAlternativeNotification } = require("./alternative-notifications");
 const { updateJourneyProgress, rideStartedAtForPhase } = require("./journey-progress");
 const express = require("express");
 const jwt = require("jsonwebtoken");
@@ -534,6 +535,7 @@ const dockPollers = new Map();
 // ── Scheduled Journeys Persistence ───────────────────────────────────
 let mongoClient = null;
 let scheduledJourneysCollection = null;
+let journeyHistoryCollection = null;
 let deviceDockPreferencesCollection = null;
 
 async function connectMongoIfConfigured() {
@@ -549,6 +551,8 @@ async function connectMongoIfConfigured() {
     await mongoClient.connect();
     const db = mongoClient.db(MONGODB_DB_NAME);
     scheduledJourneysCollection = db.collection(SCHEDULED_JOURNEYS_COLLECTION);
+    journeyHistoryCollection = db.collection("journey_history");
+    await journeyHistoryCollection.createIndex({ deviceId: 1, startedAt: -1, _id: 1 });
     deviceDockPreferencesCollection = db.collection("device_dock_preferences");
     await deviceDockPreferencesCollection.createIndex({ deviceId: 1 }, { unique: true });
     await scheduledJourneysCollection.createIndex({ deviceId: 1, deletedAt: 1 });
@@ -646,6 +650,40 @@ async function updateDeviceSessionDockPreferences(deviceId, preferences) {
   }
 }
 
+// Preserve each scheduled run before clearing it, including background completions.
+async function archiveScheduledJourneyRun(journey, endedAt = new Date()) {
+  if (!journeyHistoryCollection || !journey?.activeRun?.startedAt) return;
+  const startedAt = new Date(journey.activeRun.startedAt);
+  const id = `scheduled-${journey._id}-${journey.activeRun.runKey || startedAt.toISOString()}`;
+  await journeyHistoryCollection.updateOne(
+    { _id: id },
+    { $setOnInsert: {
+      deviceId: journey.deviceId, journeyID: journey._id.toString(),
+      startDock: journey.startDock, endDock: journey.endDock,
+      startedAt, endedAt, kind: "scheduled",
+    } },
+    { upsert: true }
+  );
+}
+
+app.get("/journey-history", async (req, res) => {
+  const collection = await requireScheduledJourneysCollection(res);
+  if (!collection || !journeyHistoryCollection) return;
+  const deviceId = deviceIdFromRequest(req);
+  if (!deviceId) return res.status(400).json({ error: "Missing deviceId" });
+  const query = { deviceId };
+  if (req.query.before && req.query.afterID) {
+    const before = new Date(req.query.before);
+    if (!Number.isFinite(before.getTime())) return res.status(400).json({ error: "Invalid cursor" });
+    query.$or = [{ startedAt: { $lt: before } }, { startedAt: before, _id: { $gt: String(req.query.afterID) } }];
+  }
+  const records = await journeyHistoryCollection.find(query).sort({ startedAt: -1, _id: 1 }).limit(51).toArray();
+  res.json({
+    entries: records.slice(0, 50).map(({ _id, deviceId: _deviceId, ...entry }) => ({ id: _id, ...entry })),
+    hasMore: records.length > 50,
+  });
+});
+
 async function completeScheduledJourneyFromArrivalSession(session, dockId) {
   if (
     !session ||
@@ -663,7 +701,7 @@ async function completeScheduledJourneyFromArrivalSession(session, dockId) {
   const journeyId = session.scheduledJourneyId;
   const journey = await scheduledJourneysCollection.findOne(
     { _id: new ObjectId(journeyId), deletedAt: { $exists: false } },
-    { projection: { endDock: 1, activeRun: 1 } }
+    { projection: { startDock: 1, endDock: 1, activeRun: 1, deviceId: 1 } }
   );
   if (!journey?.activeRun?.phase) {
     appendDiagnosticJsonLine("scheduled_journey_completion_skipped_from_arrival", {
@@ -688,6 +726,7 @@ async function completeScheduledJourneyFromArrivalSession(session, dockId) {
     return false;
   }
 
+  await archiveScheduledJourneyRun(journey);
   const result = await scheduledJourneysCollection.updateOne(
     {
       _id: new ObjectId(journeyId),
@@ -1151,7 +1190,10 @@ async function fetchDockData(dockId) {
     { cb: Date.now() },
     { dockIdForPolling: dockId }
   );
-  return effectiveDockDataForDock(dockId, bikePoint);
+  return {
+    ...effectiveDockDataForDock(dockId, bikePoint),
+    availabilityUpdatedAtEpochSeconds: Math.floor(Date.now() / 1000),
+  };
 }
 
 function parseBikePointData(data) {
@@ -1198,6 +1240,8 @@ const loadAlternativeDockSnapshots = createDockSnapshotLoader(async () => {
     const properties = dock.additionalProperties || [];
     return {
       id: dock.id,
+      latitude: dock.lat,
+      longitude: dock.lon,
       ...effectiveDockDataForDock(dock.id, dock),
       isAvailable: properties.some((item) => item.key === "Installed" && item.value === "true") &&
         !properties.some((item) => item.key === "Locked" && item.value === "true"),
@@ -1218,6 +1262,8 @@ function scheduleStartArrivalDestinationSpaceAlert({
   startDockName,
   endDock,
   minimumSpaces,
+  deviceId,
+  dockPreferences,
   delayMs,
   scheduledJourneyId,
   adHocJourneyId,
@@ -1247,7 +1293,9 @@ function scheduleStartArrivalDestinationSpaceAlert({
         buildType,
         alertBody,
         endDock.id,
-        resolvedDockName
+        resolvedDockName,
+        { deviceId, dockPreferences, primaryDisplay: "spaces", minimumThresholds: { spaces: minimumSpaces } },
+        endDockData
       );
 
       const diagnosticKind =
@@ -1654,7 +1702,8 @@ function contentStateWithAlternatives(data, session) {
     activeDockAlias,
     activeJourneyPhase: session?.scheduledJourneyPhase || null,
     primaryDisplay: sanitizePrimaryDisplay(session?.primaryDisplay),
-    availabilityUpdatedAtEpochSeconds: Math.floor(Date.now() / 1000),
+    // Cached or client-seeded counts must not acquire a new fetch time.
+    availabilityUpdatedAtEpochSeconds: data.availabilityUpdatedAtEpochSeconds ?? null,
     destinationAvailability: session?.scheduledJourneyPhase === "start" ? session.destinationAvailability || null : null,
     journeyProgress: session?.scheduledJourneyPhase === "end" ? session.journeyProgress || null : null,
     rideStartedAtEpochSeconds: session?.scheduledJourneyPhase === "end" ? session.rideStartedAtEpochSeconds ?? null : null,
@@ -2093,7 +2142,7 @@ async function sendScheduledJourneyInitialAvailabilityPush(journey) {
   if (!deviceToken) return null;
 
   const dockData = await fetchDockData(journey.startDock.id);
-  return sendAlertPush(
+  const result = await sendAlertPush(
     deviceToken,
     journey.buildType === "production" ? "production" : "development",
     "Scheduled journey",
@@ -2105,6 +2154,14 @@ async function sendScheduledJourneyInitialAvailabilityPush(journey) {
     "scheduled_journey_initial_availability",
     "scheduled journey initial availability"
   );
+  await sendAlternativeAvailabilityPush({
+    deviceToken,
+    buildType: result.buildType,
+    deviceId: journey.deviceId,
+    primaryDisplay: journey.bikeDataFilter === "bikesOnly" ? "bikes"
+      : journey.bikeDataFilter === "eBikesOnly" ? "eBikes" : "allBikes",
+  }, journey.startDock.id, journey.startDock.name, dockData);
+  return result;
 }
 
 
@@ -2194,7 +2251,7 @@ async function sendScheduledJourneyDestinationAvailabilityPushForSession(session
   const deviceToken = normalizeApnsDeviceToken(session?.deviceToken);
   if (!deviceToken) return null;
 
-  return sendAlertPush(
+  const result = await sendAlertPush(
     deviceToken,
     session.buildType === "production" ? "production" : "development",
     "Scheduled journey",
@@ -2209,6 +2266,8 @@ async function sendScheduledJourneyDestinationAvailabilityPushForSession(session
       },
     }
   );
+  await sendAlternativeAvailabilityPush({ ...session, buildType: result.buildType, primaryDisplay: "spaces" }, dockId, dockName, dockData);
+  return result;
 }
 
 async function sendAlertPush(
@@ -2294,15 +2353,52 @@ async function sendAlertPush(
   }
 }
 
+async function sendAlternativeAvailabilityPush(session, dockId, dockName, dockData) {
+  if (!dockData || !session.deviceToken) return;
+  try {
+    const preferences = session.dockPreferences || await loadDeviceDockPreferences(session.deviceId);
+    const settings = preferences?.settings;
+    const thresholds = session.minimumThresholds || {
+      bikes: settings?.minBikes,
+      eBikes: settings?.minEBikes,
+      spaces: settings?.minSpaces,
+    };
+    const primaryDisplay = sanitizePrimaryDisplay(session.primaryDisplay);
+    const threshold = minimumThresholdForDisplay(thresholds, primaryDisplay);
+    if (threshold <= 0 || primaryValueForDisplay(dockData, primaryDisplay) >= threshold) return;
+    const body = buildAlternativeNotification({
+      dockId,
+      primaryDisplay,
+      preferences,
+      docksById: await loadAlternativeDockSnapshots(),
+    });
+    if (!body) return;
+    await sendAlertPush(
+      session.deviceToken,
+      session.buildType,
+      "Alternative docks",
+      body,
+      "availability_alternatives",
+      "availability alternatives",
+      { customPayload: { dockId, dockName: sanitizeDockName(dockName) || dockId } }
+    );
+  } catch (error) {
+    // A failed follow-up must not fail or retry the already-delivered main alert.
+    logger.warn(`Failed to send alternative dock availability for ${dockId}: ${error.message}`);
+  }
+}
+
 async function sendAvailabilityAlertPush(
   deviceToken,
   buildType,
   alertBody,
   dockId,
-  dockName
+  dockName,
+  session,
+  dockData
 ) {
   const sanitizedDockName = sanitizeDockName(dockName);
-  return sendAlertPush(
+  const result = await sendAlertPush(
     deviceToken,
     buildType,
     "Dock availability update",
@@ -2317,6 +2413,8 @@ async function sendAvailabilityAlertPush(
       },
     }
   );
+  await sendAlternativeAvailabilityPush({ ...session, deviceToken, buildType: result.buildType }, dockId, dockName, dockData);
+  return result;
 }
 
 async function sendArrivalConfirmationPush(deviceToken, buildType, dockName) {
@@ -2589,7 +2687,9 @@ async function pollDock(dockId) {
                 session.buildType,
                 alertMessage,
                 dockId,
-                data.dockName
+                data.dockName,
+                session,
+                data
               )
                 .then((result) => {
                   if (result.buildType !== session.buildType) {
@@ -4011,6 +4111,8 @@ app.delete("/scheduled-journeys/:id", async (req, res) => {
     return res.status(400).json({ error: "Missing deviceId or invalid journey id" });
   }
 
+  const existing = await collection.findOne({ _id: new ObjectId(journeyId), deviceId, deletedAt: { $exists: false } });
+  if (existing) await endActiveScheduledJourneyRun(existing, "schedule_removed");
   const result = await collection.findOneAndUpdate(
     { _id: new ObjectId(journeyId), deviceId, deletedAt: { $exists: false } },
     { $set: { deletedAt: new Date(), activeRun: null, updatedAt: new Date() } },
@@ -4047,6 +4149,7 @@ app.post("/scheduled-journeys/:id/activate", async (req, res) => {
 
   // Keep "Start now" separate from the recurring occurrence. If this run
   // finishes early, completing it must not pause a later scheduled start.
+  await archiveScheduledJourneyRun(journey);
   const runKey = manualScheduledJourneyRunKey();
   if (req.body?.remoteStart !== false) {
     try {
@@ -4110,6 +4213,7 @@ app.post("/scheduled-journeys/:id/stop", async (req, res) => {
   });
   if (!journey) return res.status(404).json({ error: "Scheduled journey not found" });
 
+  await archiveScheduledJourneyRun(journey);
   const runKey = journey.activeRun?.runKey || scheduledRunKey(journey);
   await collection.updateOne(
     { _id: journey._id },
@@ -4210,6 +4314,7 @@ app.post("/scheduled-journeys/:id/complete", async (req, res) => {
   });
   if (!journey) return res.status(404).json({ error: "Scheduled journey not found" });
 
+  await archiveScheduledJourneyRun(journey);
   const runKey = journey.activeRun?.runKey || scheduledRunKey(journey);
   const result = await collection.findOneAndUpdate(
     { _id: journey._id, deviceId, deletedAt: { $exists: false } },
@@ -5107,6 +5212,8 @@ app.post("/live-activity/start-arrival", (req, res) => {
     startDockName,
     endDock,
     minimumSpaces,
+    deviceId: effectiveSession?.deviceId || deviceIdFromRequest(req),
+    dockPreferences: effectiveSession?.dockPreferences,
     delayMs,
     scheduledJourneyId:
       typeof req.body?.scheduledJourneyId === "string" ? req.body.scheduledJourneyId : null,
@@ -5627,6 +5734,7 @@ app.get("/complication/status", (_req, res) => {
 // Ends any live tracked push sessions for a scheduled journey's docks and clears
 // its activeRun, so no further Live Activity/notification pushes go out for it.
 async function endActiveScheduledJourneyRun(journey, reason) {
+  await archiveScheduledJourneyRun(journey);
   for (const dockId of [journey.startDock.id, journey.endDock.id]) {
     await endTrackedSessionsForDock(
       dockId,

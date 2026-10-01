@@ -2,20 +2,6 @@ import Combine
 import MapKit
 import SwiftUI
 
-private enum CurrentActiveJourney {
-    case scheduled(ScheduledJourney)
-    case adHoc(AdHocJourney)
-
-    var activityDate: Date {
-        switch self {
-        case .scheduled(let journey):
-            return journey.activeRun?.startedAt ?? journey.updatedAt ?? .distantPast
-        case .adHoc(let journey):
-            return journey.lastStartedAt ?? journey.createdAt
-        }
-    }
-}
-
 struct JourneysView: View {
     @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
     @StateObject private var adHocJourneyService = AdHocJourneyService.shared
@@ -24,19 +10,46 @@ struct JourneysView: View {
     @ObservedObject private var dockPreferences = DockPreferencesService.shared
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var locationService: LocationService
+    @EnvironmentObject private var favoritesService: FavoritesService
+    @StateObject private var historyService = JourneyHistoryService.shared
+    @State private var historyFilter: JourneyHistoryEntry.Kind?
+    @State private var historyLimit = 30
+    @State private var selectedSection: JourneySection = .saved
     @State private var journeyEditorPresentation: JourneyEditorPresentation?
     @State private var journeyToDelete: ScheduledJourney?
+    @State private var isSwitchingDock = false
+    @State private var lastAvailabilityRefreshAttempt: Date?
+    @State private var dockSwitchError: String?
     @State private var favoriteJourneyToDelete: FavoriteJourney?
     private let onDockSelected: (String) -> Void
     private let dockAvailabilityRefreshTimer = Timer.publish(
-        every: AppConstants.App.refreshInterval,
-        tolerance: AppConstants.App.refreshInterval * 0.1,
+        every: AppConstants.App.nearbyDockRefreshInterval,
+        tolerance: 1,
         on: .main,
         in: .common
     ).autoconnect()
 
     init(onDockSelected: @escaping (String) -> Void = { _ in }) {
         self.onDockSelected = onDockSelected
+    }
+
+    private enum JourneySection: String, CaseIterable, Identifiable {
+        case current = "Current"
+        case saved = "Favourites"
+        case history = "History"
+        var id: String { rawValue }
+    }
+
+    private var activeJourneyID: String? {
+        switch currentActiveJourney {
+        case .scheduled(let journey): return "scheduled-\(journey.id)"
+        case .adHoc(let journey): return "ad-hoc-\(journey.id)"
+        case nil: return nil
+        }
+    }
+
+    private var availableSections: [JourneySection] {
+        activeJourneyID == nil ? [.saved, .history] : JourneySection.allCases
     }
 
     private var scheduledJourneysByStartDistance: [ScheduledJourney] {
@@ -60,10 +73,6 @@ struct JourneysView: View {
 
             return firstDistance < secondDistance
         }
-    }
-
-    private var adHocJourneysByStartDistance: [AdHocJourney] {
-        journeysByStartDistance(adHocJourneyService.recentJourneys.filter { !$0.isActive }) { $0.startDock }
     }
 
     private var currentActiveJourney: CurrentActiveJourney? {
@@ -93,17 +102,54 @@ struct JourneysView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if let currentActiveJourney {
+            VStack(spacing: 0) {
+                Picker("Journeys", selection: $selectedSection) {
+                    ForEach(availableSections) { section in
+                        Text(section.rawValue).tag(section)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                .padding(.bottom, 8)
+
+                if selectedSection == .current, let currentActiveJourney {
                     activeJourneyScreen(currentActiveJourney)
                 } else {
                     normalJourneysList
                 }
             }
+            .bikeSpotBackground()
+            .disabled(isSwitchingDock)
+            .alert("Couldn’t change dock", isPresented: Binding(
+                get: { dockSwitchError != nil },
+                set: { if !$0 { dockSwitchError = nil } }
+            )) {
+                Button("OK", role: .cancel) { dockSwitchError = nil }
+            } message: {
+                Text(dockSwitchError ?? "Please try again.")
+            }
             .navigationTitle("Journeys")
+            .navigationBarTitleDisplayMode(selectedSection == .current ? .inline : .large)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { journeyEditorPresentation = .add } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("New journey")
+                }
+            }
+            .onChange(of: activeJourneyID, initial: true) { _, id in
+                if id != nil {
+                    selectedSection = .current
+                } else if selectedSection == .current {
+                    selectedSection = .saved
+                }
+            }
             .task {
                 locationService.startLocationUpdates()
                 await scheduledJourneyService.refresh()
+            }
+            .task(id: selectedSection) {
+                if selectedSection == .history { await scheduledJourneyService.refreshHistory() }
             }
             .task(id: activeDockIDs) {
                 refreshActiveDockAvailability(cacheBusting: true)
@@ -111,7 +157,10 @@ struct JourneysView: View {
             .onReceive(dockAvailabilityRefreshTimer) { _ in
                 // Skip network refreshes while backgrounded; the scenePhase
                 // handler below refreshes on return to active.
-                guard scenePhase == .active else { return }
+                guard scenePhase == .active, !dockAvailabilityStore.isRefreshing else { return }
+                let interval = isNearActiveDock
+                    ? AppConstants.App.nearbyDockRefreshInterval : AppConstants.App.refreshInterval
+                guard lastAvailabilityRefreshAttempt.map({ Date().timeIntervalSince($0) >= interval - 1 }) ?? true else { return }
                 refreshActiveDockAvailability(cacheBusting: true)
             }
             .onChange(of: scenePhase) { _, phase in
@@ -122,6 +171,7 @@ struct JourneysView: View {
                 }
             }
             .refreshable {
+                if selectedSection == .history { await scheduledJourneyService.refreshHistory() }
                 await scheduledJourneyService.refresh()
                 refreshActiveDockAvailability(cacheBusting: true)
             }
@@ -165,65 +215,106 @@ struct JourneysView: View {
 
     private var normalJourneysList: some View {
         List {
-            Section {
-                Button { journeyEditorPresentation = .add } label: {
-                    Label("New journey", systemImage: "plus.circle.fill")
-                }
-            }
-
-            Section {
-                if favoriteJourneysByClosestDockDistance.isEmpty {
-                    ContentUnavailableView(
-                        "No favourite journeys",
-                        systemImage: "star",
-                        description: Text("Save routes here for quick access.")
-                    )
-                } else {
-                    ForEach(favoriteJourneysByClosestDockDistance) { journey in
-                        favoriteJourneyRow(journey)
+            if selectedSection == .saved {
+                Section("Favourite routes") {
+                    if favoriteJourneysByClosestDockDistance.isEmpty {
+                        Text("Save a favourite route when creating a journey.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(favoriteJourneysByClosestDockDistance) { favoriteJourneyRow($0) }
                     }
                 }
-            } header: {
-                Text("Favourite journeys")
-            }
-
-            Section {
-                if scheduledJourneysByStartDistance.isEmpty {
-                    ContentUnavailableView(
-                        "No scheduled journeys",
-                        systemImage: "calendar.badge.clock",
-                        description: Text("Add your regular routes here.")
-                    )
-                } else {
-                    ForEach(scheduledJourneysByStartDistance) { journey in
-                        scheduledJourneyRow(journey)
+                Section {
+                    if scheduledJourneyService.journeys.isEmpty {
+                        ContentUnavailableView("No scheduled journeys", systemImage: "calendar",
+                            description: Text("Add a regular route and choose the days you ride."))
+                    } else {
+                        ForEach(scheduledJourneyService.journeys.filter(\.isActive)) { journey in
+                            HStack {
+                                Button { selectedSection = .current } label: {
+                                    Label("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService)) · Active", systemImage: "bicycle")
+                                }
+                                Spacer()
+                                Button("Edit") { journeyEditorPresentation = .edit(journey) }
+                                    .buttonStyle(.borderless)
+                            }
+                        }
+                        ForEach(scheduledJourneysByStartDistance) { scheduledJourneyRow($0) }
+                    }
+                } header: {
+                    Text("Scheduled journeys")
+                }
+            } else {
+                Section {
+                    Picker("Filter history", selection: $historyFilter) {
+                        Text("All journeys").tag(Optional<JourneyHistoryEntry.Kind>.none)
+                        ForEach(JourneyHistoryEntry.Kind.allCases, id: \.self) { kind in
+                            Text(kind.title).tag(Optional(kind))
+                        }
+                    }
+                    .onChange(of: historyFilter) { _, _ in historyLimit = 30 }
+                }
+                Section {
+                    if filteredHistory.isEmpty {
+                        ContentUnavailableView("No journeys yet", systemImage: "clock.arrow.circlepath",
+                            description: Text("Journeys you start will appear here automatically."))
+                    }
+                    ForEach(filteredHistory.prefix(historyLimit)) { entry in
+                        historyRow(entry)
+                    }
+                    if historyLimit < filteredHistory.count {
+                        ProgressView().frame(maxWidth: .infinity)
+                            .onAppear { historyLimit += 30 }
+                    } else if let error = scheduledJourneyService.historyError {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(error).font(.caption).foregroundStyle(.secondary)
+                            Button("Retry") { Task { await scheduledJourneyService.loadMoreHistory() } }
+                        }
+                    } else if scheduledJourneyService.hasMoreHistory {
+                        ProgressView().frame(maxWidth: .infinity)
+                            .task(id: historyService.entries.count) { await scheduledJourneyService.loadMoreHistory() }
                     }
                 }
-            } header: {
-                Text("Scheduled Journeys")
-            }
-
-            Section {
-                if adHocJourneysByStartDistance.isEmpty {
-                    ContentUnavailableView(
-                        "No ad-hoc journeys",
-                        systemImage: "clock.arrow.circlepath",
-                        description: Text("Save or start a one-off journey and the latest 10 will appear here.")
-                    )
-                } else {
-                    ForEach(adHocJourneysByStartDistance) { journey in
-                        adHocJourneyRow(journey)
-                    }
-                }
-            } header: {
-                Text("Ad-hoc journeys")
             }
         }
+        .listStyle(.insetGrouped)
+        .listSectionSpacing(20)
+        .scrollContentBackground(.hidden)
+    }
+
+    private var filteredHistory: [JourneyHistoryEntry] {
+        historyService.entries.filter { historyFilter == nil || $0.kind == historyFilter }
+    }
+
+    private func historyRow(_ entry: JourneyHistoryEntry) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("\(entry.startDock.displayName(using: favoritesService)) → \(entry.endDock.displayName(using: favoritesService))")
+                .font(.headline)
+            Text(entry.dateLabel).font(.subheadline).foregroundStyle(.secondary)
+            HStack {
+                Text(entry.kind.title).font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Menu {
+                    Button("Start again", systemImage: "play.fill") {
+                        Task { await adHocJourneyService.createAndStart(startDock: entry.startDock, endDock: entry.endDock, kind: entry.kind) }
+                    }
+                    Button("Start return journey", systemImage: "arrow.uturn.backward") {
+                        Task { await adHocJourneyService.createAndStart(startDock: entry.endDock, endDock: entry.startDock, kind: entry.kind) }
+                    }
+                    Button("Schedule journey", systemImage: "calendar.badge.plus") {
+                        journeyEditorPresentation = .schedule(entry)
+                    }
+                } label: {
+                    Label("Journey options", systemImage: "ellipsis.circle")
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private func activeJourneyScreen(_ currentActiveJourney: CurrentActiveJourney) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
                 switch currentActiveJourney {
                 case .scheduled(let journey):
                     scheduledJourneyRow(journey)
@@ -231,16 +322,32 @@ struct JourneysView: View {
                     adHocJourneyRow(journey)
                 }
 
-                Spacer(minLength: 0)
+                if let updatedAt = dockAvailabilityStore.lastUpdateTime {
+                    Text("Updated \(DockUpdateTime.string(from: updatedAt))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 24)
+            .padding(.top, 4)
+            .padding(.bottom, 12)
+        }
+    }
+
+    private var isNearActiveDock: Bool {
+        guard let location = locationService.location,
+              location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 100,
+              abs(location.timestamp.timeIntervalSinceNow) <= 60 else { return false }
+        return dockAvailabilityStore.bikePointsByID.values.contains {
+            location.distance(from: CLLocation(latitude: $0.lat, longitude: $0.lon))
+                <= AppConstants.App.nearbyDockDistanceMeters
         }
     }
 
     private func refreshActiveDockAvailability(cacheBusting: Bool) {
+        lastAvailabilityRefreshAttempt = Date()
         dockAvailabilityStore.refresh(dockIDs: activeDockIDs, cacheBusting: cacheBusting)
     }
 
@@ -266,6 +373,7 @@ struct JourneysView: View {
                 favoriteJourneyService.toggle(startDock: journey.startDock, endDock: journey.endDock)
             },
             onDockSelected: onDockSelected,
+            onSelectAlternative: { dock in switchActiveDock(to: dock, for: .scheduled(journey)) },
             onCreateReturn: {
                 guard scheduledJourneyService.journeys.count < 5 else { return }
                 var draft = ScheduledJourneyDraft.returnJourney(from: journey)
@@ -298,6 +406,7 @@ struct JourneysView: View {
                     )
                 }
             },
+            onEdit: { journeyEditorPresentation = .editFavorite(journey) },
             onDelete: { favoriteJourneyToDelete = journey }
         )
     }
@@ -320,8 +429,18 @@ struct JourneysView: View {
             onToggleFavorite: {
                 favoriteJourneyService.toggle(startDock: journey.startDock, endDock: journey.endDock)
             },
-            onDockSelected: onDockSelected
+            onDockSelected: onDockSelected,
+            onSelectAlternative: { dock in switchActiveDock(to: dock, for: .adHoc(journey)) }
         )
+    }
+
+    private func switchActiveDock(to bikePoint: BikePoint, for activeJourney: CurrentActiveJourney) {
+        guard !isSwitchingDock else { return }
+        isSwitchingDock = true
+        Task {
+            defer { isSwitchingDock = false }
+            dockSwitchError = await adHocJourneyService.switchDock(to: bikePoint, for: activeJourney)
+        }
     }
 
     private func journeysByStartDistance<T>(
@@ -396,6 +515,62 @@ private struct JourneyNextLegButton: View {
     }
 }
 
+private struct JourneyEndButton: View {
+    let onStop: () -> Void
+
+    var body: some View {
+        Button(role: .destructive, action: onStop) {
+            Text("End journey").frame(maxWidth: .infinity).padding(.vertical, 4)
+        }
+        .buttonStyle(.borderedProminent)
+    }
+}
+
+private struct ActiveJourneyHeader: View {
+    let isStartPhase: Bool
+    let startDockID: String
+    let isFavorite: Bool
+    let onToggleFavorite: () -> Void
+    @Binding var isAdvancing: Bool
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                phaseLabel
+                Spacer(minLength: 0)
+                actions
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                phaseLabel
+                HStack { actions }
+            }
+        }
+    }
+
+    private var phaseLabel: some View {
+        Label(isStartPhase ? "Watching start dock" : "Riding to end dock", systemImage: "figure.outdoor.cycle")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        if isStartPhase {
+            JourneyNextLegButton(startDockId: startDockID, isAdvancing: $isAdvancing)
+                .controlSize(.small)
+                .frame(minHeight: 44)
+        }
+        Button(action: onToggleFavorite) {
+            Image(systemName: isFavorite ? "star.fill" : "star")
+                .foregroundStyle(isFavorite ? AppConstants.Colors.favoriteHighlight : .secondary)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(isFavorite ? "Remove from favourite journeys" : "Add to favourite journeys")
+    }
+}
+
 private struct AdHocJourneyRow: View {
     let journey: AdHocJourney
     let distanceString: String
@@ -409,6 +584,7 @@ private struct AdHocJourneyRow: View {
     let onStop: () -> Void
     let onToggleFavorite: () -> Void
     let onDockSelected: (String) -> Void
+    let onSelectAlternative: (BikePoint) -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
     @EnvironmentObject private var locationService: LocationService
     @State private var isAdvancing = false
@@ -427,82 +603,79 @@ private struct AdHocJourneyRow: View {
 
     var body: some View {
         ActiveJourneyCard(isActive: journey.isActive) {
-            VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: journey.isActive ? "figure.outdoor.cycle" : "clock.arrow.circlepath")
-                    .foregroundStyle(journey.isActive ? .green : .secondary)
-                    .frame(width: 24)
+            VStack(alignment: .leading, spacing: journey.isActive ? 8 : 16) {
+                if !journey.isActive {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService))")
-                        .font(.headline)
-                        .lineLimit(2)
-                    if journey.isActive {
-                        Text(journey.activePhase == .start ? "Watching start dock" : "Watching destination dock")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.green)
-                    } else if let lastStartedAt = journey.lastStartedAt {
-                        Text("Last started \(lastStartedAt.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Saved \(journey.createdAt.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService))")
+                                .font(.headline)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let lastStartedAt = journey.lastStartedAt {
+                                Text(JourneyHistoryEntry.dateLabel(start: lastStartedAt, end: nil))
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Saved \(journey.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Button(action: onToggleFavorite) {
+                            Image(systemName: isFavorite ? "star.fill" : "star")
+                                .foregroundStyle(isFavorite ? AppConstants.Colors.favoriteHighlight : .secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(isFavorite ? "Remove from favourite journeys" : "Add to favourite journeys")
+
                     }
+
+                    DistanceIndicator(distance: numericDistance, distanceString: distanceString)
                 }
 
-                Spacer(minLength: 8)
+                if journey.isActive {
+                    ActiveJourneyHeader(isStartPhase: journey.activePhase == .start, startDockID: journey.startDock.id,
+                        isFavorite: isFavorite, onToggleFavorite: onToggleFavorite, isAdvancing: $isAdvancing)
 
-                Button(action: onToggleFavorite) {
-                    Image(systemName: isFavorite ? "star.fill" : "star")
-                        .foregroundStyle(isFavorite ? AppConstants.Colors.favoriteHighlight : .secondary)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(isFavorite ? "Remove from favourite journeys" : "Add to favourite journeys")
-
-                DistanceIndicator(
-                    distance: numericDistance,
-                    distanceString: distanceString
-                )
-            }
-
-            if journey.isActive {
-                if journey.activePhase == .start {
-                    JourneyNextLegButton(startDockId: journey.startDock.id, isAdvancing: $isAdvancing)
-                }
-
-                ActiveJourneyDockIndicators(
-                    startDock: journey.activePhase == .start ? journey.startDock : nil,
-                    endDock: journey.endDock,
-                    startBikePoint: startBikePoint,
-                    endBikePoint: endBikePoint,
-                    allBikePoints: allBikePoints,
-                    isRefreshing: isRefreshingAvailability,
-                    onDockSelected: onDockSelected
-                )
-
-                LiveJourneyProgressView(
-                    progress: journeyProgress,
-                    startName: journey.startDock.displayName(using: favoritesService),
-                    endName: journey.endDock.displayName(using: favoritesService)
-                )
-
-                Button("End journey", role: .destructive, action: onStop)
-                    .buttonStyle(.bordered)
+                    ActiveJourneyDockIndicators(
+                        startDock: journey.startDock,
+                        isStartPhase: journey.activePhase == .start,
+                        endDock: journey.endDock,
+                        startBikePoint: startBikePoint,
+                        endBikePoint: endBikePoint,
+                        allBikePoints: allBikePoints,
+                        isRefreshing: isRefreshingAvailability,
+                        onDockSelected: onDockSelected,
+                        onSelectAlternative: onSelectAlternative
+                    )
                     .disabled(isAdvancing)
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) {
-                        adHocStartActions
-                    }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        adHocStartActions
+                    LiveJourneyProgressView(
+                        progress: journeyProgress,
+                        startName: journey.startDock.displayName(using: favoritesService),
+                        endName: journey.endDock.displayName(using: favoritesService)
+                    )
+
+                    JourneyEndButton(onStop: onStop)
+                        .disabled(isAdvancing)
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            adHocStartActions
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            adHocStartActions
+                        }
                     }
                 }
             }
-        }
         }
         .journeyListStyle(isActive: journey.isActive)
     }
@@ -524,6 +697,7 @@ private struct FavoriteJourneyRow: View {
     let distanceString: String
     let onStart: () -> Void
     let onStartReturn: () -> Void
+    let onEdit: () -> Void
     let onDelete: () -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
     @EnvironmentObject private var locationService: LocationService
@@ -542,7 +716,7 @@ private struct FavoriteJourneyRow: View {
 
                     Text("\(startDock.displayName(using: favoritesService)) → \(endDock.displayName(using: favoritesService))")
                         .font(.headline)
-                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     Spacer(minLength: 8)
 
@@ -578,6 +752,9 @@ private struct FavoriteJourneyRow: View {
             Button("Start now", action: onStart)
                 .buttonStyle(.borderedProminent)
 
+            Button("Edit", action: onEdit)
+                .buttonStyle(.bordered)
+
             Button("Start return journey", action: onStartReturn)
                 .buttonStyle(.bordered)
         }
@@ -587,12 +764,21 @@ private struct FavoriteJourneyRow: View {
 enum JourneyEditorPresentation: Identifiable {
     case add
     case edit(ScheduledJourney)
+    case editFavorite(FavoriteJourney)
+    case fromDock(ScheduledJourneyDock, isStart: Bool)
     case addReturn(ScheduledJourneyDraft)
+    case schedule(JourneyHistoryEntry)
 
     var id: String {
         switch self {
+        case .schedule(let entry):
+            return "schedule-\(entry.id)"
         case .add:
             return "add"
+        case .editFavorite(let journey):
+            return "favorite-\(journey.id)"
+        case .fromDock(let dock, let isStart):
+            return "dock-\(dock.id)-\(isStart)"
         case .edit(let journey):
             return "edit-\(journey.id)"
         case .addReturn(let draft):
@@ -602,8 +788,14 @@ enum JourneyEditorPresentation: Identifiable {
 
     var initialDraft: ScheduledJourneyDraft {
         switch self {
+        case .schedule(let entry):
+            return ScheduledJourneyDraft(startDock: entry.startDock, endDock: entry.endDock)
         case .add:
             return ScheduledJourneyDraft()
+        case .editFavorite(let journey):
+            return ScheduledJourneyDraft(startDock: journey.startDock, endDock: journey.endDock)
+        case .fromDock(let dock, let isStart):
+            return ScheduledJourneyDraft(startDock: isStart ? dock : nil, endDock: isStart ? nil : dock)
         case .edit(let journey):
             return ScheduledJourneyDraft(journey: journey)
         case .addReturn(let draft):
@@ -620,13 +812,25 @@ enum JourneyEditorPresentation: Identifiable {
 
     var navigationTitle: String {
         switch self {
-        case .add:
+        case .add, .fromDock:
             return "New Journey"
+        case .schedule:
+            return "Schedule Journey"
         case .addReturn:
             return "Add Journey"
-        case .edit:
+        case .edit, .editFavorite:
             return "Edit Journey"
         }
+    }
+
+    var editedFavorite: FavoriteJourney? {
+        if case .editFavorite(let journey) = self { return journey }
+        return nil
+    }
+
+    var startsImmediately: Bool {
+        if case .fromDock = self { return true }
+        return false
     }
 
     var isEditing: Bool {
@@ -634,10 +838,10 @@ enum JourneyEditorPresentation: Identifiable {
     }
 
     var isNewJourney: Bool {
-        if case .add = self {
-            return true
+        switch self {
+        case .add, .fromDock: return true
+        default: return false
         }
-        return false
     }
 }
 
@@ -657,6 +861,7 @@ private struct ScheduledJourneyRow: View {
     let onDelete: () -> Void
     let onToggleFavorite: () -> Void
     let onDockSelected: (String) -> Void
+    let onSelectAlternative: (BikePoint) -> Void
     let onCreateReturn: () -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
     @EnvironmentObject private var locationService: LocationService
@@ -676,86 +881,84 @@ private struct ScheduledJourneyRow: View {
 
     var body: some View {
         ActiveJourneyCard(isActive: journey.isActive) {
-            VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: journey.isActive ? "figure.outdoor.cycle" : "calendar")
-                    .foregroundStyle(journey.isActive ? .green : .secondary)
-                    .frame(width: 24)
+            VStack(alignment: .leading, spacing: journey.isActive ? 8 : 16) {
+                if !journey.isActive {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "calendar")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService))")
-                        .font(.headline)
-                        .lineLimit(2)
-                    Text("\(weekdaySummary(journey.weekdays)) • \(journey.startTime)-\(journey.endTime)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    if let activeRun = journey.activeRun {
-                        Text(activeRun.phase == .start ? "Watching start dock" : "Watching destination dock")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.green)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService))")
+                                .font(.headline)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text("\(weekdaySummary(journey.weekdays)) • \(journey.startTime)-\(journey.endTime)")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Button(action: onToggleFavorite) {
+                            Image(systemName: isFavorite ? "star.fill" : "star")
+                                .foregroundStyle(isFavorite ? AppConstants.Colors.favoriteHighlight : .secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(isFavorite ? "Remove from favourite journeys" : "Add to favourite journeys")
+
+                    }
+
+                    DistanceIndicator(distance: numericDistance, distanceString: distanceString)
+                }
+
+                if journey.isActive {
+                    ActiveJourneyHeader(isStartPhase: journey.isStartPhase, startDockID: journey.startDock.id,
+                        isFavorite: isFavorite, onToggleFavorite: onToggleFavorite, isAdvancing: $isAdvancing)
+
+                    ActiveJourneyDockIndicators(
+                        startDock: journey.startDock,
+                        isStartPhase: journey.isStartPhase,
+                        endDock: journey.endDock,
+                        startBikePoint: startBikePoint,
+                        endBikePoint: endBikePoint,
+                        allBikePoints: allBikePoints,
+                        isRefreshing: isRefreshingAvailability,
+                        onDockSelected: onDockSelected,
+                        onSelectAlternative: onSelectAlternative
+                    )
+                    .disabled(isAdvancing)
+
+                    LiveJourneyProgressView(
+                        progress: journeyProgress,
+                        startName: journey.startDock.displayName(using: favoritesService),
+                        endName: journey.endDock.displayName(using: favoritesService)
+                    )
+                }
+
+                if journey.isActive {
+                    JourneyEndButton(onStop: onStop).disabled(isAdvancing)
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        primaryActions
+                        secondaryActions
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        primaryActions
+                        secondaryActions
                     }
                 }
-
-                Spacer(minLength: 8)
-
-                Button(action: onToggleFavorite) {
-                    Image(systemName: isFavorite ? "star.fill" : "star")
-                        .foregroundStyle(isFavorite ? AppConstants.Colors.favoriteHighlight : .secondary)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(isFavorite ? "Remove from favourite journeys" : "Add to favourite journeys")
-
-                DistanceIndicator(
-                    distance: numericDistance,
-                    distanceString: distanceString
-                )
             }
-
-            if journey.isActive {
-                if journey.isStartPhase {
-                    JourneyNextLegButton(startDockId: journey.startDock.id, isAdvancing: $isAdvancing)
-                }
-
-                ActiveJourneyDockIndicators(
-                    startDock: journey.isStartPhase ? journey.startDock : nil,
-                    endDock: journey.endDock,
-                    startBikePoint: startBikePoint,
-                    endBikePoint: endBikePoint,
-                    allBikePoints: allBikePoints,
-                    isRefreshing: isRefreshingAvailability,
-                    onDockSelected: onDockSelected
-                )
-
-                LiveJourneyProgressView(
-                    progress: journeyProgress,
-                    startName: journey.startDock.displayName(using: favoritesService),
-                    endName: journey.endDock.displayName(using: favoritesService)
-                )
-            }
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    primaryActions
-                    secondaryActions
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    primaryActions
-                    secondaryActions
-                }
-            }
-        }
         }
         .journeyListStyle(isActive: journey.isActive)
     }
 
     private var primaryActions: some View {
         HStack(spacing: 8) {
-            if journey.isActive {
-                Button("End journey", role: .destructive, action: onStop)
-                    .buttonStyle(.bordered)
-                    .disabled(isAdvancing)
-            } else {
+            if !journey.isActive {
                 Button("Start now", action: onActivate)
                     .buttonStyle(.borderedProminent)
             }
@@ -792,314 +995,329 @@ private struct ScheduledJourneyRow: View {
 }
 
 private struct ActiveJourneyDockIndicators: View {
-    let startDock: ScheduledJourneyDock?
+    let startDock: ScheduledJourneyDock
+    let isStartPhase: Bool
     let endDock: ScheduledJourneyDock
     let startBikePoint: BikePoint?
     let endBikePoint: BikePoint?
     let allBikePoints: [BikePoint]
     let isRefreshing: Bool
     let onDockSelected: (String) -> Void
-
+    let onSelectAlternative: (BikePoint) -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
     @ObservedObject private var dockPreferences = DockPreferencesService.shared
-
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue = BikeDataFilter.both.rawValue
-
     @AppStorage(AlternativeDockSettings.minBikesKey, store: AlternativeDockSettings.userDefaultsStore)
     private var minBikes = AlternativeDockSettings.defaultMinBikes
-
     @AppStorage(AlternativeDockSettings.minEBikesKey, store: AlternativeDockSettings.userDefaultsStore)
     private var minEBikes = AlternativeDockSettings.defaultMinEBikes
-
     @AppStorage(AlternativeDockSettings.minSpacesKey, store: AlternativeDockSettings.userDefaultsStore)
     private var minSpaces = AlternativeDockSettings.defaultMinSpaces
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    private var bikeDataFilter: BikeDataFilter {
-        BikeDataFilter(rawValue: bikeDataFilterRawValue) ?? .both
-    }
-
+    private var bikeDataFilter: BikeDataFilter { BikeDataFilter(rawValue: bikeDataFilterRawValue) ?? .both }
     private var bikeAvailabilityThreshold: Int {
         switch bikeDataFilter {
-        case .both:
-            return minBikes + minEBikes
-        case .bikesOnly:
-            return minBikes
-        case .eBikesOnly:
-            return minEBikes
+        case .both: return minBikes + minEBikes
+        case .bikesOnly: return minBikes
+        case .eBikesOnly: return minEBikes
         }
     }
 
     var body: some View {
+        let column = GridItem(.flexible(minimum: 0), spacing: 8, alignment: .topLeading)
+        LazyVGrid(columns: Array(repeating: column, count: dynamicTypeSize.isAccessibilitySize ? 1 : 2),
+                  alignment: .leading, spacing: 8) {
+            dockColumn(dock: startDock, bikePoint: startBikePoint, mode: .bikes)
+            dockColumn(dock: endDock, bikePoint: endBikePoint, mode: .spaces)
+        }
+    }
+
+    private func dockColumn(dock: ScheduledJourneyDock, bikePoint: BikePoint?, mode: SimplifiedDonutChart.DisplayMode) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let startDock {
-                dockIndicator(
-                    dock: startDock,
-                    bikePoint: startBikePoint,
-                    mode: .bikes
+            dockIndicator(dock: dock, bikePoint: bikePoint, mode: mode)
+            if dockPreferences.snapshot.settings.enabled {
+                JourneyAlternativeDockList(
+                    dock: dock, alternatives: alternatives(for: dock, mode: mode), allBikePoints: allBikePoints,
+                    threshold: mode == .bikes ? bikeAvailabilityThreshold : minSpaces,
+                    mode: mode, bikeDataFilter: bikeDataFilter, onDockSelected: onDockSelected,
+                    onSelectAlternative: onSelectAlternative,
+                    allowsDockChange: mode == .bikes ? isStartPhase : !isStartPhase,
+                    excludedDockID: mode == .bikes ? endDock.id : startDock.id,
+                    isRefreshing: isRefreshing
                 )
-            }
-
-            dockIndicator(
-                dock: endDock,
-                bikePoint: endBikePoint,
-                mode: .spaces
-            )
-        }
-    }
-
-    private func dockIndicator(
-        dock: ScheduledJourneyDock,
-        bikePoint: BikePoint?,
-        mode: SimplifiedDonutChart.DisplayMode
-    ) -> some View {
-        let counts = bikePoint.map {
-            bikeDataFilter.filteredCounts(
-                standardBikes: $0.standardBikes,
-                eBikes: $0.eBikes,
-                emptySpaces: $0.emptyDocks
-            )
-        }
-        let count = mode == .bikes ? counts?.totalBikes : counts?.emptySpaces
-        let availabilityLabel = mode == .bikes ? "bikes" : "spaces"
-        let threshold = mode == .bikes ? bikeAvailabilityThreshold : minSpaces
-        let availabilityColor = count.map {
-            statusColor(count: $0, threshold: threshold)
-        } ?? Color.secondary
-        let alternatives = alternatives(for: bikePoint, mode: mode)
-
-        return VStack(alignment: .leading, spacing: 8) {
-            Button {
-                onDockSelected(dock.id)
-            } label: {
-                HStack(spacing: 10) {
-                    SimplifiedDonutChart(
-                        standardBikes: bikePoint?.standardBikes ?? 0,
-                        eBikes: bikePoint?.eBikes ?? 0,
-                        emptySpaces: bikePoint?.emptyDocks ?? 0,
-                        size: 44,
-                        displayMode: mode,
-                        bikeDataFilter: bikeDataFilter
-                    )
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(mode == .bikes ? "Start dock" : "End dock")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.tint)
-
-                        Text(dock.name)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        HStack(spacing: 5) {
-                            Text(count.map { "\($0) \(availabilityLabel)" } ?? "Updating availability")
-                                .font(.caption2)
-                                .fontWeight(.medium)
-                                .foregroundStyle(availabilityColor)
-                                .lineLimit(1)
-
-                            if isRefreshing {
-                                ProgressView()
-                                    .controlSize(.mini)
-                                    .accessibilityLabel("Loading latest availability")
-                            }
-                        }
-                    }
-
-                    Spacer(minLength: 0)
-
-                    Image(systemName: "map")
-                        .font(.caption)
-                        .foregroundStyle(.tint)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
-                .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("View \(dock.name) on the map")
-            .accessibilityValue(
-                count.map { "\($0) \(availabilityLabel) available" } ?? "Availability updating"
-            )
-
-            AlternativeDocksEditButton(
-                dock: dock,
-                availabilityMode: mode == .bikes ? .start : .end
-            )
-            .font(.footnote)
-            .padding(.horizontal, 10)
-            .accessibilityLabel("Edit alternative docks for \(dock.displayName(using: favoritesService))")
-
-            if !alternatives.isEmpty {
-                JourneyAlternativeDockGrid(
-                    alternatives: alternatives,
-                    mode: mode,
-                    bikeDataFilter: bikeDataFilter,
-                    onDockSelected: onDockSelected
-                )
-            }
-        }
-    }
-
-    private func alternatives(
-        for bikePoint: BikePoint?,
-        mode: SimplifiedDonutChart.DisplayMode
-    ) -> [BikePoint] {
-        guard let bikePoint else { return [] }
-
-        return AlternativeDockSelectionService.alternatives(
-            for: bikePoint,
-            allBikePoints: allBikePoints,
-            favorites: favoritesService.favorites,
-            userLocation: nil,
-            purpose: alternativePurpose(for: mode),
-            maximumCount: maximumAlternativeCount(for: bikePoint),
-            filterCustomDocksByAvailability: false
-        )
-    }
-
-    private func maximumAlternativeCount(for bikePoint: BikePoint) -> Int {
-        let configuredCount = dockPreferences.customDockIDs(for: bikePoint.id)?.count
-            ?? dockPreferences.snapshot.settings.maxCount
-        return max(ActiveJourneyAlternativeDisplay.previewCount, configuredCount)
-    }
-
-    private func alternativePurpose(
-        for mode: SimplifiedDonutChart.DisplayMode
-    ) -> AlternativeDockPurpose {
-        guard mode == .bikes else { return .spaces }
-
-        switch bikeDataFilter {
-        case .both:
-            return .allBikes
-        case .bikesOnly:
-            return .bikes
-        case .eBikesOnly:
-            return .eBikes
-        }
-    }
-
-    private func statusColor(count: Int, threshold: Int) -> Color {
-        if count == 0 { return .red }
-        if count >= threshold { return .green }
-        return .orange
-    }
-}
-
-private struct JourneyAlternativeDockGrid: View {
-    @ObservedObject private var dockPreferences = DockPreferencesService.shared
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isShowingAllAlternatives = false
-    let alternatives: [BikePoint]
-    let mode: SimplifiedDonutChart.DisplayMode
-    let bikeDataFilter: BikeDataFilter
-    let onDockSelected: (String) -> Void
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 8),
-        GridItem(.flexible(), spacing: 8)
-    ]
-
-    private var displayedAlternatives: ArraySlice<BikePoint> {
-        alternatives.prefix(
-            isShowingAllAlternatives
-                ? alternatives.count
-                : ActiveJourneyAlternativeDisplay.previewCount
-        )
-    }
-
-    private var hasMoreAlternatives: Bool {
-        alternatives.count > ActiveJourneyAlternativeDisplay.previewCount
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(mode == .bikes ? "Nearby bikes" : "Nearby spaces")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(displayedAlternatives) { alternative in
-                    Button {
-                        onDockSelected(alternative.id)
-                    } label: {
-                        HStack(spacing: 7) {
-                            SimplifiedDonutChart(
-                                standardBikes: alternative.standardBikes,
-                                eBikes: alternative.eBikes,
-                                emptySpaces: alternative.emptyDocks,
-                                size: 30,
-                                displayMode: mode,
-                                bikeDataFilter: bikeDataFilter
-                            )
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(dockPreferences.alias(for: alternative.id) ?? shortName(alternative.commonName))
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-
-                                Text(availabilityText(for: alternative))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-
-                            Spacer(minLength: 0)
-                        }
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("View alternative dock \(dockPreferences.alias(for: alternative.id) ?? alternative.commonName) on the map")
-                }
-            }
-
-            if hasMoreAlternatives {
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                        isShowingAllAlternatives.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(isShowingAllAlternatives ? "View fewer alternate docks" : "View more alternate docks")
-                        Image(systemName: isShowingAllAlternatives ? "chevron.up" : "chevron.down")
-                    }
-                    .font(.caption.weight(.semibold))
-                    .frame(minHeight: 44, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.tint)
-                .accessibilityValue(isShowingAllAlternatives ? "Expanded" : "Collapsed")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func availabilityText(for bikePoint: BikePoint) -> String {
-        if mode == .spaces {
-            return "\(bikePoint.emptyDocks) spaces"
+    private func dockIndicator(dock: ScheduledJourneyDock, bikePoint: BikePoint?, mode: SimplifiedDonutChart.DisplayMode) -> some View {
+        Button { onDockSelected(dock.id) } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 4) {
+                    Text(mode == .bikes ? "Start dock" : "End dock")
+                        .font(.caption.weight(.semibold))
+                    Spacer(minLength: 0)
+                    Image(systemName: "map").font(.caption)
+                        .accessibilityHidden(true)
+                }
+                .foregroundStyle(.tint)
+                Text(dock.displayName(using: favoritesService))
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(minHeight: 36, alignment: .topLeading)
+                let counts = bikeDataFilter.filteredCounts(standardBikes: bikePoint?.standardBikes ?? 0,
+                    eBikes: bikePoint?.eBikes ?? 0, emptySpaces: bikePoint?.emptyDocks ?? 0)
+                let count = mode == .spaces ? counts.emptySpaces : counts.totalBikes
+                AvailabilityPillLayout(spacing: 8) {
+                    SimplifiedDonutChart(standardBikes: bikePoint?.standardBikes ?? 0,
+                        eBikes: bikePoint?.eBikes ?? 0, emptySpaces: bikePoint?.emptyDocks ?? 0,
+                        size: 40, displayMode: mode, bikeDataFilter: bikeDataFilter,
+                        hasAvailability: bikePoint?.hasAvailabilityData == true)
+                    AvailabilityPill(count: bikePoint?.hasAvailabilityData == true ? count : nil,
+                        label: mode == .spaces ? (count == 1 ? "space" : "spaces")
+                            : bikeDataFilter == .eBikesOnly ? (count == 1 ? "e-bike" : "e-bikes")
+                            : (count == 1 ? "bike" : "bikes"),
+                        symbol: mode == .spaces ? "parkingsign.circle" : "bicycle",
+                        threshold: mode == .spaces ? minSpaces : bikeAvailabilityThreshold)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .bikeSpotCard()
+            .multilineTextAlignment(.leading)
         }
-
-        let counts = bikeDataFilter.filteredCounts(
-            standardBikes: bikePoint.standardBikes,
-            eBikes: bikePoint.eBikes,
-            emptySpaces: bikePoint.emptyDocks
-        )
-        return "\(counts.totalBikes) bikes"
+        .buttonStyle(.plain)
+        .accessibilityHint("View this dock and its full availability on the map")
     }
 
-    private func shortName(_ name: String) -> String {
-        name.split(separator: ",", maxSplits: 1).first.map(String.init) ?? name
+    private func alternatives(for dock: ScheduledJourneyDock, mode: SimplifiedDonutChart.DisplayMode) -> [BikePoint] {
+        if let saved = dockPreferences.customDocks(for: dock.id) {
+            return AlternativeDockSelectionService.savedAlternativesForFavorites(
+                for: dock.id, savedDocks: saved, allBikePoints: allBikePoints, showAll: true)
+        }
+        let purpose: AlternativeDockPurpose
+        switch (mode, bikeDataFilter) {
+        case (.spaces, _): purpose = .spaces
+        case (_, .both): purpose = .allBikes
+        case (_, .bikesOnly): purpose = .bikes
+        case (_, .eBikesOnly): purpose = .eBikes
+        }
+        return AlternativeDockSelectionService.alternatives(
+            for: BikePoint(id: dock.id, commonName: dock.name, lat: dock.latitude, lon: dock.longitude),
+            allBikePoints: allBikePoints, favorites: favoritesService.favorites,
+            userLocation: nil, purpose: purpose, forceShow: true, maximumCount: 20)
     }
 }
 
-private enum ActiveJourneyAlternativeDisplay {
-    static let previewCount = 9
+private struct JourneyAlternativeDockList: View {
+    let dock: ScheduledJourneyDock
+    let alternatives: [BikePoint]
+    let allBikePoints: [BikePoint]
+    let threshold: Int
+    let mode: SimplifiedDonutChart.DisplayMode
+    let bikeDataFilter: BikeDataFilter
+    let onDockSelected: (String) -> Void
+    let onSelectAlternative: (BikePoint) -> Void
+    let allowsDockChange: Bool
+    let excludedDockID: String?
+    let isRefreshing: Bool
+    @ObservedObject private var dockPreferences = DockPreferencesService.shared
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var showsAll = false
+    @State private var showsOtherNearbyDocks = false
+
+    private var title: String { mode == .bikes ? "Alternative start docks" : "Alternative end docks" }
+
+    private var dialogDocks: [BikePoint] {
+        guard showsOtherNearbyDocks else { return alternatives }
+        var excluded = Set(dockPreferences.customDockIDs(for: dock.id) ?? [])
+        if let excludedDockID { excluded.insert(excludedDockID) }
+        return AlternativeDockSelectionService.otherNearbyDocks(
+            for: BikePoint(id: dock.id, commonName: dock.name, lat: dock.latitude, lon: dock.longitude),
+            allBikePoints: allBikePoints, excludingDockIDs: excluded)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 4) {
+                    Text("Alternatives").font(.caption.weight(.semibold))
+                    Spacer(minLength: 0)
+                    seeAllButton
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title).font(.subheadline.weight(.semibold))
+                    seeAllButton
+                }
+            }
+            if alternatives.isEmpty {
+                Text(isRefreshing ? "Loading alternatives…" : dockPreferences.customDockIDs(for: dock.id) == nil
+                     ? "No suitable nearby docks available." : "No custom alternatives selected.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(Array(alternatives.prefix(3))) { alternative in
+                compactAlternativeRow(alternative)
+                if alternative.id != alternatives.prefix(3).last?.id { Divider() }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
+        .bikeSpotCard()
+        .sheet(isPresented: $showsAll, onDismiss: { showsOtherNearbyDocks = false }) {
+            NavigationStack {
+                List {
+                    if dockPreferences.customDockIDs(for: dock.id) != nil {
+                        Toggle("Other nearby docks", isOn: $showsOtherNearbyDocks)
+                    }
+                    Section(showsOtherNearbyDocks ? "Other nearby docks · closest first" : "Alternatives") {
+                        if dialogDocks.isEmpty {
+                            Text(isRefreshing ? "Loading docks…" : "No other docks available.")
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(dialogDocks) { alternative in
+                            alternativeRow(alternative)
+                        }
+                    }
+                    AlternativeDocksEditButton(dock: dock, availabilityMode: mode == .bikes ? .start : .end)
+                }
+                .bikeSpotBackground(showsPhoto: false)
+                .onChange(of: dockPreferences.customDockIDs(for: dock.id)) { _, ids in
+                    if ids == nil { showsOtherNearbyDocks = false }
+                }
+                .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { showsAll = false } }
+                }
+            }
+        }
+    }
+
+    private var seeAllButton: some View {
+        // Always available: the full list also contains the alternatives editor.
+        Button { showsAll = true } label: {
+            Text("See all")
+                .font(.caption).frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.tint)
+        .accessibilityLabel("See all \(mode == .bikes ? "start" : "end") alternatives")
+    }
+
+    private func compactAlternativeRow(_ alternative: BikePoint) -> some View {
+        let fullName = dockPreferences.alias(for: alternative.id) ?? alternative.commonName
+        // Keep the borough in the full list and VoiceOver label, not every compact row.
+        let shortName = dockPreferences.alias(for: alternative.id)
+            ?? alternative.commonName.components(separatedBy: ",").first ?? fullName
+        return VStack(alignment: .leading, spacing: 2) {
+            Button {
+                onDockSelected(alternative.id)
+            } label: {
+                HStack(spacing: 6) {
+                    SimplifiedDonutChart(standardBikes: alternative.standardBikes,
+                        eBikes: alternative.eBikes, emptySpaces: alternative.emptyDocks,
+                        size: 32, displayMode: .all, bikeDataFilter: bikeDataFilter,
+                        hasAvailability: alternative.hasAvailabilityData)
+                    Text(shortName)
+                        .font(.caption.weight(.semibold)).foregroundStyle(.primary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel(fullName)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .multilineTextAlignment(.leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("View this dock on the map")
+            let layout = dynamicTypeSize > .large
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+                : AnyLayout(HStackLayout(spacing: 0))
+            layout {
+                availabilityPill(for: alternative)
+                if dynamicTypeSize <= .large { Spacer(minLength: 0) }
+                useDockButton(for: alternative)
+            }
+            .frame(minHeight: 44, alignment: .leading)
+        }
+    }
+
+    private func availabilityPill(for alternative: BikePoint) -> some View {
+        let counts = bikeDataFilter.filteredCounts(standardBikes: alternative.standardBikes,
+            eBikes: alternative.eBikes, emptySpaces: alternative.emptyDocks)
+        let count = mode == .spaces ? counts.emptySpaces : counts.totalBikes
+        return AvailabilityPill(count: alternative.hasAvailabilityData ? count : nil,
+            label: mode == .spaces ? (count == 1 ? "space" : "spaces")
+                : bikeDataFilter == .eBikesOnly ? (count == 1 ? "e-bike" : "e-bikes")
+                : (count == 1 ? "bike" : "bikes"),
+            symbol: mode == .spaces ? "parkingsign.circle" : "bicycle", threshold: threshold)
+    }
+
+    @ViewBuilder
+    private func useDockButton(for alternative: BikePoint) -> some View {
+        if allowsDockChange && alternative.id != excludedDockID {
+            Button { onSelectAlternative(alternative) } label: {
+                Text("Use")
+                    .font(.caption.weight(.semibold))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tint)
+            .disabled(!alternative.hasAvailabilityData || !alternative.isAvailable)
+            .accessibilityLabel("Use \(dockPreferences.alias(for: alternative.id) ?? alternative.commonName) as the \(mode == .bikes ? "start" : "end") dock")
+        }
+    }
+
+    private func alternativeRow(_ alternative: BikePoint) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                showsAll = false
+                onDockSelected(alternative.id)
+            } label: {
+                let layout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                    : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+                layout {
+                    SimplifiedDonutChart(standardBikes: alternative.standardBikes,
+                        eBikes: alternative.eBikes, emptySpaces: alternative.emptyDocks,
+                        size: 60, displayMode: .all, bikeDataFilter: bikeDataFilter,
+                        hasAvailability: alternative.hasAvailabilityData)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(dockPreferences.alias(for: alternative.id) ?? alternative.commonName)
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        availabilityPill(for: alternative)
+                        let distance = dock.location.distance(from: CLLocation(latitude: alternative.lat, longitude: alternative.lon))
+                        Text(distance < 1000 ? String(format: "%.0f m from this dock", distance)
+                             : String(format: "%.1f miles from this dock", distance / 1609.344))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .multilineTextAlignment(.leading)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("View this dock on the map")
+            if allowsDockChange && alternative.id != excludedDockID {
+                Button {
+                    showsAll = false
+                    onSelectAlternative(alternative)
+                } label: {
+                    Label("Use this dock", systemImage: mode == .bikes ? "bicycle" : "flag.checkered")
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!alternative.hasAvailabilityData || !alternative.isAvailable)
+                .accessibilityLabel("Use \(dockPreferences.alias(for: alternative.id) ?? alternative.commonName) as the \(mode == .bikes ? "start" : "end") dock")
+            }
+        }
+        .padding(.vertical, 4)
+    }
 }
 
 private enum JourneyProgressEstimator {
@@ -1135,57 +1353,7 @@ private struct ActiveJourneyCard<Content: View>: View {
     }
 
     var body: some View {
-        if isActive {
-            if #available(iOS 26.0, *) {
-                content
-                    .padding(16)
-                    .glassEffect(
-                        .regular.tint(Color.accentColor.opacity(0.18)),
-                        in: .rect(cornerRadius: 26)
-                    )
-                    .overlay { activeBorder }
-                    .shadow(color: Color.accentColor.opacity(0.2), radius: 16, y: 6)
-                    .padding(.vertical, 6)
-            } else {
-                content
-                    .padding(16)
-                    .background {
-                        RoundedRectangle(cornerRadius: 26, style: .continuous)
-                            .fill(.ultraThinMaterial)
-                            .overlay {
-                                LinearGradient(
-                                    colors: [
-                                        Color.accentColor.opacity(0.2),
-                                        Color.accentColor.opacity(0.05),
-                                        .clear
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-                            }
-                    }
-                    .overlay { activeBorder }
-                    .shadow(color: Color.accentColor.opacity(0.2), radius: 16, y: 6)
-                    .padding(.vertical, 6)
-            }
-        } else {
-            content
-                .padding(.vertical, 6)
-        }
-    }
-
-    private var activeBorder: some View {
-        RoundedRectangle(cornerRadius: 26, style: .continuous)
-            .stroke(
-                LinearGradient(
-                    colors: [.white.opacity(0.7), Color.accentColor.opacity(0.65)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ),
-                lineWidth: 1
-            )
-            .allowsHitTesting(false)
+        content.padding(.vertical, isActive ? 4 : 10)
     }
 }
 
@@ -1202,109 +1370,63 @@ private extension View {
     }
 }
 
-private struct SubtleActivityPulseModifier: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let scale: CGFloat
-    let minimumOpacity: Double
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if reduceMotion {
-            content
-        } else {
-            content.phaseAnimator([false, true]) { view, isExpanded in
-                view
-                    .scaleEffect(isExpanded ? scale : 1)
-                    .opacity(isExpanded ? minimumOpacity : 1)
-            } animation: { _ in
-                .easeInOut(duration: 1.4)
-            }
-        }
-    }
-}
-
-private extension View {
-    func subtleActivityPulse(scale: CGFloat, minimumOpacity: Double) -> some View {
-        modifier(SubtleActivityPulseModifier(scale: scale, minimumOpacity: minimumOpacity))
-    }
-}
-
 private struct LiveJourneyProgressView: View {
     let progress: Double?
     let startName: String
     let endName: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var resolvedProgress: Double {
-        min(max(progress ?? 0, 0), 1)
-    }
+    private var resolvedProgress: Double { min(max(progress ?? 0, 0), 1) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Live progress")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tint)
-
-                Spacer()
-
-                if let progress {
-                    Text(progress, format: .percent.precision(.fractionLength(0)))
-                        .font(.caption.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Label("Location unavailable", systemImage: "location.slash")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text("Journey progress").font(.headline)
+                    Spacer()
+                    progressLabel
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Journey progress").font(.headline)
+                    progressLabel
                 }
             }
-
             GeometryReader { proxy in
-                let trackWidth = proxy.size.width
-                let markerOffset = max(7, min(trackWidth - 7, trackWidth * resolvedProgress))
-
+                let travel = max(0, proxy.size.width - 36)
                 ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.accentColor.opacity(0.16))
-                        .frame(height: 5)
-
-                    Capsule()
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.accentColor.opacity(0.7), Color.accentColor],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .frame(width: max(5, trackWidth * resolvedProgress), height: 5)
-
-                    Circle()
-                        .fill(.white)
-                        .frame(width: 14, height: 14)
-                        .overlay { Circle().stroke(Color.accentColor, lineWidth: 3) }
-                        .shadow(color: Color.accentColor.opacity(0.8), radius: 5)
-                        .subtleActivityPulse(scale: 1.1, minimumOpacity: 0.82)
-                        .offset(x: markerOffset - 7)
+                    Capsule().fill(Color(.systemGray4).opacity(0.5)).frame(height: 5)
+                    Capsule().fill(Color.accentColor)
+                        .frame(width: progress == nil ? 0 : 18 + travel * resolvedProgress, height: 5)
+                    Image(systemName: "bicycle")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color(.systemBackground))
+                        .frame(width: 36, height: 36)
+                        .background(progress == nil ? Color.gray : Color.accentColor, in: Circle())
+                        .offset(x: travel * resolvedProgress)
                 }
                 .frame(maxHeight: .infinity)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: resolvedProgress)
             }
-            .frame(height: 16)
-
-            HStack(alignment: .top) {
-                Text(startName)
+            .frame(height: 40)
+            HStack(alignment: .top, spacing: 20) {
+                Label(startName, systemImage: "circle")
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Text(endName)
+                Label(endName, systemImage: "flag.checkered")
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(12)
-        .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(16)
+        .bikeSpotCard()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Journey progress from \(startName) to \(endName)")
-        .accessibilityValue(progress.map { $0.formatted(.percent.precision(.fractionLength(0))) } ?? "Location unavailable")
+        .accessibilityValue(progress.map { "Approximately \(Int($0 * 100)) percent" } ?? "Location unavailable")
+    }
+
+    private var progressLabel: some View {
+        Text(progress.map { "Approx. \(Int($0 * 100))%" } ?? "Location unavailable")
+            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
     }
 }
 
@@ -1313,18 +1435,26 @@ struct AddJourneyView: View {
     @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
     @StateObject private var favoriteJourneyService = FavoriteJourneyService.shared
     @StateObject private var adHocJourneyService = AdHocJourneyService.shared
+    private let onJourneyStarted: () -> Void
     private let presentation: JourneyEditorPresentation
     @State private var draft: ScheduledJourneyDraft
     @State private var addToFavorites = false
     @State private var addAsScheduledJourney = false
-    @State private var startJourneyImmediately = false
     @State private var selectedDockField: DockField?
     @State private var isSaving = false
+    @State private var createdScheduleID: String?
     @State private var errorMessage: String?
 
-    init(presentation: JourneyEditorPresentation = .add) {
+    init(presentation: JourneyEditorPresentation = .add, onJourneyStarted: @escaping () -> Void = {}) {
+        self.onJourneyStarted = onJourneyStarted
         self.presentation = presentation
         _draft = State(initialValue: presentation.initialDraft)
+        _addAsScheduledJourney = State(initialValue: presentation.editedJourney != nil || {
+            switch presentation {
+            case .schedule, .addReturn: return true
+            default: return false
+            }
+        }())
     }
 
     enum DockField: Identifiable {
@@ -1359,17 +1489,19 @@ struct AddJourneyView: View {
                     Text("Docks")
                 }
 
-                if presentation.isNewJourney {
+                if presentation.isNewJourney || presentation.editedFavorite != nil || presentation.editedJourney != nil {
                     Section {
+                        if presentation.isNewJourney {
                         Toggle(isOn: $addToFavorites) {
                             Label("Add to favourites", systemImage: "star")
                         }
                         .disabled(!hasValidDocks || favoriteJourneyAlreadyExists)
+                        }
 
                         Toggle(isOn: $addAsScheduledJourney) {
-                            Label("Add as a scheduled journey", systemImage: "calendar.badge.clock")
+                            Label("Schedule journey", systemImage: "calendar.badge.clock")
                         }
-                        .disabled(!hasValidDocks || scheduledJourneyService.journeys.count >= 5)
+                        .disabled(!hasValidDocks || (presentation.editedJourney == nil && scheduledJourneyService.journeys.count >= 5))
                     } footer: {
                         VStack(alignment: .leading, spacing: 4) {
                             if favoriteJourneyAlreadyExists {
@@ -1377,7 +1509,10 @@ struct AddJourneyView: View {
                             } else if addToFavorites {
                                 Text("No return journey needed — we’ll automatically show the closest dock first.")
                             }
-                            if scheduledJourneyService.journeys.count >= 5 {
+                            if presentation.editedJourney != nil && !addAsScheduledJourney {
+                                Text("Saving will remove the schedule and keep this route as a favourite.")
+                            }
+                            if presentation.editedJourney == nil && scheduledJourneyService.journeys.count >= 5 {
                                 Text("You already have the maximum of 5 scheduled journeys.")
                             }
                         }
@@ -1407,22 +1542,24 @@ struct AddJourneyView: View {
                     }
                 }
 
-                if presentation.isNewJourney && canSave {
+                if presentation.isNewJourney {
                     Section {
-                        Toggle(isOn: $startJourneyImmediately) {
-                            Label("Start journey now", systemImage: "play.circle.fill")
-                        }
-
                         Button {
                             Task { await save() }
                         } label: {
-                            Text(isSaving ? "Saving..." : "Save journey")
+                            Label(isSaving ? "Starting…" : "Start journey", systemImage: "play.fill")
                                 .frame(maxWidth: .infinity)
                         }
-                        .disabled(isSaving)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(!canSave || isSaving)
+                    } footer: {
+                        Text("Your journey is added to History automatically.")
                     }
                 }
             }
+            .disabled(isSaving)
+            .bikeSpotBackground(showsPhoto: false)
             .navigationTitle(presentation.navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1458,7 +1595,7 @@ struct AddJourneyView: View {
                 }
             }
             .onChange(of: scheduledJourneyService.journeys.count) { _, journeyCount in
-                if journeyCount >= 5 {
+                if journeyCount >= 5 && presentation.editedJourney == nil {
                     addAsScheduledJourney = false
                 }
             }
@@ -1482,7 +1619,7 @@ struct AddJourneyView: View {
     }
 
     private var showsSchedule: Bool {
-        !presentation.isNewJourney || addAsScheduledJourney
+        addAsScheduledJourney
     }
 
     private var favoriteJourneyAlreadyExists: Bool {
@@ -1515,15 +1652,25 @@ struct AddJourneyView: View {
         defer { isSaving = false }
 
         if presentation.isNewJourney {
-            await saveNewJourney(startImmediately: startJourneyImmediately)
+            await saveNewJourney()
             return
         }
 
         do {
             if let editedJourney = presentation.editedJourney {
-                _ = try await scheduledJourneyService.update(editedJourney, from: draft)
+                if addAsScheduledJourney {
+                    _ = try await scheduledJourneyService.update(editedJourney, from: draft)
+                } else {
+                    try await scheduledJourneyService.unschedule(editedJourney, draft: draft)
+                }
             } else {
-                _ = try await scheduledJourneyService.createJourney(from: draft)
+                if addAsScheduledJourney {
+                    _ = try await scheduledJourneyService.createJourney(from: draft)
+                }
+                if let favorite = presentation.editedFavorite,
+                   let start = draft.startDock, let end = draft.endDock {
+                    favoriteJourneyService.update(favorite, startDock: start, endDock: end)
+                }
             }
             dismiss()
         } catch {
@@ -1531,22 +1678,24 @@ struct AddJourneyView: View {
         }
     }
 
-    private func saveNewJourney(startImmediately: Bool) async {
+    private func saveNewJourney() async {
         guard let startDock = draft.startDock, let endDock = draft.endDock else { return }
 
         do {
-            if addAsScheduledJourney {
-                _ = try await scheduledJourneyService.createJourney(from: draft)
+            if addAsScheduledJourney && createdScheduleID == nil {
+                createdScheduleID = try await scheduledJourneyService.createJourney(from: draft).id
             }
             if addToFavorites && !favoriteJourneyAlreadyExists {
                 favoriteJourneyService.add(startDock: startDock, endDock: endDock)
             }
-            if startImmediately {
-                await adHocJourneyService.createAndStart(startDock: startDock, endDock: endDock)
-            } else {
-                adHocJourneyService.save(startDock: startDock, endDock: endDock)
+            let started = await adHocJourneyService.createAndStart(startDock: startDock, endDock: endDock,
+                kind: addAsScheduledJourney ? .scheduled : nil)
+            guard started else {
+                errorMessage = "Couldn’t start the journey. Check that Live Activities are enabled for BikeSpot London and try again."
+                return
             }
             dismiss()
+            onJourneyStarted()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1595,7 +1744,7 @@ private struct WeekdayPicker: View {
                         .font(.system(size: 14, weight: .semibold))
                         .frame(width: 34, height: 34)
                         .background(selectedWeekdays.contains(day) ? Color.accentColor : Color(.secondarySystemFill))
-                        .foregroundStyle(selectedWeekdays.contains(day) ? .white : .primary)
+                        .foregroundStyle(selectedWeekdays.contains(day) ? Color(.systemBackground) : .primary)
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
@@ -1660,4 +1809,19 @@ private func minutesBetween(start: String, end: String) -> Int? {
     }
     let diff = (endMinutes - startMinutes + 24 * 60) % (24 * 60)
     return diff == 0 ? 24 * 60 : diff
+}
+
+#Preview("Journey progress · Light") {
+    VStack(spacing: 16) {
+        LiveJourneyProgressView(progress: 0.32, startName: "Station", endName: "Office")
+        LiveJourneyProgressView(progress: nil, startName: "Warwick Row, Westminster", endName: "Stonecutter Street, Holborn")
+    }
+    .padding().bikeSpotBackground()
+}
+
+#Preview("Journey progress · Dark & Large Text") {
+    LiveJourneyProgressView(progress: 0.32, startName: "Warwick Row, Westminster", endName: "Stonecutter Street, Holborn")
+        .padding().bikeSpotBackground()
+        .preferredColorScheme(.dark)
+        .environment(\.dynamicTypeSize, .accessibility2)
 }

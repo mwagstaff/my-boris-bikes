@@ -165,6 +165,11 @@ If the selected metric is below the user's configured minimum threshold, the ser
 - `⚠️ Warwick Row, Westminster only has 3 spaces available`
 - `⚠️ Warwick Row, Westminster now has 2 spaces available`
 
+Each below-threshold availability alert is followed by a separate `Alternative docks` notification listing up to three docks, for example:
+- `Alternatives: Station - 12 bikes; Ashley Place, Victoria - 5 bikes; Howick Place - 3 bikes`
+
+This applies to journey start/end monitoring, standalone dock watches, scheduled journey initial summaries, and destination availability snapshots. Custom alternatives retain their saved order and aliases, including docks with zero availability. Otherwise, the server selects the nearest open docks with availability for the watched metric. Explicitly empty custom lists stay empty; missing or closed docks are omitted. Notification lists use a three-dock limit independently of the Live Activity display limit and filtering. Follow-ups use the existing shared TfL catalogue cache, and lookup or delivery failures do not fail the primary alert.
+
 If the selected metric rises back to or above that threshold, the server sends a success alert:
 - `✅ Warwick Row, Westminster now has 6 spaces available`
 

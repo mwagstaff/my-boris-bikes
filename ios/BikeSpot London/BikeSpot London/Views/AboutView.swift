@@ -3,12 +3,8 @@ import SwiftUI
 struct AboutView: View {
     @Environment(\.colorScheme) private var colorScheme
 
-    private var backgroundColor: Color {
-        colorScheme == .dark ? Color.black : Color(.systemGroupedBackground)
-    }
-
     private var cardColor: Color {
-        colorScheme == .dark ? Color(white: 0.14) : Color(.secondarySystemBackground)
+        BikeSpotStyle.surface
     }
 
     private var cardStroke: Color {
@@ -16,7 +12,7 @@ struct AboutView: View {
     }
 
     private var cardShadow: Color {
-        colorScheme == .dark ? Color.black.opacity(0.4) : Color.black.opacity(0.12)
+        Color.black.opacity(0.03)
     }
 
     private var sectionHeaderColor: Color {
@@ -24,7 +20,7 @@ struct AboutView: View {
     }
 
     private var linkColor: Color {
-        colorScheme == .dark ? Color(red: 0.28, green: 0.62, blue: 1.0) : Color.blue
+        Color.accentColor
     }
 
     private let feedbackURL = URL(string: "mailto:mike.wagstaff@gmail.com?subject=My%20Boris%20Bikes%20feedback")!
@@ -32,11 +28,6 @@ struct AboutView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("About")
-                    .font(.system(size: 34, weight: .bold))
-                    .foregroundColor(.primary)
-                    .padding(.top, 6)
-
                 AboutCard(background: cardColor, stroke: cardStroke, shadow: cardShadow) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Bikespot London")
@@ -100,7 +91,8 @@ struct AboutView: View {
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
         }
-        .background(backgroundColor.ignoresSafeArea())
+        .bikeSpotBackground()
+        .navigationTitle("About")
     }
 }
 
