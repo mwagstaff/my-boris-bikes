@@ -120,34 +120,22 @@ final class AdHocJourneyService: ObservableObject {
             startDock: startDock, endDock: endDock, lastStartedAt: Date(), activePhase: phase
         )
         upsert(journey)
-        recordHistory(journey, startedAt: journey.lastStartedAt ?? Date())
         await LiveActivityService.shared.startAdHocJourney(journey)
         let dock = phase == .start ? startDock : endDock
         guard LiveActivityService.shared.isActivityActive(for: dock.id) else {
             complete(journeyId: journey.id)
             return false
         }
+        recordHistory(journey, startedAt: journey.lastStartedAt ?? Date())
         return true
     }
 
     func start(_ journey: AdHocJourney) async {
-        let updated = AdHocJourney(startDock: journey.startDock, endDock: journey.endDock,
-            lastStartedAt: Date(), activePhase: .start)
-        upsert(updated)
-        recordHistory(updated, startedAt: updated.lastStartedAt ?? Date())
-        await LiveActivityService.shared.startAdHocJourney(updated)
+        await createAndStart(startDock: journey.startDock, endDock: journey.endDock)
     }
 
     func startReturn(_ journey: AdHocJourney) async {
-        let returnJourney = AdHocJourney(
-            startDock: journey.endDock,
-            endDock: journey.startDock,
-            lastStartedAt: Date(),
-            activePhase: .start
-        )
-        upsert(returnJourney)
-        recordHistory(returnJourney, startedAt: returnJourney.lastStartedAt ?? Date())
-        await LiveActivityService.shared.startAdHocJourney(returnJourney)
+        await createAndStart(startDock: journey.endDock, endDock: journey.startDock)
     }
 
     func stop(_ journey: AdHocJourney) async {
@@ -198,7 +186,7 @@ final class AdHocJourneyService: ObservableObject {
     }
 
     private func recordHistory(_ journey: AdHocJourney, startedAt: Date, kind: JourneyHistoryEntry.Kind? = nil) {
-        let resolvedKind: JourneyHistoryEntry.Kind = kind ?? ( FavoriteJourneyService.shared.isFavorite(
+        let resolvedKind: JourneyHistoryEntry.Kind = kind ?? (FavoriteJourneyService.shared.isFavorite(
             startDock: journey.startDock, endDock: journey.endDock) ? .favourite : .adHoc)
         JourneyHistoryService.shared.record(id: "ad-hoc-\(journey.id)", journeyID: journey.id,
             start: journey.startDock, end: journey.endDock, startedAt: startedAt, kind: resolvedKind)

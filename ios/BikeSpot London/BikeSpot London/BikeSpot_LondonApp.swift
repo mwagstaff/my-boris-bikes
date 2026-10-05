@@ -41,6 +41,11 @@ struct BikeSpot_LondonApp: App {
                     handleDeepLink(url)
                 }
         }
+        .onChange(of: scenePhase, initial: true) { _, newPhase in
+            if let baseURL = URL(string: AppConstants.Server.baseURL) {
+                LondonBackgroundService.shared.handleScenePhase(newPhase, baseURL: baseURL)
+            }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
             case .background:

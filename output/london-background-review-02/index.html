@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>25 more London backgrounds — BikeSpot</title>
+<style>
+:root{color-scheme:light;--ink:#1f302c;--muted:#58665f;--paper:#f7f5ed;--rule:#d5d9cf;--accent:#22584b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:"Avenir Next",Avenir,Helvetica,sans-serif}
+main{max-width:1640px;margin:auto;padding:48px clamp(20px,4vw,64px) 64px}
+header{display:flex;justify-content:space-between;align-items:end;gap:24px;padding-bottom:26px;border-bottom:1px solid var(--rule)}
+.eyebrow{margin:0 0 12px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;font-weight:600}
+h1{font-family:"Iowan Old Style",Baskerville,Georgia,serif;font-size:clamp(36px,5vw,66px);font-weight:400;line-height:1.03;letter-spacing:-.035em;margin:0}
+.intro{max-width:330px;margin:0;font-size:14px;line-height:1.6;color:var(--muted)}
+.controls{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding:22px 0 26px}
+.controls span{font-size:13px;color:var(--muted)}
+.modes{display:flex;gap:4px;flex-wrap:wrap}
+button{font:inherit;font-size:13px;background:transparent;border:1px solid transparent;border-radius:100px;color:var(--ink);padding:9px 14px;cursor:pointer}
+button[aria-pressed=true]{background:var(--ink);color:var(--paper)}
+button:hover{border-color:var(--accent)}
+:focus-visible{outline:3px solid #4d8777;outline-offset:4px}
+#note{margin-left:auto;font-size:12px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:30px 24px}
+figure{margin:0;min-width:0}
+.photo{display:block;position:relative;overflow:hidden;aspect-ratio:3/2;background:#e4e7de;color:inherit}
+.photo img{position:absolute;width:100%;height:100%;inset:0;object-fit:cover;object-position:right center;display:block}
+.sample{display:none}
+figcaption{display:flex;gap:12px;align-items:baseline;margin-top:12px}
+.number{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+h2{font-size:16px;line-height:1.3;font-weight:600;letter-spacing:-.015em;margin:0}
+.mood{display:block;font-size:12px;font-weight:400;letter-spacing:0;color:var(--muted);margin-top:4px}
+body[data-mode=crop] .photo,body[data-mode=light] .photo,body[data-mode=dark] .photo{aspect-ratio:390/320}
+body[data-mode=light] .photo{background:#f2f2f7}
+body[data-mode=dark] .photo{background:#000}
+body[data-mode=light] .photo img,body[data-mode=dark] .photo img{mask-image:linear-gradient(to bottom,#000 0%,rgba(0,0,0,.7) 45%,transparent 100%);-webkit-mask-image:linear-gradient(to bottom,#000 0%,rgba(0,0,0,.7) 45%,transparent 100%)}
+body[data-mode=light] .photo img{opacity:.34}
+body[data-mode=dark] .photo img{opacity:.72;mask-image:linear-gradient(to bottom,#000 0%,#000 55%,rgba(0,0,0,.85) 80%,transparent 100%);-webkit-mask-image:linear-gradient(to bottom,#000 0%,#000 55%,rgba(0,0,0,.85) 80%,transparent 100%)}
+body[data-mode=light] .sample,body[data-mode=dark] .sample{display:block;position:absolute;inset:0;padding:28px 18px}
+.sample-title{text-align:center;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:16px;font-weight:600;color:#161619}
+.sample-surface{margin-top:64px;padding:16px;background:rgba(255,255,255,.94);border-radius:18px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#161619}
+.sample-surface strong{display:block;font-size:14px}
+.sample-surface small{display:block;margin-top:6px;font-size:12px;color:#55555c}
+body[data-mode=dark] .sample-title,body[data-mode=dark] .sample-surface{color:#f3f3f5}
+body[data-mode=dark] .sample-title{text-shadow:0 1px 3px #000,0 0 12px rgba(0,0,0,.9)}
+body[data-mode=dark] .sample-surface{background:#1c1c1e}
+body[data-mode=dark] .sample-surface small{color:#b7b7c0}
+footer{margin-top:38px;padding-top:20px;border-top:1px solid var(--rule);display:flex;gap:20px;justify-content:space-between;font-size:12px;line-height:1.6;color:var(--muted)}
+footer a{color:var(--accent)}
+@media(max-width:1000px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:start}.intro{max-width:270px}#note{width:100%;margin:0}}
+@media(max-width:600px){main{padding-top:28px}header{display:block}.intro{max-width:none;margin-top:18px}.grid{grid-template-columns:1fr;gap:30px}.controls{gap:10px}.controls>span{width:100%}footer{display:block}footer p{margin-top:0}}
+</style>
+</head>
+<body data-mode="original">
+<main>
+<header>
+<div><p class="eyebrow">BikeSpot London / Collection 02</p><h1>More London to explore.</h1></div>
+<p class="intro">Twenty-five new London scenes, made for the same familiar backdrop. Review the full images, header crops and light or dark previews.</p>
+</header>
+<div class="controls">
+<span>View collection</span>
+<div class="modes" role="group" aria-label="Image preview style">
+<button type="button" data-mode="original" aria-pressed="true">Full images</button>
+<button type="button" data-mode="crop" aria-pressed="false">Header crop</button>
+<button type="button" data-mode="light" aria-pressed="false">Light header</button>
+<button type="button" data-mode="dark" aria-pressed="false">Dark header</button>
+</div>
+<span id="note" aria-live="polite">Select an image to open it at full size.</span>
+</div>
+<section class="grid" aria-label="Twenty-five additional London background candidates">
+<figure>
+<a class="photo" href="13-westminster-abbey.png" target="_blank" rel="noopener" aria-label="Open image 13: Westminster Abbey">
+<img src="13-westminster-abbey.png" alt="Westminster Abbey — Gothic morning" width="1536" height="1024" loading="eager" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">13</span><h2>Westminster Abbey<span class="mood">Gothic morning</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="14-buckingham-palace.png" target="_blank" rel="noopener" aria-label="Open image 14: Buckingham Palace">
+<img src="14-buckingham-palace.png" alt="Buckingham Palace — Palace light" width="1536" height="1024" loading="eager" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">14</span><h2>Buckingham Palace<span class="mood">Palace light</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="15-natural-history-museum.png" target="_blank" rel="noopener" aria-label="Open image 15: Natural History Museum">
+<img src="15-natural-history-museum.png" alt="Natural History Museum — Terracotta and sky" width="1536" height="1024" loading="eager" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">15</span><h2>Natural History Museum<span class="mood">Terracotta and sky</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="16-british-museum.png" target="_blank" rel="noopener" aria-label="Open image 16: British Museum">
+<img src="16-british-museum.png" alt="British Museum — Quiet colonnade" width="1536" height="1024" loading="eager" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">16</span><h2>British Museum<span class="mood">Quiet colonnade</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="17-tate-modern-v2.png" target="_blank" rel="noopener" aria-label="Open image 17: Tate Modern">
+<img src="17-tate-modern-v2.png" alt="Tate Modern — Bankside afternoon" width="1536" height="1024" loading="eager" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">17</span><h2>Tate Modern<span class="mood">Bankside afternoon</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="18-shakespeares-globe-v2.png" target="_blank" rel="noopener" aria-label="Open image 18: Shakespeare’s Globe">
+<img src="18-shakespeares-globe-v2.png" alt="Shakespeare’s Globe — By the river" width="1536" height="1024" loading="eager" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">18</span><h2>Shakespeare’s Globe<span class="mood">By the river</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="19-cutty-sark.png" target="_blank" rel="noopener" aria-label="Open image 19: Cutty Sark">
+<img src="19-cutty-sark.png" alt="Cutty Sark — Greenwich harbour light" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">19</span><h2>Cutty Sark<span class="mood">Greenwich harbour light</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="20-covent-garden.png" target="_blank" rel="noopener" aria-label="Open image 20: Covent Garden">
+<img src="20-covent-garden.png" alt="Covent Garden — Before the crowds" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">20</span><h2>Covent Garden<span class="mood">Before the crowds</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="21-leadenhall-market.png" target="_blank" rel="noopener" aria-label="Open image 21: Leadenhall Market">
+<img src="21-leadenhall-market.png" alt="Leadenhall Market — Victorian glow" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">21</span><h2>Leadenhall Market<span class="mood">Victorian glow</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="22-piccadilly-circus.png" target="_blank" rel="noopener" aria-label="Open image 22: Piccadilly Circus">
+<img src="22-piccadilly-circus.png" alt="Piccadilly Circus — London after rain" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">22</span><h2>Piccadilly Circus<span class="mood">London after rain</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="23-regent-street.png" target="_blank" rel="noopener" aria-label="Open image 23: Regent Street">
+<img src="23-regent-street.png" alt="Regent Street — The sweep of the city" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">23</span><h2>Regent Street<span class="mood">The sweep of the city</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="24-liberty-london.png" target="_blank" rel="noopener" aria-label="Open image 24: Liberty London">
+<img src="24-liberty-london.png" alt="Liberty London — Tudor city corner" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">24</span><h2>Liberty London<span class="mood">Tudor city corner</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="25-albert-memorial.png" target="_blank" rel="noopener" aria-label="Open image 25: Albert Memorial">
+<img src="25-albert-memorial.png" alt="Albert Memorial — Gold among green" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">25</span><h2>Albert Memorial<span class="mood">Gold among green</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="26-kensington-palace.png" target="_blank" rel="noopener" aria-label="Open image 26: Kensington Palace">
+<img src="26-kensington-palace.png" alt="Kensington Palace — Garden calm" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">26</span><h2>Kensington Palace<span class="mood">Garden calm</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="27-serpentine-bridge.png" target="_blank" rel="noopener" aria-label="Open image 27: Serpentine Bridge">
+<img src="27-serpentine-bridge.png" alt="Serpentine Bridge — Hyde Park reflections" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">27</span><h2>Serpentine Bridge<span class="mood">Hyde Park reflections</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="28-kew-palm-house.png" target="_blank" rel="noopener" aria-label="Open image 28: Kew Palm House">
+<img src="28-kew-palm-house.png" alt="Kew Palm House — Glasshouse morning" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">28</span><h2>Kew Palm House<span class="mood">Glasshouse morning</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="29-richmond-riverside.png" target="_blank" rel="noopener" aria-label="Open image 29: Richmond Riverside">
+<img src="29-richmond-riverside.png" alt="Richmond Riverside — A softer London" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">29</span><h2>Richmond Riverside<span class="mood">A softer London</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="30-hampton-court.png" target="_blank" rel="noopener" aria-label="Open image 30: Hampton Court Palace">
+<img src="30-hampton-court.png" alt="Hampton Court Palace — Tudor red" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">30</span><h2>Hampton Court Palace<span class="mood">Tudor red</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="31-alexandra-palace.png" target="_blank" rel="noopener" aria-label="Open image 31: Alexandra Palace">
+<img src="31-alexandra-palace.png" alt="Alexandra Palace — Hilltop light" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">31</span><h2>Alexandra Palace<span class="mood">Hilltop light</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="32-wembley-stadium.png" target="_blank" rel="noopener" aria-label="Open image 32: Wembley Stadium">
+<img src="32-wembley-stadium.png" alt="Wembley Stadium — The white arch" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">32</span><h2>Wembley Stadium<span class="mood">The white arch</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="33-arcelormittal-orbit.png" target="_blank" rel="noopener" aria-label="Open image 33: ArcelorMittal Orbit">
+<img src="33-arcelormittal-orbit.png" alt="ArcelorMittal Orbit — Olympic Park colour" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">33</span><h2>ArcelorMittal Orbit<span class="mood">Olympic Park colour</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="34-canary-wharf.png" target="_blank" rel="noopener" aria-label="Open image 34: Canary Wharf">
+<img src="34-canary-wharf.png" alt="Canary Wharf — Dockside blue" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">34</span><h2>Canary Wharf<span class="mood">Dockside blue</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="35-lloyds-building.png" target="_blank" rel="noopener" aria-label="Open image 35: Lloyd’s Building">
+<img src="35-lloyds-building.png" alt="Lloyd’s Building — City in silver" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">35</span><h2>Lloyd’s Building<span class="mood">City in silver</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="36-barbican.png" target="_blank" rel="noopener" aria-label="Open image 36: Barbican">
+<img src="36-barbican.png" alt="Barbican — Water and concrete" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">36</span><h2>Barbican<span class="mood">Water and concrete</span></h2></figcaption>
+</figure>
+<figure>
+<a class="photo" href="37-st-dunstan-in-the-east.png" target="_blank" rel="noopener" aria-label="Open image 37: St Dunstan in the East">
+<img src="37-st-dunstan-in-the-east.png" alt="St Dunstan in the East — A hidden garden" width="1536" height="1024" loading="lazy" decoding="async">
+<div class="sample" aria-hidden="true"><div class="sample-title">Favourites</div><div class="sample-surface"><strong>Your favourite docks</strong><small>Check availability at a glance</small></div></div>
+</a>
+<figcaption><span class="number">37</span><h2>St Dunstan in the East<span class="mood">A hidden garden</span></h2></figcaption>
+</figure>
+</section>
+<footer><p>Review collection · Generated imagery, not location photography.<br>Header image opacity and fade match the integrated app.</p><p><a href="../london-background-review/index.html">Original collection</a> · <a href="prompts.json">Generation prompts</a><br>25 approved images · Prepared for server deployment.</p></footer>
+</main>
+<script>
+const messages={
+original:"Select an image to open it at full size.",
+crop:"390 × 320 header proportions, aligned to the right.",
+light:"Approximate current light appearance · 34% opacity and fade.",
+dark:"Brighter dark preview · More visible landmarks and a later fade."
+};
+document.querySelectorAll("button[data-mode]").forEach(button=>{
+button.addEventListener("click",()=>{
+document.body.dataset.mode=button.dataset.mode;
+document.querySelectorAll("button[data-mode]").forEach(b=>b.setAttribute("aria-pressed",String(b===button)));
+document.querySelector("#note").textContent=messages[button.dataset.mode];
+});
+});
+</script>
+</body>
+</html>

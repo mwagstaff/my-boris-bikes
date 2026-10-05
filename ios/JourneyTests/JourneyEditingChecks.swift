@@ -102,6 +102,16 @@ struct JourneyEditingChecks {
             activeRun: .init(phase: .end, dockId: end.id, dockName: end.name, startedAt: Date(), runKey: "run"),
             pausedRunKeys: nil, createdAt: nil, updatedAt: nil
         )
+        let outboundHistory = JourneyHistoryEntry(id: "outbound", journeyID: "trip", startDock: start,
+            endDock: end, startedAt: Date(), kind: .favourite)
+        let returnHistory = JourneyHistoryEntry(id: "return", journeyID: "return-trip", startDock: end,
+            endDock: start, startedAt: Date(), kind: .adHoc)
+        let otherHistory = JourneyHistoryEntry(id: "other", journeyID: "other-trip", startDock: replacement,
+            endDock: end, startedAt: Date(), kind: .adHoc)
+        precondition(outboundHistory.hasSchedule(in: [scheduled]), "Same-direction schedule blocks scheduling")
+        precondition(!returnHistory.hasSchedule(in: [scheduled]), "Reverse-direction journey remains eligible for its own schedule")
+        precondition(!otherHistory.hasSchedule(in: [scheduled]), "Sharing only one dock is a different route")
+        precondition(!outboundHistory.hasSchedule(in: []), "Unscheduling makes the route eligible again")
         let schedules = ScheduledJourneyService.shared
         schedules.journeys = [scheduled]
         schedules.stopSucceeds = false
@@ -138,6 +148,32 @@ struct JourneyEditingChecks {
         history.merge([firstEntry])
         precondition(history.entries.filter { $0.id == firstEntry.id }.count == 1)
         precondition(zip(history.entries, history.entries.dropFirst()).allSatisfy { $0.startedAt >= $1.startedAt })
+        history.remove(firstEntry)
+        precondition(!history.entries.contains { $0.id == firstEntry.id })
+        history.merge([firstEntry])
+        precondition(!history.entries.contains { $0.id == firstEntry.id }, "Server refresh must not restore removed trips")
+        let reloaded = JourneyHistoryService(defaults: defaults)
+        reloaded.record(id: firstEntry.id, journeyID: firstEntry.journeyID, start: start, end: end,
+            startedAt: firstEntry.startedAt, kind: firstEntry.kind)
+        reloaded.merge([firstEntry])
+        precondition(!reloaded.entries.contains { $0.id == firstEntry.id }, "Removal survives relaunch and active-run refresh")
+        precondition(reloaded.entries.count == history.entries.count, "Only the selected run is removed")
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let august = formatter.date(from: "2026-08-07T12:40:00Z")!
+        let september = formatter.date(from: "2026-09-07T12:40:00Z")!
+        let monthlyEntries = [
+            JourneyHistoryEntry(id: "aug1", journeyID: "1", startDock: start, endDock: end, startedAt: august, kind: .adHoc),
+            JourneyHistoryEntry(id: "sep1", journeyID: "2", startDock: start, endDock: end, startedAt: september, kind: .favourite),
+            JourneyHistoryEntry(id: "sep2", journeyID: "3", startDock: start, endDock: end, startedAt: september.addingTimeInterval(60), kind: .adHoc)
+        ]
+        let months = JourneyHistoryMonth.sections(entries: monthlyEntries, filter: nil, limit: 30, calendar: calendar)
+        precondition(months.map(\.count) == [2, 1], "Months are newest first with full counts")
+        let firstPage = JourneyHistoryMonth.sections(entries: monthlyEntries, filter: nil, limit: 1, calendar: calendar)
+        precondition(firstPage.count == 1 && firstPage[0].count == 2 && firstPage[0].entries.count == 1,
+            "Pagination must not reduce the month count")
+        let filteredMonths = JourneyHistoryMonth.sections(entries: monthlyEntries, filter: .favourite, limit: 30, calendar: calendar)
+        precondition(filteredMonths.count == 1 && filteredMonths[0].count == 1, "Filtering updates counts and removes empty months")
         print("Passed journey editing checks: persistence, deduplication, phase preservation, stale actions and stop failures")
     }
 }

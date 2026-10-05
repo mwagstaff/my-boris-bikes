@@ -12,6 +12,7 @@ enum BikeSpotStyle {
 /// Photography stays in the header; scrolling content has a quiet, adaptive canvas.
 struct BikeSpotBackground: View {
     var showsPhoto = true
+    @State private var backgrounds = LondonBackgroundService.shared
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
@@ -21,17 +22,15 @@ struct BikeSpotBackground: View {
             ZStack(alignment: .top) {
                 BikeSpotStyle.canvas
                 if showsPhoto && !reduceTransparency && contrast != .increased {
-                    Image("CycleHeader")
+                    backgroundImage
                         .resizable()
                         .scaledToFill()
                         .frame(width: geometry.size.width, height: 320, alignment: .trailing)
                         .clipped()
-                        .opacity(colorScheme == .dark ? 0.17 : 0.34)
+                        .opacity(colorScheme == .dark ? 0.72 : 0.34)
                         .mask {
                             LinearGradient(
-                                stops: [.init(color: .black, location: 0),
-                                        .init(color: .black.opacity(0.7), location: 0.45),
-                                        .init(color: .clear, location: 1)],
+                                stops: photoMaskStops,
                                 startPoint: .top, endPoint: .bottom
                             )
                         }
@@ -41,6 +40,25 @@ struct BikeSpotBackground: View {
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+
+    private var backgroundImage: Image {
+        if let image = backgrounds.image {
+            return Image(decorative: image, scale: 1)
+        }
+        return Image(backgrounds.bundledImageName)
+    }
+
+    private var photoMaskStops: [Gradient.Stop] {
+        if colorScheme == .dark {
+            return [.init(color: .black, location: 0),
+                    .init(color: .black, location: 0.55),
+                    .init(color: .black.opacity(0.85), location: 0.8),
+                    .init(color: .clear, location: 1)]
+        }
+        return [.init(color: .black, location: 0),
+                .init(color: .black.opacity(0.7), location: 0.45),
+                .init(color: .clear, location: 1)]
     }
 }
 

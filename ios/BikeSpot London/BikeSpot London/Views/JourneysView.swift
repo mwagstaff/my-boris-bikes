@@ -14,6 +14,7 @@ struct JourneysView: View {
     @StateObject private var historyService = JourneyHistoryService.shared
     @State private var historyFilter: JourneyHistoryEntry.Kind?
     @State private var historyLimit = 30
+    @State private var historyEntryToRemove: JourneyHistoryEntry?
     @State private var selectedSection: JourneySection = .saved
     @State private var journeyEditorPresentation: JourneyEditorPresentation?
     @State private var journeyToDelete: ScheduledJourney?
@@ -97,7 +98,11 @@ struct JourneysView: View {
             primaryIDs = []
         }
         let customIDs = primaryIDs.flatMap { dockPreferences.customDockIDs(for: $0) ?? [] }
-        return Array(Set(primaryIDs + customIDs)).sorted()
+        let savedDockIDs = selectedSection == .saved
+            ? favoriteJourneyService.journeys.flatMap { [$0.startDock.id, $0.endDock.id] }
+                + scheduledJourneyService.journeys.flatMap { [$0.startDock.id, $0.endDock.id] }
+            : []
+        return Array(Set(primaryIDs + customIDs + savedDockIDs)).sorted()
     }
 
     var body: some View {
@@ -194,6 +199,18 @@ struct JourneysView: View {
             } message: {
                 Text("This removes the journey from your scheduled journeys.")
             }
+            .alert("Remove this journey?", isPresented: Binding(
+                get: { historyEntryToRemove != nil },
+                set: { if !$0 { historyEntryToRemove = nil } }
+            )) {
+                Button("Remove", role: .destructive) {
+                    if let entry = historyEntryToRemove { historyService.remove(entry) }
+                    historyEntryToRemove = nil
+                }
+                Button("Cancel", role: .cancel) { historyEntryToRemove = nil }
+            } message: {
+                Text("This removes only this trip from your history. Your favourites and schedules will stay unchanged.")
+            }
             .alert("Delete favourite journey?", isPresented: Binding(
                 get: { favoriteJourneyToDelete != nil },
                 set: { if !$0 { favoriteJourneyToDelete = nil } }
@@ -230,13 +247,18 @@ struct JourneysView: View {
                             description: Text("Add a regular route and choose the days you ride."))
                     } else {
                         ForEach(scheduledJourneyService.journeys.filter(\.isActive)) { journey in
-                            HStack {
-                                Button { selectedSection = .current } label: {
-                                    Label("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService)) · Active", systemImage: "bicycle")
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Button { selectedSection = .current } label: {
+                                        Label("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService)) · Active", systemImage: "bicycle")
+                                    }
+                                    Spacer()
+                                    Button("Edit") { journeyEditorPresentation = .edit(journey) }
+                                        .buttonStyle(.borderless)
                                 }
-                                Spacer()
-                                Button("Edit") { journeyEditorPresentation = .edit(journey) }
-                                    .buttonStyle(.borderless)
+                                JourneyRouteAvailabilityView(
+                                    startBikePoint: dockAvailabilityStore.bikePointsByID[journey.startDock.id],
+                                    endBikePoint: dockAvailabilityStore.bikePointsByID[journey.endDock.id])
                             }
                         }
                         ForEach(scheduledJourneysByStartDistance) { scheduledJourneyRow($0) }
@@ -254,17 +276,28 @@ struct JourneysView: View {
                     }
                     .onChange(of: historyFilter) { _, _ in historyLimit = 30 }
                 }
-                Section {
-                    if filteredHistory.isEmpty {
+                if filteredHistory.isEmpty {
+                    Section {
                         ContentUnavailableView("No journeys yet", systemImage: "clock.arrow.circlepath",
                             description: Text("Journeys you start will appear here automatically."))
                     }
-                    ForEach(filteredHistory.prefix(historyLimit)) { entry in
-                        historyRow(entry)
+                }
+                ForEach(JourneyHistoryMonth.sections(entries: historyService.entries,
+                    filter: historyFilter, limit: historyLimit)) { month in
+                    Section {
+                        ForEach(month.entries) { entry in historyRow(entry) }
+                    } header: {
+                        Text(month.heading).textCase(nil)
                     }
+                }
+                Section {
                     if historyLimit < filteredHistory.count {
                         ProgressView().frame(maxWidth: .infinity)
+                            .id(historyLimit)
                             .onAppear { historyLimit += 30 }
+                    } else if scheduledJourneyService.historyUnavailable {
+                        Text("Scheduled history isn’t available from the server yet. Trips recorded on this device are shown here.")
+                            .font(.caption).foregroundStyle(.secondary)
                     } else if let error = scheduledJourneyService.historyError {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(error).font(.caption).foregroundStyle(.secondary)
@@ -272,7 +305,7 @@ struct JourneysView: View {
                         }
                     } else if scheduledJourneyService.hasMoreHistory {
                         ProgressView().frame(maxWidth: .infinity)
-                            .task(id: historyService.entries.count) { await scheduledJourneyService.loadMoreHistory() }
+                            .task(id: scheduledJourneyService.historyPage) { await scheduledJourneyService.loadMoreHistory() }
                     }
                 }
             }
@@ -302,7 +335,12 @@ struct JourneysView: View {
                         Task { await adHocJourneyService.createAndStart(startDock: entry.endDock, endDock: entry.startDock, kind: entry.kind) }
                     }
                     Button("Schedule journey", systemImage: "calendar.badge.plus") {
+                        guard !entry.hasSchedule(in: scheduledJourneyService.journeys) else { return }
                         journeyEditorPresentation = .schedule(entry)
+                    }
+                    .disabled(entry.hasSchedule(in: scheduledJourneyService.journeys))
+                    Button("Remove this journey", systemImage: "trash", role: .destructive) {
+                        historyEntryToRemove = entry
                     }
                 } label: {
                     Label("Journey options", systemImage: "ellipsis.circle")
@@ -389,6 +427,8 @@ struct JourneysView: View {
         return FavoriteJourneyRow(
             startDock: docks.first,
             endDock: docks.second,
+            startBikePoint: dockAvailabilityStore.bikePointsByID[docks.first.id],
+            endBikePoint: dockAvailabilityStore.bikePointsByID[docks.second.id],
             distanceString: locationService.distanceString(to: docks.first.coordinate),
             onStart: {
                 Task {
@@ -694,6 +734,8 @@ private struct AdHocJourneyRow: View {
 private struct FavoriteJourneyRow: View {
     let startDock: ScheduledJourneyDock
     let endDock: ScheduledJourneyDock
+    let startBikePoint: BikePoint?
+    let endBikePoint: BikePoint?
     let distanceString: String
     let onStart: () -> Void
     let onStartReturn: () -> Void
@@ -732,6 +774,8 @@ private struct FavoriteJourneyRow: View {
                     .buttonStyle(.borderless)
                     .accessibilityLabel("Delete favourite journey")
                 }
+
+                JourneyRouteAvailabilityView(startBikePoint: startBikePoint, endBikePoint: endBikePoint)
 
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
@@ -828,11 +872,6 @@ enum JourneyEditorPresentation: Identifiable {
         return nil
     }
 
-    var startsImmediately: Bool {
-        if case .fromDock = self { return true }
-        return false
-    }
-
     var isEditing: Bool {
         editedJourney != nil
     }
@@ -910,6 +949,7 @@ private struct ScheduledJourneyRow: View {
                     }
 
                     DistanceIndicator(distance: numericDistance, distanceString: distanceString)
+                    JourneyRouteAvailabilityView(startBikePoint: startBikePoint, endBikePoint: endBikePoint)
                 }
 
                 if journey.isActive {
@@ -1492,10 +1532,10 @@ struct AddJourneyView: View {
                 if presentation.isNewJourney || presentation.editedFavorite != nil || presentation.editedJourney != nil {
                     Section {
                         if presentation.isNewJourney {
-                        Toggle(isOn: $addToFavorites) {
-                            Label("Add to favourites", systemImage: "star")
-                        }
-                        .disabled(!hasValidDocks || favoriteJourneyAlreadyExists)
+                            Toggle(isOn: $addToFavorites) {
+                                Label("Add to favourites", systemImage: "star")
+                            }
+                            .disabled(!hasValidDocks || favoriteJourneyAlreadyExists)
                         }
 
                         Toggle(isOn: $addAsScheduledJourney) {
@@ -1511,6 +1551,9 @@ struct AddJourneyView: View {
                             }
                             if presentation.editedJourney != nil && !addAsScheduledJourney {
                                 Text("Saving will remove the schedule and keep this route as a favourite.")
+                                if presentation.editedJourney?.isActive == true {
+                                    Text("This also ends the current tracked run.")
+                                }
                             }
                             if presentation.editedJourney == nil && scheduledJourneyService.journeys.count >= 5 {
                                 Text("You already have the maximum of 5 scheduled journeys.")
@@ -1595,7 +1638,7 @@ struct AddJourneyView: View {
                 }
             }
             .onChange(of: scheduledJourneyService.journeys.count) { _, journeyCount in
-                if journeyCount >= 5 && presentation.editedJourney == nil {
+                if journeyCount >= 5 && presentation.editedJourney == nil && !isSaving && createdScheduleID == nil {
                     addAsScheduledJourney = false
                 }
             }
@@ -1681,6 +1724,10 @@ struct AddJourneyView: View {
     private func saveNewJourney() async {
         guard let startDock = draft.startDock, let endDock = draft.endDock else { return }
 
+        guard LiveActivityService.shared.canStartJourneyActivity else {
+            errorMessage = "Enable Live Activities for BikeSpot London in Settings to start a journey."
+            return
+        }
         do {
             if addAsScheduledJourney && createdScheduleID == nil {
                 createdScheduleID = try await scheduledJourneyService.createJourney(from: draft).id

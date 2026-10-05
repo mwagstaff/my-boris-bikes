@@ -1,6 +1,7 @@
 const { buildAlternativeNotification } = require("./alternative-notifications");
 const { updateJourneyProgress, rideStartedAtForPhase } = require("./journey-progress");
 const express = require("express");
+const { registerBackgroundRoutes } = require("./background-images");
 const jwt = require("jsonwebtoken");
 const fs = require("fs");
 const path = require("path");
@@ -666,23 +667,6 @@ async function archiveScheduledJourneyRun(journey, endedAt = new Date()) {
   );
 }
 
-app.get("/journey-history", async (req, res) => {
-  const collection = await requireScheduledJourneysCollection(res);
-  if (!collection || !journeyHistoryCollection) return;
-  const deviceId = deviceIdFromRequest(req);
-  if (!deviceId) return res.status(400).json({ error: "Missing deviceId" });
-  const query = { deviceId };
-  if (req.query.before && req.query.afterID) {
-    const before = new Date(req.query.before);
-    if (!Number.isFinite(before.getTime())) return res.status(400).json({ error: "Invalid cursor" });
-    query.$or = [{ startedAt: { $lt: before } }, { startedAt: before, _id: { $gt: String(req.query.afterID) } }];
-  }
-  const records = await journeyHistoryCollection.find(query).sort({ startedAt: -1, _id: 1 }).limit(51).toArray();
-  res.json({
-    entries: records.slice(0, 50).map(({ _id, deviceId: _deviceId, ...entry }) => ({ id: _id, ...entry })),
-    hasMore: records.length > 50,
-  });
-});
 
 async function completeScheduledJourneyFromArrivalSession(session, dockId) {
   if (
@@ -2896,6 +2880,8 @@ app.use((req, res, next) => {
   next();
 });
 
+registerBackgroundRoutes(app);
+
 // Server startup time
 const serverStartTime = Date.now();
 
@@ -4005,6 +3991,24 @@ app.post("/scheduled-journeys/device/register", async (req, res) => {
     hasPushToStartToken: !!pushToStartToken,
     hasEnabledJourneys,
     dockPreferencesRevision: dockPreferences?.revision ?? null,
+  });
+});
+
+app.get("/journey-history", async (req, res) => {
+  const collection = await requireScheduledJourneysCollection(res);
+  if (!collection || !journeyHistoryCollection) return;
+  const deviceId = deviceIdFromRequest(req);
+  if (!deviceId) return res.status(400).json({ error: "Missing deviceId" });
+  const query = { deviceId };
+  if (req.query.before && req.query.afterID) {
+    const before = new Date(req.query.before);
+    if (!Number.isFinite(before.getTime())) return res.status(400).json({ error: "Invalid cursor" });
+    query.$or = [{ startedAt: { $lt: before } }, { startedAt: before, _id: { $gt: String(req.query.afterID) } }];
+  }
+  const records = await journeyHistoryCollection.find(query).sort({ startedAt: -1, _id: 1 }).limit(51).toArray();
+  res.json({
+    entries: records.slice(0, 50).map(({ _id, deviceId: _deviceId, ...entry }) => ({ id: _id, ...entry })),
+    hasMore: records.length > 50,
   });
 });
 

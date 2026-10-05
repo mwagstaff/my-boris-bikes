@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "images": [
+    {
+      "id": "BatterseaHeader",
+      "file": "BatterseaHeader-f5a3321fc355d1809027ea5caa9ec213cda36e332d19e43f6642a8450bf73c97.jpg",
+      "sha256": "f5a3321fc355d1809027ea5caa9ec213cda36e332d19e43f6642a8450bf73c97",
+      "byteCount": 457705
+    },
+    {
+      "id": "BigBenHeader",
+      "file": "BigBenHeader-6c9ca62536f8ae55ceede5272b62ff65ec5e4259b72e843ecda2b475afeec58e.jpg",
+      "sha256": "6c9ca62536f8ae55ceede5272b62ff65ec5e4259b72e843ecda2b475afeec58e",
+      "byteCount": 500589
+    },
+    {
+      "id": "GherkinHeader",
+      "file": "GherkinHeader-19ee92220dae37cc0cb1642af33e90d747ba0fe7d3dc9f77659c42b2933d6581.jpg",
+      "sha256": "19ee92220dae37cc0cb1642af33e90d747ba0fe7d3dc9f77659c42b2933d6581",
+      "byteCount": 616088
+    },
+    {
+      "id": "GreenwichHeader",
+      "file": "GreenwichHeader-f2a615496bed9eba671822d8933c10d1014fee575b64a611808a3e0841b891a1.jpg",
+      "sha256": "f2a615496bed9eba671822d8933c10d1014fee575b64a611808a3e0841b891a1",
+      "byteCount": 511477
+    },
+    {
+      "id": "LondonEyeHeader",
+      "file": "LondonEyeHeader-c25834af140922b59e878eab076944c4bc8971ec6ab06fae6afb831cfe6f533d.jpg",
+      "sha256": "c25834af140922b59e878eab076944c4bc8971ec6ab06fae6afb831cfe6f533d",
+      "byteCount": 471433
+    },
+    {
+      "id": "RoyalAlbertHallHeader",
+      "file": "RoyalAlbertHallHeader-627ce3f7701d4d05eaa97767f8d5fa3428c4cba36802b1606aca8d588891dc87.jpg",
+      "sha256": "627ce3f7701d4d05eaa97767f8d5fa3428c4cba36802b1606aca8d588891dc87",
+      "byteCount": 789021
+    },
+    {
+      "id": "ShardHeader",
+      "file": "ShardHeader-e6ea8a96d9e0bdfcd69d9c1b5a640dd2c8e94fb816d06d8c4c564646a2585556.jpg",
+      "sha256": "e6ea8a96d9e0bdfcd69d9c1b5a640dd2c8e94fb816d06d8c4c564646a2585556",
+      "byteCount": 368109
+    },
+    {
+      "id": "StPancrasHeader",
+      "file": "StPancrasHeader-7c2cac3d676005b7c4cdc175bc2a4d2942220cf7ce0703a5e17163c39301b1a7.jpg",
+      "sha256": "7c2cac3d676005b7c4cdc175bc2a4d2942220cf7ce0703a5e17163c39301b1a7",
+      "byteCount": 591599
+    },
+    {
+      "id": "StPaulsHeader",
+      "file": "StPaulsHeader-9f8909ae4b5d288dd1f677015a9b073265571f74729ac77c76077e92ca7b41fa.jpg",
+      "sha256": "9f8909ae4b5d288dd1f677015a9b073265571f74729ac77c76077e92ca7b41fa",
+      "byteCount": 384349
+    },
+    {
+      "id": "TowerBridgeHeader",
+      "file": "TowerBridgeHeader-8083ae83e33eb13db606d56d67096ac9ea74eebaf0b5c7305875721d77debb26.jpg",
+      "sha256": "8083ae83e33eb13db606d56d67096ac9ea74eebaf0b5c7305875721d77debb26",
+      "byteCount": 469932
+    },
+    {
+      "id": "TowerOfLondonHeader",
+      "file": "TowerOfLondonHeader-cb92c3592c039a5fbfb219bcbd6c7ad10db221907be09f8080f6269c4a5fd953.jpg",
+      "sha256": "cb92c3592c039a5fbfb219bcbd6c7ad10db221907be09f8080f6269c4a5fd953",
+      "byteCount": 567348
+    },
+    {
+      "id": "TrafalgarSquareHeader",
+      "file": "TrafalgarSquareHeader-df4968b9eb1b079133212568cadc44840fc6a0004247f140e0cfdf34158f361c.jpg",
+      "sha256": "df4968b9eb1b079133212568cadc44840fc6a0004247f140e0cfdf34158f361c",
+      "byteCount": 462588
+    }
+  ]
+}

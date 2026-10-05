@@ -325,12 +325,15 @@ final class ScheduledJourneyService: ObservableObject {
 
     @Published private(set) var isLoadingHistory = false
     @Published private(set) var hasMoreHistory = true
+    @Published private(set) var historyPage = 0
     @Published private(set) var historyError: String?
+    @Published private(set) var historyUnavailable = false
     private var historyCursor: JourneyHistoryEntry?
 
     func refreshHistory() async {
         guard !isLoadingHistory else { return }
         historyCursor = nil
+        historyUnavailable = false
         hasMoreHistory = true
         await loadMoreHistory()
     }
@@ -338,6 +341,7 @@ final class ScheduledJourneyService: ObservableObject {
     func loadMoreHistory() async {
         guard !isLoadingHistory, hasMoreHistory else { return }
         isLoadingHistory = true
+        historyError = nil
         defer { isLoadingHistory = false }
         do {
             try Task.checkCancellation()
@@ -356,10 +360,17 @@ final class ScheduledJourneyService: ObservableObject {
             historyCursor = response.entries.last
             hasMoreHistory = response.hasMore && historyCursor != nil
             historyError = nil
+            historyPage += 1
         } catch is CancellationError {
             return
+        } catch where Task.isCancelled {
+            return
+        } catch ScheduledJourneyError.http(let status, _) where status == 404 || status == 501 {
+            historyUnavailable = true
+            hasMoreHistory = false
+            historyError = nil
         } catch {
-            historyError = "Couldn’t load older scheduled trips. Your saved history is still available."
+            historyError = "Couldn’t sync scheduled history. \(error.localizedDescription)"
             logger.warning("Couldn’t refresh journey history: \(error.localizedDescription)")
         }
     }
@@ -558,7 +569,7 @@ final class ScheduledJourneyService: ObservableObject {
         guard (200...299).contains(httpResponse.statusCode) else {
             let serverMessage = (try? JSONDecoder().decode(ServerError.self, from: data).error)
                 ?? "Server returned HTTP \(httpResponse.statusCode)"
-            throw ScheduledJourneyError.server(serverMessage)
+            throw ScheduledJourneyError.http(httpResponse.statusCode, serverMessage)
         }
 
         if T.self == EmptyResponse.self, data.isEmpty {
@@ -579,6 +590,7 @@ enum ScheduledJourneyError: LocalizedError {
     case invalidURL
     case invalidResponse
     case server(String)
+    case http(Int, String)
 
     var errorDescription: String? {
         switch self {
@@ -588,7 +600,7 @@ enum ScheduledJourneyError: LocalizedError {
             return "The scheduled journey server URL is invalid."
         case .invalidResponse:
             return "The server returned an invalid response."
-        case .server(let message):
+        case .http(_, let message), .server(let message):
             return message
         }
     }

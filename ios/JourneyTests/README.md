@@ -107,6 +107,8 @@ swiftc \
   'ios/BikeSpot London/BikeSpot London/Models/AdHocJourney.swift' \
   'ios/BikeSpot London/BikeSpot London/Services/FavoriteJourneyService.swift' \
   'ios/BikeSpot London/BikeSpot London/Services/AdHocJourneyService.swift' \
+  'ios/BikeSpot London/BikeSpot London/Models/JourneyHistoryEntry.swift' \
+  'ios/BikeSpot London/BikeSpot London/Services/JourneyHistoryService.swift' \
   ios/JourneyTests/JourneyEditingChecks.swift -o /tmp/bikespot-journey-editing-checks
 /tmp/bikespot-journey-editing-checks
 ```
@@ -116,7 +118,7 @@ These exercise production journey services with test doubles for Live Activities
 After a manual Xcode build, verify:
 
 - Edit a favourite, change either dock, save, and relaunch. Cancel should leave the route unchanged.
-- From a map dock, use both journey actions, choose the missing dock, and save with “Start journey now” enabled. The app should open Journeys. Repeat while already watching the chosen start dock.
+- From a map dock, use both journey actions, choose the missing dock, and tap “Start journey”. The app should open Journeys. Repeat while already watching the chosen start dock.
 - Open “Edit alternatives” from the map and confirm the saved list is also used in Journeys.
 - Select “Start journey here” during collection, then use Next leg. The selected start dock should be watched, followed by the original destination.
 - Select “End journey here” during the destination stage. The Live Activity, arrival monitoring and notifications should move to the selected dock without returning to collection.
@@ -156,3 +158,27 @@ swiftc \
 Checks custom ordering, missing and zero availability, exclusion of custom/primary docks, duplicate IDs, nearest-first ordering, stable distance ties and the 20-dock browsing limit.
 
 After a manual build, check Favourites and each Journey dock's **See all** dialog with a custom list (including an empty custom list). **Other nearby docks** must exclude custom entries without changing them. Verify map donuts persist across zoom levels: close-up labels show preferred bike types without a journey and spaces during a journey. Check the compact Favourites layout, alternative donut charts and full-width End journey buttons with light/dark appearances and larger text.
+
+
+## Journey history and scheduling
+
+The journey editing checks also cover separate repeat runs, failed starts, completion timestamps, newest-first ordering, merging and history persistence. API history checks cover device isolation, idempotent archiving and cursor pagination, including equal timestamps.
+
+After a manual Xcode build:
+- New Journey has a prominent Start journey button and automatically records the run. End it and check the start/end time range in History.
+- Repeat a route and take its return: History must retain each run separately. Scroll through more than 30 entries; change All/Favourites/Scheduled/Ad hoc filters.
+- Favourites contains favourite routes and schedules. Current appears only during an active journey; there is no separate Scheduled tab.
+- Edit a favourite or choose Schedule journey from History, select days/times and save. Edit the schedule, turn Schedule journey off and save: the route remains a favourite, including after relaunch.
+- Confirm scheduling errors remain visible and leave the editor open. Test offline history loading and Retry.
+- Check large text, VoiceOver and both appearances. Native List creates history rows as they become visible.
+
+Deploy the updated API with the app for background scheduled history. The new journey_history collection retains completed scheduled runs, fetched in pages of 50. Existing local started routes are migrated once; previously discarded trips and unknown end times cannot be reconstructed. History times describe the recorded journey/watch session, not inferred cycling departure or arrival. Removing an active schedule ends its tracked run and keeps the route as a favourite.
+
+
+### History menu and dock-watch replacement checks
+
+- History → Journey options disables Schedule journey only when a schedule has the same start and end dock IDs in the same direction. The reverse direction remains eligible for its own schedule; sharing only one dock does not count.
+- Remove this journey shows confirmation. Cancel preserves it; Remove deletes only that occurrence, preserving favourites/schedules. Refresh and relaunch must not restore it (including server-backed entries).
+- A server without `/journey-history` (HTTP 404/501) shows an availability explanation without Retry. Temporary connection/server errors retain Retry, with progress while loading. Pull to refresh checks support again after API deployment.
+- Map dock sheet → Watch dock stays available during a journey. Cancel replacement keeps the original run. Confirm stops it, retains the saved route/schedule, then starts a standalone watch, including when selecting the same dock. Test both ad-hoc and scheduled runs and a scheduled-stop network failure.
+- Native ActivityKit replacement still requires manual on-device validation.

@@ -1,0 +1,202 @@
+[
+  {
+    "slug": "13-westminster-abbey",
+    "title": "Westminster Abbey · Gothic morning",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-9092996c-6823-4053-91de-05267b01fc1b.png",
+    "filename": "13-westminster-abbey.png",
+    "serverID": "WestminsterAbbeyHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/WestminsterAbbeyHeader.jpg"
+  },
+  {
+    "slug": "14-buckingham-palace",
+    "title": "Buckingham Palace · Palace light",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-03c3849d-f1d6-4ca2-9693-8cf23e33f906.png",
+    "filename": "14-buckingham-palace.png",
+    "serverID": "BuckinghamPalaceHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/BuckinghamPalaceHeader.jpg"
+  },
+  {
+    "slug": "15-natural-history-museum",
+    "title": "Natural History Museum · Terracotta and sky",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-5b22dc4a-1dfc-48cf-a4ca-7a2184706d97.png",
+    "filename": "15-natural-history-museum.png",
+    "serverID": "NaturalHistoryMuseumHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/NaturalHistoryMuseumHeader.jpg"
+  },
+  {
+    "slug": "16-british-museum",
+    "title": "British Museum · Quiet colonnade",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-33f8d3ae-e281-44dc-a4ea-f51c98afdf37.png",
+    "filename": "16-british-museum.png",
+    "serverID": "BritishMuseumHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/BritishMuseumHeader.jpg"
+  },
+  {
+    "slug": "17-tate-modern",
+    "title": "Tate Modern · Bankside afternoon",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-cafe1b21-831d-4d5b-9dff-fca8505f940a.png",
+    "filename": "17-tate-modern-v2.png",
+    "serverID": "TateModernHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/TateModernHeader.jpg"
+  },
+  {
+    "slug": "18-shakespeares-globe",
+    "title": "Shakespeare’s Globe · By the river",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-9ff6d379-2888-428b-8532-3b78401ba43e.png",
+    "filename": "18-shakespeares-globe-v2.png",
+    "serverID": "ShakespearesGlobeHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/ShakespearesGlobeHeader.jpg"
+  },
+  {
+    "slug": "19-cutty-sark",
+    "title": "Cutty Sark · Greenwich harbour light",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-669c7637-5df6-42d3-95a5-9a04ec10fd14.png",
+    "filename": "19-cutty-sark.png",
+    "serverID": "CuttySarkHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/CuttySarkHeader.jpg"
+  },
+  {
+    "slug": "20-covent-garden",
+    "title": "Covent Garden · Before the crowds",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-7218388f-5bed-4b77-92f6-07d880ec45fa.png",
+    "filename": "20-covent-garden.png",
+    "serverID": "CoventGardenHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/CoventGardenHeader.jpg"
+  },
+  {
+    "slug": "21-leadenhall-market",
+    "title": "Leadenhall Market · Victorian glow",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-eb41987d-1245-499b-ab7c-36c3bf0be287.png",
+    "filename": "21-leadenhall-market.png",
+    "serverID": "LeadenhallMarketHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/LeadenhallMarketHeader.jpg"
+  },
+  {
+    "slug": "22-piccadilly-circus",
+    "title": "Piccadilly Circus · London after rain",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-51798e9d-2394-47d7-91a8-697e6054be6d.png",
+    "filename": "22-piccadilly-circus.png",
+    "serverID": "PiccadillyCircusHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/PiccadillyCircusHeader.jpg"
+  },
+  {
+    "slug": "23-regent-street",
+    "title": "Regent Street · The sweep of the city",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-43720db2-23d5-47ea-a114-d176f47dce4f.png",
+    "filename": "23-regent-street.png",
+    "serverID": "RegentStreetHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/RegentStreetHeader.jpg"
+  },
+  {
+    "slug": "24-liberty-london",
+    "title": "Liberty London · Tudor city corner",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-55ffc2ac-692e-463c-b68c-ea395a3d4c73.png",
+    "filename": "24-liberty-london.png",
+    "serverID": "LibertyLondonHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/LibertyLondonHeader.jpg"
+  },
+  {
+    "slug": "25-albert-memorial",
+    "title": "Albert Memorial · Gold among green",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-a6b3e649-4341-4f4c-a95d-899e99150608.png",
+    "filename": "25-albert-memorial.png",
+    "serverID": "AlbertMemorialHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/AlbertMemorialHeader.jpg"
+  },
+  {
+    "slug": "26-kensington-palace",
+    "title": "Kensington Palace · Garden calm",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-2a066809-a8c8-4db8-93c5-00f7ee987ba8.png",
+    "filename": "26-kensington-palace.png",
+    "serverID": "KensingtonPalaceHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/KensingtonPalaceHeader.jpg"
+  },
+  {
+    "slug": "27-serpentine-bridge",
+    "title": "Serpentine Bridge · Hyde Park reflections",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-3a8dbdf7-643a-41ca-bf50-055cee76409e.png",
+    "filename": "27-serpentine-bridge.png",
+    "serverID": "SerpentineBridgeHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/SerpentineBridgeHeader.jpg"
+  },
+  {
+    "slug": "28-kew-palm-house",
+    "title": "Kew Palm House · Glasshouse morning",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-ade940e8-d2db-48e3-a02e-d9860a573bbf.png",
+    "filename": "28-kew-palm-house.png",
+    "serverID": "KewPalmHouseHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/KewPalmHouseHeader.jpg"
+  },
+  {
+    "slug": "29-richmond-riverside",
+    "title": "Richmond Riverside · A softer London",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-695be80a-d1f5-46f9-b26d-769aa4cc1030.png",
+    "filename": "29-richmond-riverside.png",
+    "serverID": "RichmondRiversideHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/RichmondRiversideHeader.jpg"
+  },
+  {
+    "slug": "30-hampton-court",
+    "title": "Hampton Court Palace · Tudor red",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-9d5f8df1-10ef-4a3f-bf78-c2f7da341592.png",
+    "filename": "30-hampton-court.png",
+    "serverID": "HamptonCourtHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/HamptonCourtHeader.jpg"
+  },
+  {
+    "slug": "31-alexandra-palace",
+    "title": "Alexandra Palace · Hilltop light",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-a5b19a17-8767-40e4-a66a-2a7e14991c97.png",
+    "filename": "31-alexandra-palace.png",
+    "serverID": "AlexandraPalaceHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/AlexandraPalaceHeader.jpg"
+  },
+  {
+    "slug": "32-wembley-stadium",
+    "title": "Wembley Stadium · The white arch",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-b580e9af-d06f-469e-95e5-6fd57d9dbd0a.png",
+    "filename": "32-wembley-stadium.png",
+    "serverID": "WembleyStadiumHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/WembleyStadiumHeader.jpg"
+  },
+  {
+    "slug": "33-arcelormittal-orbit",
+    "title": "ArcelorMittal Orbit · Olympic Park colour",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-45d31291-6e32-4acd-8b03-4553a38f1083.png",
+    "filename": "33-arcelormittal-orbit.png",
+    "serverID": "ArcelormittalOrbitHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/ArcelormittalOrbitHeader.jpg"
+  },
+  {
+    "slug": "34-canary-wharf",
+    "title": "Canary Wharf · Dockside blue",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-4c63f734-f291-45e8-8d8d-a958af8ddac7.png",
+    "filename": "34-canary-wharf.png",
+    "serverID": "CanaryWharfHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/CanaryWharfHeader.jpg"
+  },
+  {
+    "slug": "35-lloyds-building",
+    "title": "Lloyd’s Building · City in silver",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-9ec14b2d-0e6d-4678-af63-31f09adbdcff.png",
+    "filename": "35-lloyds-building.png",
+    "serverID": "LloydsBuildingHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/LloydsBuildingHeader.jpg"
+  },
+  {
+    "slug": "36-barbican",
+    "title": "Barbican · Water and concrete",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-5e7bc5be-cb2e-4ef9-b530-039ba10b1924.png",
+    "filename": "36-barbican.png",
+    "serverID": "BarbicanHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/BarbicanHeader.jpg"
+  },
+  {
+    "slug": "37-st-dunstan-in-the-east",
+    "title": "St Dunstan in the East · A hidden garden",
+    "source": "/Users/mwagstaff/.codex/generated_images/01a0f9ff-b2a7-7be1-9f7f-21c72a803c78/exec-ec1454cd-13a8-47ce-be3d-28f18f2e37c5.png",
+    "filename": "37-st-dunstan-in-the-east.png",
+    "serverID": "StDunstanInTheEastHeader",
+    "serverSource": "/Users/mwagstaff/dev/bikespot-london/output/london-background-source/StDunstanInTheEastHeader.jpg"
+  }
+]

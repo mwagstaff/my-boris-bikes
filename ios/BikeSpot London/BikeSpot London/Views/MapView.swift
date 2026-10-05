@@ -346,6 +346,9 @@ struct BikePointDetailView: View {
     @State private var showsAllDocks = false
     @State private var showsOtherNearbyDocks = false
     @State private var showsAlternativesEditor = false
+    @State private var confirmsReplacingJourney = false
+    @State private var isReplacingJourney = false
+    @State private var watchError: String?
 
     private var hasCustomAlternatives: Bool { preferences.customDockIDs(for: bikePoint.id) != nil }
     private var nearbyDocks: [BikePoint] {
@@ -362,13 +365,13 @@ struct BikePointDetailView: View {
             excludingDockIDs: Set(preferences.customDockIDs(for: bikePoint.id) ?? []))
     }
     private var isWatching: Bool { liveActivityService.isActivityActive(for: bikePoint.id) }
-    private var journeyIsTracking: Bool { liveActivityService.currentNotificationSession?.scheduledJourneyPhase != nil }
+    private var journeyIsTracking: Bool { liveActivityService.hasJourneyToReplace }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 summary
-                actionGrid
+                actionGrid.disabled(isReplacingJourney)
                 if isWatching && !journeyIsTracking {
                     LiveActivityControlRow(bikePoint: bikePoint, compact: true)
                 }
@@ -397,6 +400,24 @@ struct BikePointDetailView: View {
             .padding(16)
             .padding(.top, 8)
         }
+        .alert("Replace current journey?", isPresented: $confirmsReplacingJourney) {
+            Button("Replace and watch dock", role: .destructive) {
+                isReplacingJourney = true
+                Task {
+                    watchError = await liveActivityService.replaceJourneyWithDockWatch(
+                        for: bikePoint, alias: favoritesService.alias(for: bikePoint.id))
+                    isReplacingJourney = false
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This ends the current journey and starts live updates for \(bikePoint.commonName). Your saved route and schedule will stay unchanged.")
+        }
+        .alert("Couldn’t watch dock", isPresented: Binding(
+            get: { watchError != nil }, set: { if !$0 { watchError = nil } }
+        )) {
+            Button("OK", role: .cancel) { watchError = nil }
+        } message: { Text(watchError ?? "Please try again.") }
         .presentationBackground(reduceTransparency ? AnyShapeStyle(BikeSpotStyle.canvas) : AnyShapeStyle(.regularMaterial))
         .sheet(item: $journeyEditorPresentation, onDismiss: {
             if didStartJourney {
@@ -489,16 +510,21 @@ struct BikePointDetailView: View {
             }
             .dockSheetButton()
             Button {
+                guard !isReplacingJourney else { return }
+                if journeyIsTracking {
+                    confirmsReplacingJourney = true
+                    return
+                }
                 AnalyticsService.shared.track(action: isWatching ? .liveActivityEnd : .liveActivityStart,
                     screen: .map, dock: AnalyticsDockInfo.from(bikePoint), metadata: ["source": "detail_sheet"])
                 liveActivityService.startLiveActivity(for: bikePoint, alias: favoritesService.alias(for: bikePoint.id))
             } label: {
-                DockSheetActionLabel(title: journeyIsTracking ? "Journey tracking" : isWatching ? "Stop watching" : "Watch this dock",
-                    subtitle: journeyIsTracking ? "Managed in Journeys" : isWatching ? "End live updates" : "Get live updates",
+                DockSheetActionLabel(title: isReplacingJourney ? "Starting…" : isWatching && !journeyIsTracking ? "Stop watching" : "Watch dock",
+                    subtitle: isWatching && !journeyIsTracking ? "End live updates" : "Get live updates",
                     symbol: "waveform.path.ecg")
             }
             .dockSheetButton()
-            .disabled(journeyIsTracking)
+            .disabled(isReplacingJourney)
             Button {
                 AnalyticsService.shared.track(action: isFavorite ? .favoriteRemove : .favoriteAdd,
                     screen: .map, dock: AnalyticsDockInfo.from(bikePoint), metadata: ["source": "detail_sheet"])

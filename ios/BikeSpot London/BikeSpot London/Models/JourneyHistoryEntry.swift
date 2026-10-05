@@ -20,6 +20,12 @@ struct JourneyHistoryEntry: Codable, Identifiable, Equatable {
     var endedAt: Date?
     let kind: Kind
 
+    func hasSchedule(in journeys: [ScheduledJourney]) -> Bool {
+        journeys.contains { journey in
+            journey.startDock.id == startDock.id && journey.endDock.id == endDock.id
+        }
+    }
+
     var dateLabel: String {
         Self.dateLabel(start: startedAt, end: endedAt)
     }
@@ -36,5 +42,30 @@ struct JourneyHistoryEntry: Codable, Identifiable, Equatable {
         guard let end else { return beginning }
         formatter.dateFormat = Calendar.current.isDate(start, inSameDayAs: end) ? "HH:mm" : "EEE, MMM d HH:mm"
         return "\(beginning) – \(formatter.string(from: end))"
+    }
+}
+
+struct JourneyHistoryMonth: Identifiable {
+    let id: Date
+    let entries: [JourneyHistoryEntry]
+    let count: Int
+
+    var heading: String {
+        "\(id.formatted(.dateTime.month(.wide).year())) · \(count) \(count == 1 ? "journey" : "journeys")"
+    }
+
+    /// Counts use all matching records, even when only some rows are visible yet.
+    static func sections(entries: [JourneyHistoryEntry], filter: JourneyHistoryEntry.Kind?,
+                         limit: Int, calendar: Calendar = .current) -> [JourneyHistoryMonth] {
+        let matching = entries.filter { filter == nil || $0.kind == filter }
+            .sorted { $0.startedAt > $1.startedAt }
+        func month(_ entry: JourneyHistoryEntry) -> Date {
+            calendar.dateInterval(of: .month, for: entry.startedAt)!.start
+        }
+        let counts = Dictionary(grouping: matching, by: month).mapValues(\.count)
+        let visible = Dictionary(grouping: matching.prefix(max(0, limit)), by: month)
+        return visible.keys.sorted(by: >).map {
+            JourneyHistoryMonth(id: $0, entries: visible[$0] ?? [], count: counts[$0] ?? 0)
+        }
     }
 }

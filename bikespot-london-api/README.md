@@ -118,9 +118,12 @@ Environment variables:
 - `MONGODB_URI_MY_BORIS_BIKES` / `MONGODB_URI` / `MONGO_URI` - Legacy MongoDB connection string fallbacks
 - `MONGODB_DB_NAME` - Mongo database name (default: `my_boris_bikes`)
 - `SCHEDULED_JOURNEYS_COLLECTION` - Collection name (default: `scheduled_journeys`)
+- `BACKGROUND_IMAGES_DIR` - Absolute directory for the background catalogue and published images (default: `data/backgrounds` beside `server.js`). Use a persistent directory outside the deployment checkout for independently managed images.
 
 ## Endpoints
 
+- `GET /backgrounds` - Versioned background catalogue, cached by HTTP clients for five minutes
+- `GET /backgrounds/images/:file` - Immutable, content-versioned JPEG or PNG
 - `GET /BikePoint` - TfL proxy for all docks (applies admin overrides)
 - `GET /Place/:dockId` - TfL proxy for a single dock (applies admin overrides)
 - `GET /admin` - Admin UI for dock value overrides
@@ -146,6 +149,41 @@ Environment variables:
 - `GET /status` - Server status and metrics
 - `GET /live-activity/status` - Active sessions info
 - `GET /metrics` - Prometheus metrics endpoint
+
+## Updating the app backgrounds
+
+This feature needs one API deployment and one app release to install the downloader. After that, images can be added, replaced, reordered or removed on the server without restarting the API or releasing the app. The supplied `data/backgrounds` collection contains 37 approved London images: the original 12 plus the 25 from collection 02. The original 12 remain bundled as offline fallbacks; the additional images download on demand.
+
+The API reads `catalog.json` for each request. The publishing tool writes versioned image files first and atomically replaces the catalogue last. Keep a separate **source folder containing the complete desired collection**. JPEG/PNG filenames are stable image IDs: for example, `LondonEyeHeader.jpg`. The local starter set is in `../output/london-background-source/`.
+
+From the API directory, publish the complete source folder:
+
+```sh
+node scripts/publish-backgrounds.js /path/to/background-source
+```
+
+The destination is `BACKGROUND_IMAGES_DIR`, or `data/backgrounds` by default. You can also pass a destination directory as the second argument. On the deployed server, the publisher and the API must use the same published directory. Copy the source folder to that server and run the command there to update the live collection.
+
+- **Replace:** overwrite an image in the source folder, keeping its filename, then republish. Changed bytes receive a new SHA-256 filename, so phones cannot confuse them with an old cached version.
+- **Add:** put a new JPEG/PNG in the source folder and republish. New IDs require no Swift code or asset-catalog changes.
+- **Remove:** delete it from the source folder and republish. The tool replaces the whole catalogue; a source folder with one image publishes a one-image collection.
+- **Reorder:** the publisher uses filename order. To choose another order, rearrange the `images` array in a copy of `catalog.json`, then atomically rename the copy into place. IDs, filenames, hashes and byte counts must remain unchanged.
+
+Use landscape compositions around 1536 × 1024. IDs accept letters, numbers, `_` and `-` (up to 80 characters). The catalogue supports up to 100 images. Each JPEG/PNG must be at most 5 MiB; the app accepts dimensions up to 4096 × 4096, applies orientation metadata and downsamples to a maximum 2048-pixel edge for display. The publisher checks format headers, IDs and file size; preview new images before publishing.
+
+Old versioned files are deliberately retained for phones with older catalogues. Do not immediately delete them during publication. A malformed or incomplete catalogue returns HTTP 503 instead of advertising missing files; clients keep their last valid catalogue.
+
+For production, place published files outside the checkout so a later code deployment cannot overwrite the live catalogue. Set `BACKGROUND_IMAGES_DIR` in the API service environment and seed that directory with the contents of `data/backgrounds` during the initial deployment. Source photos and generated review pages are not served by these routes.
+
+### App caching and rotation
+
+The app selects one background per foreground visit and shares it across tabs. Temporary inactivity does not rotate it. It checks for catalogue changes at most every six hours while being used; failed catalogue requests retry no sooner than five minutes later. Refreshed catalogue entries become eligible on the next visit, so a catalogue refresh does not change the current scene halfway through a visit.
+
+Only the selected remote image is downloaded. Each completed download is checked against its expected size, SHA-256 and decoded image dimensions before an atomic cache write. Unchanged versions of the original 12 images reuse bundled assets without downloading them. Local images and the catalogue survive app restarts in `Library/Caches`, with a 50 MiB image limit per API environment. Older cached images are evicted as needed, and iOS may also purge the cache.
+
+Offline or failed downloads keep the currently displayed background. The bundled collection remains available for first launch, cache removal, older API deployments or an empty remote catalogue. Image and catalogue requests are cancelled when the app backgrounds. The approved light/dark appearance and accessibility behaviour apply equally to bundled and downloaded images.
+
+Debug builds provide **Preferences → Debug → Test Background Images** to force a catalogue refresh, advance the rotation, download even an unchanged bundled image, reload from disk without networking, and clear this server's background cache. The screen shows a live preview, image source, validation result and storage details. See [the background test guide](../ios/BackgroundTests/README.md) for the full validation workflow.
 
 ### Live Activity Availability Alerts
 
@@ -252,3 +290,10 @@ Live activities automatically expire using a dual-layer approach:
 - Ensures cleanup even if client-side fails
 
 This redundancy ensures Live Activities are always removed on time.
+
+
+### Journey history
+
+`GET /journey-history?deviceId=…` returns `{ entries, hasMore }` with up to 50 completed scheduled runs, newest first. To fetch the next page, pass the last entry's exact ISO timestamp as `before` and its `id` as `afterID`. Cursors retain milliseconds and use IDs to resolve equal timestamps. The response is scoped to the same device identity used by scheduled journeys.
+
+Completed runs are archived idempotently in MongoDB's `journey_history` collection before completion, stop, expiry or schedule deletion clears their active run. The archive retains dock snapshots and start/end timestamps even after deleting the schedule. The device persists ad-hoc and favourite starts locally and merges scheduled history by run ID. Existing discarded trips cannot be backfilled. Deploy this API version alongside the History UI; older servers cannot supply background scheduled history.

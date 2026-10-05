@@ -848,6 +848,43 @@ class LiveActivityService: ObservableObject {
 
     // MARK: - Public API
 
+    var hasJourneyToReplace: Bool { activeJourneyActivitySummary() != nil }
+
+    /// Call only after the user confirms replacing the current journey.
+    func replaceJourneyWithDockWatch(for bikePoint: BikePoint, alias: String?) async -> String? {
+        guard canStartJourneyActivity else {
+            return "Enable Live Activities for BikeSpot London in Settings to watch this dock."
+        }
+        guard !Task.isCancelled else { return nil }
+        if let journey = activeJourneyActivitySummary() {
+            if let scheduledID = journey.scheduledJourneyId {
+                let service = ScheduledJourneyService.shared
+                if service.journey(withId: scheduledID) == nil { await service.refresh() }
+                guard let schedule = service.journey(withId: scheduledID) else {
+                    return "Couldn’t find the active journey. Refresh Journeys and try again."
+                }
+                guard await service.stop(schedule) else {
+                    return service.errorMessage ?? "Couldn’t stop the journey. Please try again."
+                }
+            } else {
+                let adHocID = currentNotificationSession?.adHocJourneyId
+                await endLiveActivityFromUserAction(dockId: journey.dockId, dockName: journey.dockName,
+                    reason: "replace_journey_with_dock_watch")
+                if let adHocID { AdHocJourneyService.shared.complete(journeyId: adHocID) }
+            }
+            // Wait for ActivityKit termination before starting a regular dock watch.
+            for activity in activeActivityCandidates() where scheduledJourneyPhase(for: activity) != nil {
+                let dockID = activity.content.state.resolvedDockId ?? activity.attributes.dockId
+                await endActivityInstance(activity, dockId: dockID, skipServerUnregister: true)
+            }
+            if activeNotificationSession?.dockId == journey.dockId { activeNotificationSession = nil }
+        }
+        guard !Task.isCancelled else { return nil }
+        guard !hasJourneyToReplace else { return "The journey is still ending. Please try again." }
+        startLiveActivity(for: bikePoint, alias: alias)
+        return nil
+    }
+
     func startLiveActivity(
         for bikePoint: BikePoint,
         alias: String?,

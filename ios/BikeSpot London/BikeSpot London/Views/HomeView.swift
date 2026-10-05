@@ -565,6 +565,11 @@ struct FavoritesListView: View {
                                 .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 12, trailing: 16))
                         }
                     }
+                } header: {
+                    if bikePoint.id == bikePoints.first?.id {
+                        Text("Docks")
+                            .textCase(nil)
+                    }
                 }
             }
             .onDelete(perform: removeFavorites)
@@ -740,7 +745,7 @@ struct FavoritesListView: View {
                         startDock: docks.first,
                         endDock: docks.second,
                         startBikePoint: bikePointsByID[docks.first.id],
-                        bikeDataFilter: bikeDataFilter,
+                        endBikePoint: bikePointsByID[docks.second.id],
                         distance: distance,
                         distanceString: locationService.distanceString(to: docks.first.favoriteCoordinate),
                         onStart: {
@@ -1040,53 +1045,36 @@ private struct FavoriteJourneyCompactRow: View {
     let startDock: ScheduledJourneyDock
     let endDock: ScheduledJourneyDock
     let startBikePoint: BikePoint?
-    let bikeDataFilter: BikeDataFilter
+    let endBikePoint: BikePoint?
     let distance: CLLocationDistance?
     let distanceString: String
     let onStart: () -> Void
     @EnvironmentObject private var favoritesService: FavoritesService
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            SimplifiedDonutChart(
-                standardBikes: startBikePoint?.standardBikes ?? 0,
-                eBikes: startBikePoint?.eBikes ?? 0,
-                emptySpaces: startBikePoint?.emptyDocks ?? 0,
-                size: 44, displayMode: .bikes, bikeDataFilter: bikeDataFilter,
-                hasAvailability: startBikePoint?.hasAvailabilityData == true
-            )
-            .accessibilityLabel(availabilityAccessibilityLabel)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("\(startDock.favoriteJourneyDisplayName(using: favoritesService)) → \(endDock.favoriteJourneyDisplayName(using: favoritesService))")
-                    .font(.subheadline.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                DistanceIndicator(distance: distance, distanceString: distanceString)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("\(startDock.favoriteJourneyDisplayName(using: favoritesService)) → \(endDock.favoriteJourneyDisplayName(using: favoritesService))")
+                        .font(.subheadline.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                    DistanceIndicator(distance: distance, distanceString: distanceString)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button(action: onStart) {
+                    Image(systemName: "play.fill")
+                        .font(.body.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                        .background(Color.accentColor.opacity(0.1), in: Circle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Start journey from \(startDock.favoriteJourneyDisplayName(using: favoritesService)) to \(endDock.favoriteJourneyDisplayName(using: favoritesService))")
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Button(action: onStart) {
-                Image(systemName: "play.fill")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 44, height: 44)
-                    .background(Color.accentColor.opacity(0.1), in: Circle())
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Start journey from \(startDock.favoriteJourneyDisplayName(using: favoritesService)) to \(endDock.favoriteJourneyDisplayName(using: favoritesService))")
+            JourneyRouteAvailabilityView(startBikePoint: startBikePoint, endBikePoint: endBikePoint)
         }
         .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
     }
 
-    private var availabilityAccessibilityLabel: String {
-        guard let startBikePoint else {
-            return "Bike availability updating for \(startDock.favoriteJourneyDisplayName(using: favoritesService))"
-        }
-
-        let counts = bikeDataFilter.filteredCounts(
-            standardBikes: startBikePoint.standardBikes,
-            eBikes: startBikePoint.eBikes,
-            emptySpaces: startBikePoint.emptyDocks
-        )
-        return "\(counts.totalBikes) bikes available at \(startDock.favoriteJourneyDisplayName(using: favoritesService))"
-    }
 }
 
 private extension ScheduledJourneyDock {
