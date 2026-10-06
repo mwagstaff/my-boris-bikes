@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const { buildAlternativeNotification } = require("../alternative-notifications");
+const { createDockSnapshotLoader } = require("../dock-preferences");
 
 const docks = [
   { id: "main", dockName: "Allington Street", latitude: 51.5, longitude: 0 },
@@ -36,8 +37,15 @@ test("automatic docks are nearest usable docks with availability", () => {
   assert.equal(result, "Alternatives: Ashley Place, Victoria - 1 space; Howick Place - 8 spaces; Fourth - 10 spaces");
 });
 
-test("explicitly empty custom list never falls back to automatic docks", () => {
-  assert.equal(buildAlternativeNotification({ ...options, preferences: { ...preferences, alternatives: { main: [] } } }), null);
+test("short custom lists are filled with nearest available docks without duplicates", () => {
+  const custom = { ...preferences, alternatives: { main: ["howick"] } };
+  assert.equal(buildAlternativeNotification({ ...options, primaryDisplay: "spaces", preferences: custom }),
+    "Alternatives: Howick Place - 8 spaces; Ashley Place, Victoria - 1 space; Fourth - 10 spaces");
+});
+
+test("empty custom lists fall back to nearest available docks", () => {
+  assert.equal(buildAlternativeNotification({ ...options, primaryDisplay: "spaces", preferences: { ...preferences, alternatives: { main: [] } } }),
+    "Alternatives: Ashley Place, Victoria - 1 space; Howick Place - 8 spaces; Fourth - 10 spaces");
 });
 
 test("missing, closed, duplicate and primary docks are omitted", () => {
@@ -45,8 +53,15 @@ test("missing, closed, duplicate and primary docks are omitted", () => {
   const catalogue = new Map(docksById);
   catalogue.set("ashley", { ...catalogue.get("ashley"), isAvailable: false });
   assert.equal(buildAlternativeNotification({ ...options, preferences: custom, docksById: catalogue }),
-    "Alternatives: Station - 12 bikes; Howick Place - 3 bikes");
+    "Alternatives: Station - 12 bikes; Howick Place - 3 bikes; Fourth - 20 bikes");
   assert.equal(buildAlternativeNotification({ ...options, docksById: new Map() }), null);
+});
+
+test("saved docks remain usable when the primary dock has no location", () => {
+  const catalogue = new Map(docksById);
+  catalogue.delete("main");
+  assert.equal(buildAlternativeNotification({ ...options, docksById: catalogue }),
+    "Alternatives: Station - 12 bikes; Ashley Place, Victoria - 5 bikes; Howick Place - 3 bikes");
 });
 
 // Exercise the actual server send functions without starting its HTTP server,
@@ -116,6 +131,54 @@ test("scheduled start and destination snapshots also send alternatives", async (
   await context.sendScheduledJourneyInitialAvailabilityPush({ deviceToken: "token", deviceId: "device", bikeDataFilter: "bikesOnly", startDock: { id: "main", name: "Allington Street" } });
   await context.sendScheduledJourneyDestinationAvailabilityPushForSession(session, "main", "Allington Street", { emptySpaces: 2 });
   assert.deepEqual(pushes.map((push) => push[4]), ["scheduled_journey_initial_availability", "availability_alternatives", "scheduled_journey_destination_availability", "availability_alternatives"]);
+});
+
+test("low-space destination snapshot is followed by saved and nearest alternatives", async () => {
+  const { context, pushes } = serverHarness();
+  await context.sendScheduledJourneyDestinationAvailabilityPushForSession({
+    ...session,
+    dockPreferences: { ...preferences, alternatives: { main: ["station"] } },
+  }, "main", "Allington Street", { emptySpaces: 2 });
+  assert.deepEqual(pushes.map((push) => [push[4], push[3]]), [
+    ["scheduled_journey_destination_availability", "Allington Street: 2 spaces available"],
+    ["availability_alternatives", "Alternatives: Station - 0 spaces; Ashley Place, Victoria - 1 space; Howick Place - 8 spaces"],
+  ]);
+});
+
+test("destination follow-up loads the TfL catalogue without unsupported query parameters", async () => {
+  const requests = [];
+  const { context, pushes } = serverHarness({
+    createDockSnapshotLoader,
+    POLL_INTERVAL_MS: 15000,
+    dockOverrides: new Map(),
+    fetchTflJson: async (path, query = {}) => {
+      requests.push({ path, query });
+      // TfL's /BikePoint catalogue returns 404 when a cache-buster is added.
+      if (path !== "/BikePoint" || Object.keys(query).length) throw new Error("TfL API returned 404");
+      return docks.map((dock) => ({
+        id: dock.id, commonName: dock.dockName, lat: dock.latitude, lon: dock.longitude,
+        additionalProperties: Object.entries({
+          Installed: "true", Locked: "false", NbStandardBikes: String(dock.standardBikes || 0),
+          NbEBikes: String(dock.eBikes || 0), NbEmptyDocks: String(dock.emptySpaces || 0),
+        }).map(([key, value]) => ({ key, value })),
+      }));
+    },
+  });
+  for (const name of ["parseBikePointData", "effectiveDockDataForDock"]) {
+    const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}(?=\\n|$)`));
+    assert.ok(match, name);
+    vm.runInContext(match[0], context);
+  }
+  const loader = source.match(/const loadAlternativeDockSnapshots = createDockSnapshotLoader\([^]*?\n\}, POLL_INTERVAL_MS\);/);
+  assert.ok(loader);
+  vm.runInContext(loader[0], context);
+  await context.sendScheduledJourneyDestinationAvailabilityPushForSession(session, "main", "Allington Street", { emptySpaces: 2 });
+  assert.equal(pushes.length, 2, "the catalogue must load successfully to send the follow-up");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].path, "/BikePoint");
+  assert.equal(Object.keys(requests[0].query).length, 0);
+  assert.equal(pushes[1][4], "availability_alternatives");
+  assert.equal(pushes[1][3], "Alternatives: Station - 0 spaces; Ashley Place, Victoria - 1 space; Howick Place - 8 spaces");
 });
 
 test("delayed destination snapshot uses the end dock's saved list and spaces", async () => {

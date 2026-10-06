@@ -1218,7 +1218,8 @@ function effectiveDockDataForDock(dockId, bikePointData) {
 }
 
 const loadAlternativeDockSnapshots = createDockSnapshotLoader(async () => {
-  const bikePoints = await fetchTflJson("/BikePoint", { cb: Date.now() });
+  // TfL's catalogue endpoint returns 404 for cache-buster query parameters.
+  const bikePoints = await fetchTflJson("/BikePoint");
   if (!Array.isArray(bikePoints)) throw new Error("Unexpected TfL BikePoint catalogue");
   return bikePoints.filter((dock) => typeof dock?.id === "string").map((dock) => {
     const properties = dock.additionalProperties || [];

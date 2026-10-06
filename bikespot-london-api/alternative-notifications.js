@@ -16,17 +16,17 @@ function distance(origin, dock) {
 }
 
 function buildAlternativeNotification({ dockId, primaryDisplay, preferences, docksById }) {
-  let candidates;
-  if (hasCustomAlternatives(preferences, dockId)) {
-    // Saved order takes priority even when a chosen dock has no availability.
-    candidates = preferences.alternatives[dockId].map((id) => docksById.get(id));
-  } else {
-    const origin = docksById.get(dockId);
-    if (!origin || !Number.isFinite(origin.latitude) || !Number.isFinite(origin.longitude)) return null;
-    candidates = [...docksById.values()]
+  // Saved order takes priority even when a chosen dock has no availability.
+  const candidates = hasCustomAlternatives(preferences, dockId)
+    ? preferences.alternatives[dockId].map((id) => docksById.get(id))
+    : [];
+  const origin = docksById.get(dockId);
+  if (origin && Number.isFinite(origin.latitude) && Number.isFinite(origin.longitude)) {
+    const nearest = [...docksById.values()]
       .filter((dock) => Number.isFinite(dock.latitude) && Number.isFinite(dock.longitude) &&
         availability(dock, primaryDisplay) > 0)
       .sort((a, b) => distance(origin, a) - distance(origin, b));
+    candidates.push(...nearest);
   }
   const seen = new Set([dockId]);
   const alternatives = candidates.filter((dock) => {
