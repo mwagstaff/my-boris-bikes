@@ -1,0 +1,18 @@
+Use case: compositing
+Asset type: final promotional screenshot collage for a Reddit post about the real iOS app Bikespot London.
+Primary request: combine the best parts of the supplied authentic App Store screenshots into one polished, credible landscape image. Target aspect ratio 3:2, approximately 2400 x 1600 pixels, high resolution.
+Input images in order:
+1. Supporting compositing insert: real iPhone Favourites screenshot. Preserve this exact screen.
+2. Supporting compositing insert: real iPhone current Journey screenshot showing pickup bikes, destination spaces and progress. Preserve this exact screen.
+3. Supporting compositing insert: real Lock Screen screenshot. Use the lower Live Activity and the notification immediately below it as a cropped insert; omit the wallpaper clock and date.
+4. Supporting compositing insert: real Apple Watch Smart Stack screenshot, including the Bikespot journey card. Preserve this exact screen.
+5. Supporting compositing insert: exact Bikespot app icon, red with white bicycle and Big Ben. Do not redraw or alter it.
+Scene/backdrop: clean warm off-white background with restrained red brand accents. No stock photographs, city scene, extra maps, decorative clip art or gradients.
+Composition/framing: an intentional editorial product collage. At top, small exact app icon beside the app name. Main headline underneath in dark charcoal. Two large, straight-on portrait iPhone screenshots in slim rounded black device frames occupy the left and centre; the Journey screen is the larger hero. On the right, a black Apple Watch device frame containing the exact Smart Stack screenshot, with its real proportions preserved. Place the cropped real Live Activity plus notification insert in the lower-right area, without obscuring the essential bikes/spaces panels or progress in the phones. Strong consistent spacing, soft subtle shadows, generous margins; screenshots are the dominant content.
+Style/medium: professional app-launch screenshot composite, visually calm, crisp and useful on a Reddit feed. Use a contemporary neutral sans-serif, large readable headline and short feature captions.
+Text (verbatim), and no additional marketing text:
+App name: "Bikespot London"
+Main headline, on two lines if necessary: "Bikes at the start. Spaces at the finish."
+Three concise feature labels in the lower part of the image: "Journeys", "Dock notifications", "Apple Watch widgets"
+Small footer: "Free on the App Store"
+Constraints: Treat every screenshot as an exact photograph to paste and scale proportionally; do not redesign or hallucinate app interfaces. Preserve the real screenshot text, counts, red/green/blue donut charts, white cards, London building photo header, navigation and progress controls. No invented availability counts, no new buttons or extra app features. It is fine that different authentic screenshots show data from different moments. Preserve the exact supplied icon. Keep all added headline and label spelling verbatim. No fabricated App Store badge, QR code, Apple logo, TfL logo or Santander logo. No watermark. No price or claim beyond the specified free footer. No giant phone camera cutouts covering source UI. Crop only the lock-screen wallpaper to emphasise the genuine Live Activity and dock notification; preserve full useful app screens. Deliver one final composed image.

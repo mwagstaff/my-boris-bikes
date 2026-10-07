@@ -1,0 +1,18 @@
+{
+  "listing": "https://apps.apple.com/us/app/bikespot-london/id6751172193",
+  "downloaded": [
+    {
+      "path": "/Users/mwagstaff/dev/bikespot-london/output/reddit-promo/sources/06-smart-stack-app-store-416x496.jpg",
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource211/v4/de/8a/53/de8a5316-4e14-ce86-7f94-6b22819b08d6/06-smart-stack-app-store-416x496.jpg/832x992bb.jpg"
+    },
+    {
+      "path": "/Users/mwagstaff/dev/bikespot-london/output/reddit-promo/sources/03-journey-destination-app-store-416x496.jpg",
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource221/v4/4d/1c/4c/4d1c4c13-68de-599c-2e44-d2db2435eb85/03-journey-destination-app-store-416x496.jpg/832x992bb.jpg"
+    },
+    {
+      "path": "/Users/mwagstaff/dev/bikespot-london/output/reddit-promo/sources/02-journey-pickup-app-store-416x496.jpg",
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource221/v4/20/69/6a/20696a32-e940-40ea-4b0e-ca6497f06bfc/02-journey-pickup-app-store-416x496.jpg/832x992bb.jpg"
+    }
+  ],
+  "local_iphone_sources": "release/2.1/screenshots/iphone"
+}
