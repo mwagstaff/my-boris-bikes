@@ -2,12 +2,23 @@ import Foundation
 import CoreLocation
 import Combine
 import OSLog
+import Observation
+
+@Observable
+final class CompassHeadingState {
+    var heading: CLLocationDirection?
+}
 
 class LocationService: NSObject, ObservableObject {
     static let shared = LocationService()
     
     @Published var location: CLLocation?
-    @Published var heading: CLLocationDirection?
+    // Compass readings must not invalidate every observer of location/authorization.
+    let headingState = CompassHeadingState()
+    var heading: CLLocationDirection? {
+        get { headingState.heading }
+        set { headingState.heading = newValue }
+    }
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
     @Published var error: String?
     
@@ -133,7 +144,10 @@ extension LocationService: CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
-        guard newHeading.headingAccuracy >= 0 else { return }
+        guard newHeading.headingAccuracy >= 0 else {
+            heading = nil
+            return
+        }
 
         let resolvedHeading: CLLocationDirection?
 

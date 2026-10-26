@@ -9,8 +9,10 @@ struct MapView: View {
     @State private var selectedBikePointForDetail: BikePoint?
     @State private var selectedMapDockId: String?
     @State private var pendingDockDetailId: String?
+    @State private var mapHeadingState = MapHeadingState()
     @Binding var selectedBikePointForMap: BikePoint?
     @Binding var selectedDockId: String?
+    @Binding var journeyDockUseAction: ((BikePoint) -> Void)?
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue = BikeDataFilter.both.rawValue
     let onShowServiceStatus: (() -> Void)?
@@ -20,11 +22,13 @@ struct MapView: View {
     init(
         selectedBikePoint: Binding<BikePoint?> = .constant(nil),
         selectedDockId: Binding<String?> = .constant(nil),
+        journeyDockUseAction: Binding<((BikePoint) -> Void)?> = .constant(nil),
         onShowServiceStatus: (() -> Void)? = nil,
         onJourneyStarted: @escaping () -> Void = {}
     ) {
         self._selectedBikePointForMap = selectedBikePoint
         self._selectedDockId = selectedDockId
+        self._journeyDockUseAction = journeyDockUseAction
         self.onShowServiceStatus = onShowServiceStatus
         self.onJourneyStarted = onJourneyStarted
     }
@@ -52,11 +56,17 @@ struct MapView: View {
                         .tag(bikePoint.id)
                     }
 
-                    UserAnnotation()
+                    UserAnnotation {
+                        LiveMapUserHeadingIndicator(
+                            compass: locationService.headingState,
+                            camera: mapHeadingState
+                        )
+                    }
                 }
                 .mapStyle(.standard(elevation: .flat)) // Optimize map rendering
                 .mapControlVisibility(.hidden) // Hide unnecessary controls
                 .onMapCameraChange(frequency: .continuous) { context in
+                    mapHeadingState.heading = context.camera.heading
                     viewModel.handleContinuousMapCameraChange(context.region)
                 }
                 .onMapCameraChange(frequency: .onEnd) { context in
@@ -73,12 +83,15 @@ struct MapView: View {
                         selectedDockId = nil
                     }
                     viewModel.setup(locationService: locationService)
+                    locationService.startHeadingUpdates()
                 }
                 .onDisappear {
+                    locationService.stopHeadingUpdates()
                     viewModel.endMapInteraction()
                     selectedBikePointForDetail = nil
                     selectedMapDockId = nil
                     pendingDockDetailId = nil
+                    journeyDockUseAction = nil
                 }
                 .onChange(of: selectedBikePointForMap) { _, newBikePoint in
                     if let bikePoint = newBikePoint {
@@ -236,6 +249,8 @@ struct MapView: View {
                 }
             }
             .sheet(item: $selectedBikePointForDetail, onDismiss: {
+                // Dock pickers also use the shared compass and stop it when dismissed.
+                locationService.startHeadingUpdates()
                 if didStartJourney {
                     didStartJourney = false
                     onJourneyStarted()
@@ -251,13 +266,19 @@ struct MapView: View {
                         viewModel.centerOnBikePoint(id: dock.id)
                         selectedBikePointForDetail = dock
                     },
+                    onUseDock: journeyDockUseAction.map { useDock in
+                        { dock in
+                            useDock(dock)
+                            selectedBikePointForDetail = nil
+                            onJourneyStarted()
+                        }
+                    },
                     onJourneyStarted: {
                         didStartJourney = true
                         selectedBikePointForDetail = nil
                     }
                 )
                 .id(bikePoint.id)
-                .presentationDetents([.fraction(0.8), .large])
                 .presentationDragIndicator(.visible)
                 .presentationCornerRadius(32)
             }
@@ -288,6 +309,7 @@ struct MapView: View {
             bikePoint: bikePoint,
             source: source
         )
+        viewModel.centerOnBikePoint(bikePoint)
         selectedBikePointForDetail = bikePoint
     }
 
@@ -333,6 +355,7 @@ struct BikePointDetailView: View {
     let isFavorite: Bool
     let onToggleFavorite: (BikePoint) -> Void
     let onDockSelected: (BikePoint) -> Void
+    var onUseDock: ((BikePoint) -> Void)? = nil
     var onJourneyStarted: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -346,9 +369,12 @@ struct BikePointDetailView: View {
     @State private var showsAllDocks = false
     @State private var showsOtherNearbyDocks = false
     @State private var showsAlternativesEditor = false
+    @State private var showsNearbyDocks = false
     @State private var confirmsReplacingJourney = false
     @State private var isReplacingJourney = false
     @State private var watchError: String?
+    @State private var sheetContentHeight: CGFloat = 360
+    @State private var selectedSheetDetent: PresentationDetent = .height(372)
 
     private var hasCustomAlternatives: Bool { preferences.customDockIDs(for: bikePoint.id) != nil }
     private var nearbyDocks: [BikePoint] {
@@ -377,20 +403,6 @@ struct BikePointDetailView: View {
                 }
                 Divider()
                 nearbySection
-                Button { showsAlternativesEditor = true } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "list.bullet").font(.title2)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Edit alternatives").font(.subheadline.weight(.semibold))
-                            Text("Manage your dock options").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right").font(.caption.weight(.semibold))
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .padding(.vertical, 4)
-                }
-                .dockSheetButton()
                 if let updatedAt {
                     Text("Updated \(DockUpdateTime.string(from: updatedAt))")
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
@@ -399,7 +411,18 @@ struct BikePointDetailView: View {
             }
             .padding(16)
             .padding(.top, 8)
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                ceil(geometry.size.height)
+            } action: { height in
+                guard height > 0, height != sheetContentHeight else { return }
+                sheetContentHeight = height
+                if selectedSheetDetent != .large {
+                    selectedSheetDetent = .height(min(height + 12, 560))
+                }
+            }
         }
+        .presentationDetents([.height(min(sheetContentHeight + 12, 560)), .large],
+                             selection: $selectedSheetDetent)
         .alert("Replace current journey?", isPresented: $confirmsReplacingJourney) {
             Button("Replace and watch dock", role: .destructive) {
                 isReplacingJourney = true
@@ -463,7 +486,7 @@ struct BikePointDetailView: View {
                 : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
             layout {
                 DonutChart(standardBikes: bikePoint.standardBikes, eBikes: bikePoint.eBikes,
-                    emptySpaces: bikePoint.emptyDocks, size: 76, hasAvailability: bikePoint.hasAvailabilityData)
+                    emptySpaces: bikePoint.emptyDocks, size: 60, hasAvailability: bikePoint.hasAvailabilityData)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(favoritesService.displayName(for: bikePoint))
                         .font(.headline).fixedSize(horizontal: false, vertical: true)
@@ -495,54 +518,80 @@ struct BikePointDetailView: View {
     }
 
     private var actionGrid: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 0), spacing: 10),
-                                 count: dynamicTypeSize.isAccessibilitySize ? 1 : 2), spacing: 10) {
-            Button {
-                journeyEditorPresentation = .fromDock(ScheduledJourneyDock(bikePoint: bikePoint), isStart: true)
-            } label: {
-                DockSheetActionLabel(title: "Start here", subtitle: "Choose a destination", symbol: "bicycle")
-            }
-            .dockSheetButton(prominent: true)
-            Button {
-                journeyEditorPresentation = .fromDock(ScheduledJourneyDock(bikePoint: bikePoint), isStart: false)
-            } label: {
-                DockSheetActionLabel(title: "End here", subtitle: "Choose a start dock", symbol: "flag.checkered")
-            }
-            .dockSheetButton()
-            Button {
-                guard !isReplacingJourney else { return }
-                if journeyIsTracking {
-                    confirmsReplacingJourney = true
-                    return
+        let columns = Array(repeating: GridItem(.flexible(minimum: 0), spacing: 10),
+                            count: dynamicTypeSize.isAccessibilitySize ? 1 : 2)
+        return VStack(spacing: 10) {
+            if let onUseDock {
+                Button { onUseDock(bikePoint) } label: {
+                    DockSheetActionLabel(title: "Use this dock", symbol: "checkmark.circle")
                 }
-                AnalyticsService.shared.track(action: isWatching ? .liveActivityEnd : .liveActivityStart,
-                    screen: .map, dock: AnalyticsDockInfo.from(bikePoint), metadata: ["source": "detail_sheet"])
-                liveActivityService.startLiveActivity(for: bikePoint, alias: favoritesService.alias(for: bikePoint.id))
-            } label: {
-                DockSheetActionLabel(title: isReplacingJourney ? "Starting…" : isWatching && !journeyIsTracking ? "Stop watching" : "Watch dock",
-                    subtitle: isWatching && !journeyIsTracking ? "End live updates" : "Get live updates",
-                    symbol: "waveform.path.ecg")
+                .dockSheetButton(prominent: true)
+                .disabled(!bikePoint.hasAvailabilityData || !bikePoint.isAvailable)
+                .accessibilityHint("Replace the dock for the active journey")
+            } else {
+                LazyVGrid(columns: columns, spacing: 10) {
+                    Button {
+                        journeyEditorPresentation = .fromDock(ScheduledJourneyDock(bikePoint: bikePoint), isStart: true)
+                    } label: {
+                        DockSheetActionLabel(title: "Start here", symbol: "bicycle")
+                    }
+                    .dockSheetButton(prominent: true)
+                    Button {
+                        journeyEditorPresentation = .fromDock(ScheduledJourneyDock(bikePoint: bikePoint), isStart: false)
+                    } label: {
+                        DockSheetActionLabel(title: "End here", symbol: "flag.checkered")
+                    }
+                    .dockSheetButton()
+                }
             }
-            .dockSheetButton()
-            .disabled(isReplacingJourney)
-            Button {
-                AnalyticsService.shared.track(action: isFavorite ? .favoriteRemove : .favoriteAdd,
-                    screen: .map, dock: AnalyticsDockInfo.from(bikePoint), metadata: ["source": "detail_sheet"])
-                onToggleFavorite(bikePoint)
-            } label: {
-                DockSheetActionLabel(title: isFavorite ? "Saved to favourites" : "Add to favourites",
-                    subtitle: isFavorite ? "Tap to remove" : "Save for later", symbol: isFavorite ? "star.fill" : "star")
+            LazyVGrid(columns: columns, spacing: 10) {
+                Button {
+                    guard !isReplacingJourney else { return }
+                    if journeyIsTracking {
+                        confirmsReplacingJourney = true
+                        return
+                    }
+                    AnalyticsService.shared.track(action: isWatching ? .liveActivityEnd : .liveActivityStart,
+                        screen: .map, dock: AnalyticsDockInfo.from(bikePoint), metadata: ["source": "detail_sheet"])
+                    liveActivityService.startLiveActivity(for: bikePoint, alias: favoritesService.alias(for: bikePoint.id))
+                } label: {
+                    DockSheetActionLabel(title: isReplacingJourney ? "Starting…" : isWatching && !journeyIsTracking ? "Stop watching" : "Watch dock",
+                        symbol: "waveform.path.ecg")
+                }
+                .dockSheetButton()
+                .disabled(isReplacingJourney)
+                Button {
+                    AnalyticsService.shared.track(action: isFavorite ? .favoriteRemove : .favoriteAdd,
+                        screen: .map, dock: AnalyticsDockInfo.from(bikePoint), metadata: ["source": "detail_sheet"])
+                    onToggleFavorite(bikePoint)
+                } label: {
+                    DockSheetActionLabel(title: isFavorite ? "Saved to favourites" : "Add to favourites",
+                        symbol: isFavorite ? "star.fill" : "star")
+                }
+                .dockSheetButton()
             }
-            .dockSheetButton()
         }
     }
 
     private var nearbySection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(hasCustomAlternatives ? "Alternative docks" : "Nearby docks")
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                Spacer(minLength: 4)
+            Button {
+                withAnimation { showsNearbyDocks.toggle() }
+            } label: {
+                HStack {
+                    Text(hasCustomAlternatives ? "Alternative docks" : "Nearby docks")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 4)
+                    Image(systemName: showsNearbyDocks ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(showsNearbyDocks ? "Expanded" : "Collapsed")
+            .accessibilityHint("Show nearby docks and editing options")
+            if showsNearbyDocks {
                 Button { showsAllDocks = true } label: {
                     HStack(spacing: 6) {
                         Text("See all")
@@ -552,14 +601,24 @@ struct BikePointDetailView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).foregroundStyle(.tint)
-            }
-            if nearbyDocks.isEmpty {
-                Text(hasCustomAlternatives ? "No custom alternatives selected. See all to browse nearby docks." : "No nearby docks available.")
-                    .font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
-            }
-            ForEach(Array(nearbyDocks.prefix(3))) { dock in
-                Divider()
-                nearbyRow(dock).padding(.vertical, 6)
+                if nearbyDocks.isEmpty {
+                    Text(hasCustomAlternatives ? "No custom alternatives selected. See all to browse nearby docks." : "No nearby docks available.")
+                        .font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
+                }
+                ForEach(Array(nearbyDocks.prefix(3))) { dock in
+                    Divider()
+                    nearbyRow(dock).padding(.vertical, 6)
+                }
+                Button { showsAlternativesEditor = true } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "list.bullet")
+                        Text("Edit alternatives").font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .dockSheetButton()
             }
         }
     }
@@ -580,18 +639,15 @@ struct BikePointDetailView: View {
 
 private struct DockSheetActionLabel: View {
     let title: String
-    let subtitle: String
     let symbol: String
 
     var body: some View {
-        VStack(spacing: 5) {
-            Image(systemName: symbol).font(.title2)
+        HStack(spacing: 8) {
+            Image(systemName: symbol).font(.body)
             Text(title).font(.subheadline.weight(.semibold))
-            Text(subtitle).font(.caption)
         }
         .multilineTextAlignment(.center)
-        .frame(maxWidth: .infinity, minHeight: 68)
-        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, minHeight: 32)
     }
 }
 
@@ -662,6 +718,95 @@ private struct DockSheetNearbyRow: View {
     }
 }
 
+@Observable
+private final class MapHeadingState {
+    var heading: CLLocationDirection = 0
+}
+
+// Read observable angles here so only this annotation depends on their updates.
+private struct LiveMapUserHeadingIndicator: View {
+    let compass: CompassHeadingState
+    let camera: MapHeadingState
+
+    var body: some View {
+        MapUserHeadingIndicator(
+            heading: CLLocationManager.headingAvailable() ? compass.heading : nil,
+            mapHeading: camera.heading
+        )
+    }
+}
+
+private struct MapUserHeadingIndicator: View {
+    let heading: CLLocationDirection?
+    let mapHeading: CLLocationDirection
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var displayedHeading: Double?
+
+    var body: some View {
+        ZStack {
+            if heading != nil, let displayedHeading {
+                UserHeadingCone()
+                    .fill(
+                        RadialGradient(
+                            colors: [Color.accentColor.opacity(0.45), Color.accentColor.opacity(0)],
+                            center: .center,
+                            startRadius: 8,
+                            endRadius: 48
+                        )
+                    )
+                    .rotationEffect(.degrees(displayedHeading))
+                    // Camera changes follow the map immediately, without animation lag.
+                    .rotationEffect(.degrees(-mapHeading))
+            }
+
+            Circle()
+                .fill(Color.accentColor)
+                .frame(width: 18, height: 18)
+                .overlay(Circle().stroke(.white, lineWidth: 3))
+                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+        }
+        .frame(width: 96, height: 96)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Your location")
+        .accessibilityValue(heading.map { "Facing \(Int($0.rounded()) % 360) degrees" } ?? "Heading unavailable")
+        .onChange(of: heading, initial: true) { _, newHeading in
+            guard let newHeading else {
+                displayedHeading = nil
+                return
+            }
+            guard let current = displayedHeading else {
+                displayedHeading = newHeading
+                return
+            }
+            // Unwrap north crossings so 359 -> 1 turns two degrees, not 358.
+            var delta = (newHeading - current).truncatingRemainder(dividingBy: 360)
+            if delta > 180 { delta -= 360 }
+            if delta < -180 { delta += 360 }
+            withAnimation(reduceMotion ? nil : .linear(duration: 0.1)) {
+                displayedHeading = current + delta
+            }
+        }
+    }
+}
+
+private struct UserHeadingCone: Shape {
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        var path = Path()
+        path.move(to: center)
+        path.addArc(
+            center: center,
+            radius: min(rect.width, rect.height) / 2,
+            startAngle: .degrees(-120),
+            endAngle: .degrees(-60),
+            clockwise: false
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
 private struct DockSheetButtonModifier: ViewModifier {
     let prominent: Bool
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -695,19 +840,30 @@ private extension View {
         .environmentObject(BannerService.shared)
 }
 
+#Preview("Location heading indicators") {
+    HStack {
+        MapUserHeadingIndicator(heading: 0, mapHeading: 0)
+        MapUserHeadingIndicator(heading: 90, mapHeading: 0)
+        MapUserHeadingIndicator(heading: 90, mapHeading: 90)
+        MapUserHeadingIndicator(heading: nil, mapHeading: 0)
+    }
+    .padding()
+    .background(Color(.systemBackground))
+}
+
 #Preview("Dock sheet actions") {
     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
         Button {} label: {
-            DockSheetActionLabel(title: "Start here", subtitle: "Choose a destination", symbol: "bicycle")
+            DockSheetActionLabel(title: "Start here", symbol: "bicycle")
         }.dockSheetButton(prominent: true)
         Button {} label: {
-            DockSheetActionLabel(title: "End here", subtitle: "Choose a start dock", symbol: "flag.checkered")
+            DockSheetActionLabel(title: "End here", symbol: "flag.checkered")
         }.dockSheetButton()
         Button {} label: {
-            DockSheetActionLabel(title: "Watch this dock", subtitle: "Get live updates", symbol: "waveform.path.ecg")
+            DockSheetActionLabel(title: "Watch this dock", symbol: "waveform.path.ecg")
         }.dockSheetButton()
         Button {} label: {
-            DockSheetActionLabel(title: "Add to favourites", subtitle: "Save for later", symbol: "star")
+            DockSheetActionLabel(title: "Add to favourites", symbol: "star")
         }.dockSheetButton()
     }
     .padding().background(.regularMaterial)

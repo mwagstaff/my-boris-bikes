@@ -21,8 +21,8 @@ struct ContentView: View {
     @StateObject private var liveActivityService = LiveActivityService.shared
     @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
     @StateObject private var adHocJourneyService = AdHocJourneyService.shared
-    @State private var selectedTabIndex = 0
     @State private var selectedBikePointForMap: BikePoint?
+    @State private var journeyDockUseAction: ((BikePoint) -> Void)?
     @State private var isServiceBannerDismissed = false
     private let logger = Logger(subsystem: "dev.skynolimit.myborisbikes", category: "JourneyBadge")
     private let notificationStatusRefreshTimer = Timer.publish(every: 60, tolerance: 6, on: .main, in: .common).autoconnect()
@@ -53,18 +53,19 @@ struct ContentView: View {
     
     var body: some View {
         ZStack(alignment: .top) {
-            TabView(selection: $selectedTabIndex) {
+            TabView(selection: $selectedTab) {
                 HomeView(
                     onBikePointSelected: { bikePoint in
+                        journeyDockUseAction = nil
                         selectedDockId = nil
                         selectedBikePointForMap = bikePoint
-                        selectedTabIndex = 1
+                        selectedTab = 1
                     },
                     onShowServiceStatus: {
                         isServiceBannerDismissed = false
                     },
                     onJourneyStarted: {
-                        selectedTabIndex = 2
+                        selectedTab = 2
                     }
                 )
                 .tabItem {
@@ -76,10 +77,11 @@ struct ContentView: View {
                 MapView(
                     selectedBikePoint: $selectedBikePointForMap,
                     selectedDockId: $selectedDockId,
+                    journeyDockUseAction: $journeyDockUseAction,
                     onShowServiceStatus: {
                         isServiceBannerDismissed = false
                     },
-                    onJourneyStarted: { selectedTabIndex = 2 }
+                    onJourneyStarted: { selectedTab = 2 }
                 )
                 .tabItem {
                     Image(systemName: "map")
@@ -87,10 +89,11 @@ struct ContentView: View {
                 }
                 .tag(1)
 
-                JourneysView { dockId in
+                JourneysView { dockId, useDock in
+                    journeyDockUseAction = useDock
                     selectedBikePointForMap = nil
                     selectedDockId = dockId
-                    selectedTabIndex = 1
+                    selectedTab = 1
                 }
                     .tabItem {
                         Image(systemName: "figure.outdoor.cycle")
@@ -166,7 +169,7 @@ struct ContentView: View {
                 await scheduledJourneyService.registerDevice()
                 await scheduledJourneyService.refresh()
             }
-            AnalyticsService.shared.trackAppLaunch(screen: analyticsScreen(for: selectedTabIndex))
+            AnalyticsService.shared.trackAppLaunch(screen: analyticsScreen(for: selectedTab))
 
             // Debug: Force sync with watch on app launch
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
@@ -198,16 +201,12 @@ struct ContentView: View {
             Task { await liveActivityService.refreshNotificationStatusFromServer() }
         }
         .onChange(of: selectedTab) { _, newTab in
-            selectedTabIndex = newTab
-        }
-        .onChange(of: selectedTabIndex) { _, newTab in
-            selectedTab = newTab
             AnalyticsService.shared.track(action: .screenView, screen: analyticsScreen(for: newTab))
         }
         .onChange(of: selectedDockId) { _, newDockId in
             if newDockId != nil {
                 // Ensure map tab is visible for dock deep links
-                selectedTabIndex = 1
+                selectedTab = 1
             }
         }
         .task(id: hasActiveJourney) {

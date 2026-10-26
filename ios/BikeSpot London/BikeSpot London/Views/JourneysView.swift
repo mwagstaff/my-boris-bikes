@@ -22,7 +22,7 @@ struct JourneysView: View {
     @State private var lastAvailabilityRefreshAttempt: Date?
     @State private var dockSwitchError: String?
     @State private var favoriteJourneyToDelete: FavoriteJourney?
-    private let onDockSelected: (String) -> Void
+    private let onDockSelected: (String, ((BikePoint) -> Void)?) -> Void
     private let dockAvailabilityRefreshTimer = Timer.publish(
         every: AppConstants.App.nearbyDockRefreshInterval,
         tolerance: 1,
@@ -30,7 +30,7 @@ struct JourneysView: View {
         in: .common
     ).autoconnect()
 
-    init(onDockSelected: @escaping (String) -> Void = { _ in }) {
+    init(onDockSelected: @escaping (String, ((BikePoint) -> Void)?) -> Void = { _, _ in }) {
         self.onDockSelected = onDockSelected
     }
 
@@ -410,7 +410,9 @@ struct JourneysView: View {
             onToggleFavorite: {
                 favoriteJourneyService.toggle(startDock: journey.startDock, endDock: journey.endDock)
             },
-            onDockSelected: onDockSelected,
+            onDockSelected: { dockId in
+                onDockSelected(dockId, { dock in switchActiveDock(to: dock, for: .scheduled(journey)) })
+            },
             onSelectAlternative: { dock in switchActiveDock(to: dock, for: .scheduled(journey)) },
             onCreateReturn: {
                 guard scheduledJourneyService.journeys.count < 5 else { return }
@@ -469,7 +471,9 @@ struct JourneysView: View {
             onToggleFavorite: {
                 favoriteJourneyService.toggle(startDock: journey.startDock, endDock: journey.endDock)
             },
-            onDockSelected: onDockSelected,
+            onDockSelected: { dockId in
+                onDockSelected(dockId, { dock in switchActiveDock(to: dock, for: .adHoc(journey)) })
+            },
             onSelectAlternative: { dock in switchActiveDock(to: dock, for: .adHoc(journey)) }
         )
     }

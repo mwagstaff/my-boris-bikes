@@ -7,6 +7,12 @@ struct PreferencesView: View {
     @State private var troubleshootingExportURL: URL?
     @State private var troubleshootingExportError: String?
 
+    @AppStorage(AppConstants.UserDefaults.defaultStartingScreenKey, store: AppConstants.UserDefaults.sharedDefaults)
+    private var defaultStartingScreen: Int = 0
+
+    @AppStorage(AppConstants.UserDefaults.startingScreenResetMinutesKey, store: AppConstants.UserDefaults.sharedDefaults)
+    private var startingScreenResetMinutes = StartingScreenResetPolicy.defaultMinutes
+
     @AppStorage(BikeDataFilter.userDefaultsKey, store: BikeDataFilter.userDefaultsStore)
     private var bikeDataFilterRawValue: String = BikeDataFilter.both.rawValue
 
@@ -112,6 +118,30 @@ struct PreferencesView: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Default starting screen", selection: $defaultStartingScreen) {
+                    Text("Favourites").tag(0)
+                    Text("Map").tag(1)
+                    Text("Journeys").tag(2)
+                }
+                .onChange(of: defaultStartingScreen) { _, newValue in
+                    trackPreferenceChange(key: AppConstants.UserDefaults.defaultStartingScreenKey, value: newValue)
+                }
+                Picker("Return to starting screen after", selection: $startingScreenResetMinutes) {
+                    Text("Never").tag(0)
+                    Text("1 minute").tag(1)
+                    Text("5 minutes").tag(5)
+                    Text("15 minutes").tag(15)
+                    Text("30 minutes").tag(30)
+                    Text("1 hour").tag(60)
+                }
+                .onChange(of: startingScreenResetMinutes) { _, newValue in
+                    trackPreferenceChange(key: AppConstants.UserDefaults.startingScreenResetMinutesKey, value: newValue)
+                }
+            } footer: {
+                Text("Return to your starting screen after this long away from the app. Shorter breaks keep your current screen. A fresh launch always opens your starting screen.")
+            }
+
             Section {
                 NavigationLink("Siri & Shortcuts") { SiriShortcutsView() }
             }

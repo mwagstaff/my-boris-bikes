@@ -194,7 +194,7 @@ class MapViewModel {
         logger.info("Centering on bike point: \(bikePoint.commonName, privacy: .public)")
         hasPendingBikePointCenter = true
         hasInitiallyeCentered = true
-        updateRegion(for: CLLocation(latitude: bikePoint.lat, longitude: bikePoint.lon))
+        updateRegion(for: CLLocation(latitude: bikePoint.lat, longitude: bikePoint.lon), showingDockDetail: true)
     }
 
     func centerOnBikePoint(id: String) {
@@ -591,9 +591,12 @@ class MapViewModel {
         }
     }
 
-    private func updateRegion(for location: CLLocation) {
-        let newCenter = location.coordinate
+    private func updateRegion(for location: CLLocation, showingDockDetail: Bool = false) {
         let newSpan = MKCoordinateSpan(latitudeDelta: 0.008, longitudeDelta: 0.008)
+        let newCenter = CLLocationCoordinate2D(
+            latitude: location.coordinate.latitude - (showingDockDetail ? newSpan.latitudeDelta * 0.25 : 0),
+            longitude: location.coordinate.longitude
+        )
 
         currentMapCenter = newCenter
         currentMapSpan = newSpan

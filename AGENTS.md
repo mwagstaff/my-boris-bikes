@@ -1,7 +1,7 @@
 # Agent Instructions
 
-- Do not run `xcodebuild` commands in this workspace.
-- The user always runs Xcode builds manually.
+- Run `xcodebuild` for builds and tests when needed to verify changes.
+- Launch the app and run UI tests on an available iOS Simulator when needed.
 
 # CLAUDE.md
 

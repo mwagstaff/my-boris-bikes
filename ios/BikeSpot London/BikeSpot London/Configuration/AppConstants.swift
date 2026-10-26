@@ -55,6 +55,8 @@ struct AppConstants {
     }
     
     struct UserDefaults {
+        static let startingScreenResetMinutesKey = "startingScreenResetMinutes"
+        static let defaultStartingScreenKey = "defaultStartingScreen"
         static let favoritesKey = "favorites"
         static let sortModeKey = "sortMode"
         static let locationPermissionKey = "locationPermission"

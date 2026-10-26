@@ -14,8 +14,16 @@ struct BikeSpot_LondonApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab = 0
     @State private var selectedDockId: String?
+    @State private var startingScreenResetPolicy = StartingScreenResetPolicy()
+    @AppStorage(AppConstants.UserDefaults.startingScreenResetMinutesKey, store: AppConstants.UserDefaults.sharedDefaults)
+    private var startingScreenResetMinutes = StartingScreenResetPolicy.defaultMinutes
 
     init() {
+        let startingTab = AppConstants.UserDefaults.sharedDefaults.integer(
+            forKey: AppConstants.UserDefaults.defaultStartingScreenKey
+        )
+        _selectedTab = State(initialValue: (0...2).contains(startingTab) ? startingTab : 0)
+
         // Observe dock preference edits even when the app opens directly into a journey.
         _ = WidgetService.shared
         // Initialize WatchConnectivity
@@ -49,9 +57,17 @@ struct BikeSpot_LondonApp: App {
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
             case .background:
+                startingScreenResetPolicy.enteredBackground()
                 // Schedule the next background refresh when entering background
                 BackgroundRefreshService.shared.scheduleAppRefresh()
             case .active:
+                if startingScreenResetPolicy.shouldResetOnReturn(afterMinutes: startingScreenResetMinutes) {
+                    let startingTab = AppConstants.UserDefaults.sharedDefaults.integer(
+                        forKey: AppConstants.UserDefaults.defaultStartingScreenKey
+                    )
+                    selectedDockId = nil
+                    selectedTab = (0...2).contains(startingTab) ? startingTab : 0
+                }
                 DockArrivalMonitoringService.shared.handleApplicationDidBecomeActive()
                 // Reconcile local/server live activity state after foregrounding
                 LiveActivityService.shared.restoreActivities()
@@ -70,6 +86,11 @@ struct BikeSpot_LondonApp: App {
 
     private func handleDeepLink(_ url: URL) {
         guard url.scheme == "myborisbikes" else { return }
+
+        // A destination received before activation must override the inactivity reset.
+        if let host = url.host, ["favorites", "map", "journeys", "journey", "dock", "refresh"].contains(host) {
+            startingScreenResetPolicy.explicitNavigation()
+        }
 
         switch url.host {
         case "app":
