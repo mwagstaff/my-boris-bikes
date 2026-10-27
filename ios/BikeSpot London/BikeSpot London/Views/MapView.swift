@@ -48,6 +48,7 @@ struct MapView: View {
                             BikePointMapPin(
                                 bikePoint: bikePoint,
                                 isFavorite: isFavorite,
+                                isSelected: selectedBikePointForDetail?.id == bikePoint.id,
                                 isDetailed: viewModel.showsDetailedPins,
                                 bikeDataFilter: bikeDataFilter
                             )
@@ -319,6 +320,7 @@ struct MapView: View {
 struct BikePointMapPin: View {
     let bikePoint: MapBikePointSummary
     let isFavorite: Bool
+    let isSelected: Bool
     let isDetailed: Bool
     let bikeDataFilter: BikeDataFilter
 
@@ -326,15 +328,24 @@ struct BikePointMapPin: View {
 
     var body: some View {
         ZStack {
-            if isFavorite {
+            if isSelected {
                 Circle()
-                    .stroke(AppConstants.Colors.favoriteHighlight, lineWidth: 3)
+                    .stroke(.cyan, lineWidth: 3)
                     .frame(width: donutSize + 8, height: donutSize + 8)
                     .accessibilityHidden(true)
             }
             SimplifiedDonutChart(standardBikes: bikePoint.standardBikes,
                 eBikes: bikePoint.eBikes, emptySpaces: bikePoint.emptyDocks,
                 size: donutSize, bikeDataFilter: bikeDataFilter)
+            if isFavorite {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(AppConstants.Colors.favoriteHighlight)
+                    .padding(3)
+                    .background(.black, in: Circle())
+                    .offset(x: donutSize / 2, y: -donutSize / 2)
+                    .accessibilityHidden(true)
+            }
             if !bikePoint.isAvailable {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 15)).foregroundStyle(.orange)
@@ -342,7 +353,7 @@ struct BikePointMapPin: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(bikePoint.commonName) dock")
+        .accessibilityLabel("\(bikePoint.commonName) dock\(isFavorite ? ", favourite" : "")\(isSelected ? ", selected" : "")")
         .accessibilityValue("\(bikeDataFilter.filteredCounts(standardBikes: bikePoint.standardBikes, eBikes: bikePoint.eBikes, emptySpaces: bikePoint.emptyDocks).totalBikes) selected bikes, \(bikePoint.emptyDocks) spaces")
         .accessibilityHint("Show dock details")
     }
@@ -373,8 +384,7 @@ struct BikePointDetailView: View {
     @State private var confirmsReplacingJourney = false
     @State private var isReplacingJourney = false
     @State private var watchError: String?
-    @State private var sheetContentHeight: CGFloat = 360
-    @State private var selectedSheetDetent: PresentationDetent = .height(372)
+    @State private var sheetContentHeight: CGFloat = 320
 
     private var hasCustomAlternatives: Bool { preferences.customDockIDs(for: bikePoint.id) != nil }
     private var nearbyDocks: [BikePoint] {
@@ -403,26 +413,20 @@ struct BikePointDetailView: View {
                 }
                 Divider()
                 nearbySection
-                if let updatedAt {
-                    Text("Updated \(DockUpdateTime.string(from: updatedAt))")
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                }
             }
-            .padding(16)
-            .padding(.top, 8)
+            .padding(.horizontal, 16)
+            .padding(.top, 24)
+            .padding(.bottom, 8)
             .onGeometryChange(for: CGFloat.self) { geometry in
                 ceil(geometry.size.height)
             } action: { height in
                 guard height > 0, height != sheetContentHeight else { return }
                 sheetContentHeight = height
-                if selectedSheetDetent != .large {
-                    selectedSheetDetent = .height(min(height + 12, 560))
-                }
             }
         }
-        .presentationDetents([.height(min(sheetContentHeight + 12, 560)), .large],
-                             selection: $selectedSheetDetent)
+        // A fixed-height detent includes the sheet's bottom safe area.
+        .presentationDetents([.height(max(44, min(sheetContentHeight - 28, 560)))])
+        .presentationBackgroundInteraction(.enabled)
         .alert("Replace current journey?", isPresented: $confirmsReplacingJourney) {
             Button("Replace and watch dock", role: .destructive) {
                 isReplacingJourney = true
@@ -582,6 +586,12 @@ struct BikePointDetailView: View {
                     Text(hasCustomAlternatives ? "Alternative docks" : "Nearby docks")
                         .font(.subheadline.weight(.semibold))
                     Spacer(minLength: 4)
+                    if !dynamicTypeSize.isAccessibilitySize, let updatedAt {
+                        Text("Updated \(DockUpdateTime.string(from: updatedAt))")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                     Image(systemName: showsNearbyDocks ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.semibold))
                 }
@@ -591,6 +601,10 @@ struct BikePointDetailView: View {
             .buttonStyle(.plain)
             .accessibilityValue(showsNearbyDocks ? "Expanded" : "Collapsed")
             .accessibilityHint("Show nearby docks and editing options")
+            if dynamicTypeSize.isAccessibilitySize, let updatedAt {
+                Text("Updated \(DockUpdateTime.string(from: updatedAt))")
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            }
             if showsNearbyDocks {
                 Button { showsAllDocks = true } label: {
                     HStack(spacing: 6) {
