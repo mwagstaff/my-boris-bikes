@@ -81,6 +81,10 @@ final class DockPreferencesService: ObservableObject {
     func customDockIDs(for dockID: String) -> [String]? { snapshot.alternatives[dockID] }
     func alias(for dockID: String) -> String? { snapshot.aliases[dockID] }
 
+    func displayName(for dockID: String, fallback: String) -> String {
+        alias(for: dockID) ?? fallback
+    }
+
     func customDocks(for dockID: String) -> [ScheduledJourneyDock]? {
         customDockIDs(for: dockID)?.map { id in
             snapshot.docks[id] ?? ScheduledJourneyDock(id: id, name: id, latitude: 0, longitude: 0)

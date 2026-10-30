@@ -50,6 +50,7 @@ struct BikeSpot_LondonApp: App {
                 }
         }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
+            DockAvailabilityStore.shared.handleScenePhase(newPhase)
             if let baseURL = URL(string: AppConstants.Server.baseURL) {
                 LondonBackgroundService.shared.handleScenePhase(newPhase, baseURL: baseURL)
             }

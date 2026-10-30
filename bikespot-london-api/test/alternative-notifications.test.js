@@ -71,6 +71,7 @@ function serverHarness(overrides = {}) {
   const pushes = [];
   const context = vm.createContext({
     buildAlternativeNotification,
+    notificationDockName: require("../notification-dock-name").notificationDockName,
     loadDeviceDockPreferences: async () => preferences,
     loadAlternativeDockSnapshots: async () => docksById,
     fetchDockData: async () => ({ standardBikes: 2, eBikes: 0, emptySpaces: 2 }),
@@ -89,7 +90,8 @@ function serverHarness(overrides = {}) {
     "primaryValueForDisplay", "minimumThresholdForDisplay", "scheduledJourneyStartAlertBody",
     "scheduledJourneyDestinationAvailabilityBody", "sendAlternativeAvailabilityPush", "sendAvailabilityAlertPush",
     "sendScheduledJourneyInitialAvailabilityPush", "sendScheduledJourneyDestinationAvailabilityPushForSession",
-    "startArrivalDestinationAlertKey", "scheduleStartArrivalDestinationSpaceAlert"]) {
+    "startArrivalDestinationAlertKey", "scheduleStartArrivalDestinationSpaceAlert",
+    "scheduledJourneyDockArrivalBody", "scheduledJourneyWatchingDestinationBody", "sendScheduledJourneyTransitionPushes"]) {
     const match = source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}(?=\\n|$)`));
     assert.ok(match, name);
     vm.runInContext(match[0], context);
@@ -214,4 +216,36 @@ test("failed primary alert never sends an orphan alternatives notification", asy
   const { context } = serverHarness({ sendAlertPush: async () => { sends++; throw new Error("APNs unavailable"); } });
   await assert.rejects(context.sendAvailabilityAlertPush("token", "development", "Warning", "main", "Allington Street", session, { standardBikes: 2 }));
   assert.equal(sends, 1);
+});
+
+
+test("primary scheduled notifications resolve both endpoint aliases for the recipient", async () => {
+  const prefs = { ...preferences, aliases: { main: "Home", station: "Work" } };
+  const { context, pushes } = serverHarness({ loadDeviceDockPreferences: async () => prefs });
+  const journey = { deviceToken: "token", deviceId: "device", bikeDataFilter: "bikesOnly",
+    startDock: { id: "main", name: "Allington Street" } };
+  await context.sendScheduledJourneyInitialAvailabilityPush(journey);
+  assert.match(pushes[0][3], /^Home:/);
+  await context.sendScheduledJourneyTransitionPushes(journey, { id: "station", name: "Warwick Row" });
+  assert.equal(pushes.find(push => push[4] === "scheduled_journey_start_arrival")[3], "Welcome to Home!");
+  assert.match(pushes.find(push => push[4] === "scheduled_journey_destination_watch")[3], /Work/);
+  await context.sendScheduledJourneyDestinationAvailabilityPushForSession({ ...session, dockPreferences: prefs },
+    "station", "Warwick Row", { emptySpaces: 2 });
+  assert.equal(pushes.find(push => push[4] === "scheduled_journey_destination_availability")[3], "Work: 2 spaces available");
+});
+
+
+test("delayed destination notifications use an alias edited after scheduling", async () => {
+  let callback;
+  const latest = { ...preferences, aliases: { main: "New office" } };
+  const { context, pushes } = serverHarness({
+    setTimeout: action => { callback = action; return 1; },
+    loadDeviceDockPreferences: async () => latest,
+  });
+  context.scheduleStartArrivalDestinationSpaceAlert({ deviceToken: "token", buildType: "production",
+    startDockId: "other", endDock: { id: "main", name: "Allington Street" }, minimumSpaces: 5,
+    deviceId: "device", dockPreferences: { ...preferences, aliases: { main: "Old office" } }, delayMs: 30000 });
+  await callback();
+  assert.match(pushes[0][3], /New office/);
+  assert.doesNotMatch(pushes[0][3], /Old office|Allington Street/);
 });

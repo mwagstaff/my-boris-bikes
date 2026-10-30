@@ -47,15 +47,9 @@ private func displayDockName(attributes: DockActivityAttributes, state: DockActi
 }
 
 private func displayAlias(attributes: DockActivityAttributes, state: DockActivityAttributes.ContentState) -> String? {
-    if let alias = state.activeDockAlias?.trimmingCharacters(in: .whitespacesAndNewlines), !alias.isEmpty {
-        return alias
-    }
-    // A mutable dock identity also makes an empty alias authoritative (removed or a destination dock).
-    guard state.resolvedDockId == nil else { return nil }
-    if let alias = attributes.alias?.trimmingCharacters(in: .whitespacesAndNewlines), !alias.isEmpty {
-        return alias
-    }
-    return nil
+    let fallback = state.resolvedAlias ?? (state.resolvedDockId == nil ? attributes.alias : nil)
+    return LiveActivityDockNames.alias(
+        for: displayDockId(attributes: attributes, state: state), fallback: fallback)
 }
 
 private func displayTitle(attributes: DockActivityAttributes, state: DockActivityAttributes.ContentState) -> String {
@@ -175,6 +169,11 @@ private struct AlternativeJourneyDockRow: View {
     let alternative: DockActivityAttributes.AlternativeDock
     let summary: JourneyAvailabilitySummary
 
+    private var alternativeDisplayName: String {
+        guard let id = alternative.id else { return alternative.displayName }
+        return LiveActivityDockNames.alias(for: id, fallback: alternative.alias) ?? alternative.name
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             WidgetDonutChart(
@@ -183,12 +182,12 @@ private struct AlternativeJourneyDockRow: View {
                 emptySpaces: alternative.emptySpaces,
                 size: 30,
                 strokeWidth: 5,
-                centerText: extractInitials(from: alternative.displayName)
+                centerText: extractInitials(from: alternativeDisplayName)
             )
             .fixedSize()
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(alternative.displayName)
+                Text(alternativeDisplayName)
                     .font(.system(size: 11, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -359,7 +358,7 @@ private struct WatchLiveActivityView: View {
                     phase: journeyMetric.queryValue == "spaces" ? .riding : .pickup,
                     progress: state.journeyProgress,
                     isStale: isStale,
-                    destination: state.destinationAvailability)
+                    destination: LiveActivityDockNames.destination(state.destinationAvailability, officialName: attributes.destinationDockName))
             } else {
                 HStack(spacing: 10) {
                     WidgetDonutChart(
@@ -594,7 +593,8 @@ private struct DockLiveActivityView: View {
     @ViewBuilder
     private var lockScreenContent: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
+            // Leave room for the full footer within the Lock Screen's 160-point height limit.
+            VStack(alignment: .leading, spacing: 4) {
                 // Primary dock row
                 if let journeySummary, let journeyMetric {
                     JourneyActivityCard(dockName: displayTitle(attributes: attributes, state: state),
@@ -603,7 +603,7 @@ private struct DockLiveActivityView: View {
                             updatedAt: Date(timeIntervalSince1970: Double(state.availabilityUpdatedAtEpochSeconds ?? 0))),
                         metric: JourneyMetric(rawValue: journeyMetric.queryValue) ?? .bikes,
                         threshold: journeySummary.threshold, progress: state.journeyProgress, isStale: isStale, compact: false,
-                        destination: journeyMetric.queryValue == "spaces" ? nil : state.destinationAvailability)
+                        destination: journeyMetric.queryValue == "spaces" ? nil : LiveActivityDockNames.destination(state.destinationAvailability, officialName: attributes.destinationDockName))
                 } else {
                     HStack(spacing: 14) {
                         WidgetDonutChart(
@@ -727,11 +727,10 @@ private struct DockLiveActivityView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
+            .padding(.vertical, 4)
 
             DockUpdatedLabel(timestamp: state.availabilityUpdatedAtEpochSeconds)
-                .padding(.bottom, 6)
+                .padding(.bottom, 2)
 
             Text("Tap to manage")
                 .font(.system(size: 12, weight: .semibold))
@@ -958,7 +957,7 @@ struct BikeSpot_London_WidgetLiveActivity: Widget {
                         ExpandedBottomView(attributes: context.attributes, state: context.state)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         if activeJourneyPhase(attributes: context.attributes, state: context.state) == "start",
-                           let destination = context.state.destinationAvailability {
+                           let destination = LiveActivityDockNames.destination(context.state.destinationAvailability, officialName: context.attributes.destinationDockName) {
                             JourneyDestinationSummary(destination: destination, isStale: context.isStale)
                                 .frame(maxWidth: .infinity, alignment: .trailing)
                         }
@@ -1035,6 +1034,7 @@ extension DockActivityAttributes.ContentState {
     BikeSpot_London_WidgetLiveActivity()
 } contentStates: {
     DockActivityAttributes.ContentState(standardBikes: 6, eBikes: 4, emptySpaces: 12,
+        alternatives: DockActivityAttributes.ContentState.sample.alternatives,
         activeJourneyPhase: "start", primaryDisplay: "allBikes",
         availabilityUpdatedAtEpochSeconds: Int(Date().timeIntervalSince1970),
         destinationAvailability: JourneyDestinationAvailability(id: "BikePoints_2", name: "Victoria Station",

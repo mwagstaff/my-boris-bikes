@@ -3,6 +3,24 @@ import Testing
 @testable import BikeSpot_London
 
 struct AlternativeDockLiveActivityTests {
+    @Test func savedOfficeAliasSurvivesMissingOrStalePushAlias() throws {
+        let suite = "LiveActivityAliasTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let id = "BikePoints_112"
+        #expect(LiveActivityDockNames.alias(for: id, fallback: "Legacy", defaults: defaults) == "Legacy")
+        defaults.set(Data(#"{"aliases":{"BikePoints_112":"Office"}}"#.utf8), forKey: "dockPreferences.v1")
+        #expect(LiveActivityDockNames.alias(for: id, fallback: nil, defaults: defaults) == "Office")
+        #expect(LiveActivityDockNames.alias(for: id, fallback: "Old office", defaults: defaults) == "Office")
+        #expect(LiveActivityDockNames.alias(for: "other", fallback: "Office", defaults: defaults) == nil)
+        let destination = JourneyDestinationAvailability(id: id, name: "Stonecutter Street")
+        #expect(LiveActivityDockNames.destination(destination, officialName: "Stonecutter Street", defaults: defaults)?.name == "Office")
+        defaults.set(Data(#"{"aliases":{}}"#.utf8), forKey: "dockPreferences.v1")
+        #expect(LiveActivityDockNames.alias(for: id, fallback: "Office", defaults: defaults) == nil)
+        let oldDestination = JourneyDestinationAvailability(id: id, name: "Office")
+        #expect(LiveActivityDockNames.destination(oldDestination, officialName: "Stonecutter Street", defaults: defaults)?.name == "Stonecutter Street")
+    }
+
     @Test func legacyAlternativeSnapshotStillDecodes() throws {
         let data = Data(#"{"name":"Old Street","standardBikes":2,"eBikes":1,"emptySpaces":4}"#.utf8)
         let alternative = try JSONDecoder().decode(DockActivityAttributes.AlternativeDock.self, from: data)

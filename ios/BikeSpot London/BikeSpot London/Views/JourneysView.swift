@@ -6,11 +6,10 @@ struct JourneysView: View {
     @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
     @StateObject private var adHocJourneyService = AdHocJourneyService.shared
     @StateObject private var favoriteJourneyService = FavoriteJourneyService.shared
-    @StateObject private var dockAvailabilityStore = JourneyDockAvailabilityStore()
+    @StateObject private var dockAvailabilityStore = DockAvailabilityStore.shared
     @ObservedObject private var dockPreferences = DockPreferencesService.shared
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var locationService: LocationService
-    @EnvironmentObject private var favoritesService: FavoritesService
     @StateObject private var historyService = JourneyHistoryService.shared
     @State private var historyFilter: JourneyHistoryEntry.Kind?
     @State private var historyLimit = 30
@@ -98,11 +97,17 @@ struct JourneysView: View {
             primaryIDs = []
         }
         let customIDs = primaryIDs.flatMap { dockPreferences.customDockIDs(for: $0) ?? [] }
+        let nearbyIDs = primaryIDs.flatMap { id -> [String] in
+            guard let point = dockAvailabilityStore.bikePointsByID[id] else { return [] }
+            return AlternativeDockSelectionService.otherNearbyDocks(for: point,
+                allBikePoints: dockAvailabilityStore.allBikePoints,
+                excludingDockIDs: Set(primaryIDs)).prefix(5).map(\.id)
+        }
         let savedDockIDs = selectedSection == .saved
             ? favoriteJourneyService.journeys.flatMap { [$0.startDock.id, $0.endDock.id] }
                 + scheduledJourneyService.journeys.flatMap { [$0.startDock.id, $0.endDock.id] }
             : []
-        return Array(Set(primaryIDs + customIDs + savedDockIDs)).sorted()
+        return Array(Set(primaryIDs + customIDs + nearbyIDs + savedDockIDs)).sorted()
     }
 
     var body: some View {
@@ -117,6 +122,9 @@ struct JourneysView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
                 .padding(.bottom, 8)
+
+                DockFreshnessView()
+                    .padding(.horizontal, 16)
 
                 if selectedSection == .current, let currentActiveJourney {
                     activeJourneyScreen(currentActiveJourney)
@@ -157,7 +165,7 @@ struct JourneysView: View {
                 if selectedSection == .history { await scheduledJourneyService.refreshHistory() }
             }
             .task(id: activeDockIDs) {
-                refreshActiveDockAvailability(cacheBusting: true)
+                refreshActiveDockAvailability()
             }
             .onReceive(dockAvailabilityRefreshTimer) { _ in
                 // Skip network refreshes while backgrounded; the scenePhase
@@ -166,19 +174,19 @@ struct JourneysView: View {
                 let interval = isNearActiveDock
                     ? AppConstants.App.nearbyDockRefreshInterval : AppConstants.App.refreshInterval
                 guard lastAvailabilityRefreshAttempt.map({ Date().timeIntervalSince($0) >= interval - 1 }) ?? true else { return }
-                refreshActiveDockAvailability(cacheBusting: true)
+                refreshActiveDockAvailability()
             }
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
-                Task {
-                    await scheduledJourneyService.refresh()
-                    refreshActiveDockAvailability(cacheBusting: true)
-                }
+                refreshActiveDockAvailability()
+                Task { await scheduledJourneyService.refresh() }
             }
             .refreshable {
+                dockAvailabilityStore.refresh(dockIDs: activeDockIDs, force: true)
                 if selectedSection == .history { await scheduledJourneyService.refreshHistory() }
-                await scheduledJourneyService.refresh()
-                refreshActiveDockAvailability(cacheBusting: true)
+                async let journeyRefresh: Void = scheduledJourneyService.refresh()
+                await dockAvailabilityStore.refreshAndWait(dockIDs: activeDockIDs)
+                await journeyRefresh
             }
             .sheet(item: $journeyEditorPresentation) { presentation in
                 AddJourneyView(presentation: presentation)
@@ -250,7 +258,7 @@ struct JourneysView: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
                                     Button { selectedSection = .current } label: {
-                                        Label("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService)) · Active", systemImage: "bicycle")
+                                        Label("\(journey.startDock.displayName(using: dockPreferences)) → \(journey.endDock.displayName(using: dockPreferences)) · Active", systemImage: "bicycle")
                                     }
                                     Spacer()
                                     Button("Edit") { journeyEditorPresentation = .edit(journey) }
@@ -321,7 +329,7 @@ struct JourneysView: View {
 
     private func historyRow(_ entry: JourneyHistoryEntry) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("\(entry.startDock.displayName(using: favoritesService)) → \(entry.endDock.displayName(using: favoritesService))")
+            Text("\(entry.startDock.displayName(using: dockPreferences)) → \(entry.endDock.displayName(using: dockPreferences))")
                 .font(.headline)
             Text(entry.dateLabel).font(.subheadline).foregroundStyle(.secondary)
             HStack {
@@ -378,15 +386,16 @@ struct JourneysView: View {
         guard let location = locationService.location,
               location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 100,
               abs(location.timestamp.timeIntervalSinceNow) <= 60 else { return false }
-        return dockAvailabilityStore.bikePointsByID.values.contains {
+        return activeDockIDs.compactMap { dockAvailabilityStore.bikePointsByID[$0] }.contains {
             location.distance(from: CLLocation(latitude: $0.lat, longitude: $0.lon))
                 <= AppConstants.App.nearbyDockDistanceMeters
         }
     }
 
-    private func refreshActiveDockAvailability(cacheBusting: Bool) {
+    private func refreshActiveDockAvailability() {
         lastAvailabilityRefreshAttempt = Date()
-        dockAvailabilityStore.refresh(dockIDs: activeDockIDs, cacheBusting: cacheBusting)
+        dockAvailabilityStore.refresh(dockIDs: activeDockIDs,
+            maxAge: isNearActiveDock ? AppConstants.App.nearbyDockRefreshInterval : AppConstants.App.refreshInterval)
     }
 
     private func scheduledJourneyRow(_ journey: ScheduledJourney) -> some View {
@@ -629,7 +638,7 @@ private struct AdHocJourneyRow: View {
     let onToggleFavorite: () -> Void
     let onDockSelected: (String) -> Void
     let onSelectAlternative: (BikePoint) -> Void
-    @EnvironmentObject private var favoritesService: FavoritesService
+    @ObservedObject private var dockPreferences = DockPreferencesService.shared
     @EnvironmentObject private var locationService: LocationService
     @State private var isAdvancing = false
 
@@ -655,7 +664,7 @@ private struct AdHocJourneyRow: View {
                             .frame(width: 24)
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService))")
+                            Text("\(journey.startDock.displayName(using: dockPreferences)) → \(journey.endDock.displayName(using: dockPreferences))")
                                 .font(.headline)
                                 .fixedSize(horizontal: false, vertical: true)
                             if let lastStartedAt = journey.lastStartedAt {
@@ -702,8 +711,8 @@ private struct AdHocJourneyRow: View {
 
                     LiveJourneyProgressView(
                         progress: journeyProgress,
-                        startName: journey.startDock.displayName(using: favoritesService),
-                        endName: journey.endDock.displayName(using: favoritesService)
+                        startName: journey.startDock.displayName(using: dockPreferences),
+                        endName: journey.endDock.displayName(using: dockPreferences)
                     )
 
                     JourneyEndButton(onStop: onStop)
@@ -745,7 +754,7 @@ private struct FavoriteJourneyRow: View {
     let onStartReturn: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
-    @EnvironmentObject private var favoritesService: FavoritesService
+    @ObservedObject private var dockPreferences = DockPreferencesService.shared
     @EnvironmentObject private var locationService: LocationService
 
     private var numericDistance: CLLocationDistance? {
@@ -760,7 +769,7 @@ private struct FavoriteJourneyRow: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 24)
 
-                    Text("\(startDock.displayName(using: favoritesService)) → \(endDock.displayName(using: favoritesService))")
+                    Text("\(startDock.displayName(using: dockPreferences)) → \(endDock.displayName(using: dockPreferences))")
                         .font(.headline)
                         .fixedSize(horizontal: false, vertical: true)
 
@@ -906,7 +915,7 @@ private struct ScheduledJourneyRow: View {
     let onDockSelected: (String) -> Void
     let onSelectAlternative: (BikePoint) -> Void
     let onCreateReturn: () -> Void
-    @EnvironmentObject private var favoritesService: FavoritesService
+    @ObservedObject private var dockPreferences = DockPreferencesService.shared
     @EnvironmentObject private var locationService: LocationService
     @State private var isAdvancing = false
 
@@ -932,7 +941,7 @@ private struct ScheduledJourneyRow: View {
                             .frame(width: 24)
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("\(journey.startDock.displayName(using: favoritesService)) → \(journey.endDock.displayName(using: favoritesService))")
+                            Text("\(journey.startDock.displayName(using: dockPreferences)) → \(journey.endDock.displayName(using: dockPreferences))")
                                 .font(.headline)
                                 .fixedSize(horizontal: false, vertical: true)
                             Text("\(weekdaySummary(journey.weekdays)) • \(journey.startTime)-\(journey.endTime)")
@@ -975,8 +984,8 @@ private struct ScheduledJourneyRow: View {
 
                     LiveJourneyProgressView(
                         progress: journeyProgress,
-                        startName: journey.startDock.displayName(using: favoritesService),
-                        endName: journey.endDock.displayName(using: favoritesService)
+                        startName: journey.startDock.displayName(using: dockPreferences),
+                        endName: journey.endDock.displayName(using: dockPreferences)
                     )
                 }
 
@@ -1107,7 +1116,7 @@ private struct ActiveJourneyDockIndicators: View {
                         .accessibilityHidden(true)
                 }
                 .foregroundStyle(.tint)
-                Text(dock.displayName(using: favoritesService))
+                Text(dock.displayName(using: dockPreferences))
                     .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1757,7 +1766,7 @@ private struct DockSelectionButton: View {
     let title: String
     let dock: ScheduledJourneyDock?
     let action: () -> Void
-    @EnvironmentObject private var favoritesService: FavoritesService
+    @ObservedObject private var dockPreferences = DockPreferencesService.shared
 
     var body: some View {
         Button(action: action) {
@@ -1765,7 +1774,7 @@ private struct DockSelectionButton: View {
                 Text(title)
                     .foregroundStyle(.primary)
                 Spacer()
-                Text(dock?.displayName(using: favoritesService) ?? "Choose")
+                Text(dock?.displayName(using: dockPreferences) ?? "Choose")
                     .foregroundStyle(dock == nil ? .secondary : .primary)
                     .multilineTextAlignment(.trailing)
                 Image(systemName: "chevron.right")
@@ -1837,8 +1846,8 @@ private struct TimePickerRow: View {
 }
 
 private extension ScheduledJourneyDock {
-    func displayName(using favoritesService: FavoritesService) -> String {
-        favoritesService.alias(for: id) ?? name
+    func displayName(using dockPreferences: DockPreferencesService) -> String {
+        dockPreferences.displayName(for: id, fallback: name)
     }
 }
 

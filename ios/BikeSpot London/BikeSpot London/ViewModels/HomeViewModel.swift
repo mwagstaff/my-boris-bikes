@@ -1,7 +1,6 @@
 import Foundation
 import Combine
 import CoreLocation
-import UIKit
 
 @MainActor
 class HomeViewModel: BaseViewModel {
@@ -9,247 +8,66 @@ class HomeViewModel: BaseViewModel {
     @Published var allBikePoints: [BikePoint] = []
     @Published var lastUpdateTime: Date?
     @Published var tflDataStaleWarning: String?
-
     private var favoritesService: FavoritesService?
     private var locationService: LocationService?
     private var widgetService: WidgetService?
-    private var refreshTimer: Timer?
-    private var bikePointCache: [String: BikePoint] = [:]
-    private var allBikePointsRequest: AnyCancellable?
-    private var lastAllBikePointsRefreshTime: Date?
-    private var isAllBikePointsRefreshInFlight = false
     private var isSetup = false
-    private var isFavoriteRefreshInFlight = false
-    private var lastFavoriteRefreshAttempt: Date?
 
-    private var favoriteRefreshInterval: TimeInterval {
-        guard let location = locationService?.location,
-              location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 100,
-              abs(location.timestamp.timeIntervalSinceNow) <= 60 else { return AppConstants.App.refreshInterval }
-        let nearby = favoriteBikePoints.contains {
-            location.distance(from: CLLocation(latitude: $0.lat, longitude: $0.lon))
-                <= AppConstants.App.nearbyDockDistanceMeters
-        }
-        return nearby ? AppConstants.App.nearbyDockRefreshInterval : AppConstants.App.refreshInterval
-    }
-    
     func setup(favoritesService: FavoritesService, locationService: LocationService) {
         guard !isSetup else { return }
         isSetup = true
-
         self.favoritesService = favoritesService
         self.locationService = locationService
-        self.widgetService = WidgetService.shared
-        if allBikePoints.isEmpty,
-           let cachedSnapshot = AllBikePointsCache.shared.loadSnapshot() {
-            let cachedAllBikePoints = cachedSnapshot.bikePoints.filter(\.isInstalled)
-            if !cachedAllBikePoints.isEmpty {
-                allBikePoints = cachedAllBikePoints
-            }
-        }
-
-        favoritesService.$favorites
-            .combineLatest(favoritesService.$sortMode)
+        widgetService = WidgetService.shared
+        let store = DockAvailabilityStore.shared
+        store.$snapshot.sink { [weak self] snapshot in
+            self?.apply(snapshot)
+        }.store(in: &cancellables)
+        store.$isRefreshing.sink { [weak self] refreshing in
+            self?.isLoading = refreshing
+        }.store(in: &cancellables)
+        favoritesService.$favorites.combineLatest(favoritesService.$sortMode)
             .sink { [weak self] favorites, _ in
-                // Immediately update the displayed list to match the new favorites
-                // This prevents UI/data inconsistencies during deletions
-                self?.updateFavoriteBikePointsFromFavoritesList(favorites)
-                Task { await self?.loadFavoriteData() }
-            }
-            .store(in: &cancellables)
-
-        // Listen for recently added bike points to cache them immediately
-        favoritesService.$recentlyAddedBikePoint
-            .compactMap { $0 }
-            .sink { [weak self] bikePoint in
-                self?.cacheBikePoint(bikePoint)
-            }
-            .store(in: &cancellables)
-
-        locationService.$location
+                self?.apply(store.snapshot, favoriteIDs: favorites.map(\.id))
+                store.refresh(dockIDs: favorites.map(\.id))
+            }.store(in: &cancellables)
+        locationService.$location.sink { [weak self] _ in
+            if favoritesService.sortMode == .distance { self?.sortByDistance() }
+        }.store(in: &cancellables)
+        NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification,
+            object: AppConstants.UserDefaults.sharedDefaults)
             .sink { [weak self] _ in
-                if favoritesService.sortMode == .distance {
-                    self?.sortByDistance()
-                }
-            }
-            .store(in: &cancellables)
-
-        NotificationCenter.default.publisher(
-            for: UserDefaults.didChangeNotification,
-            object: AppConstants.UserDefaults.sharedDefaults
-        )
-        .sink { [weak self] _ in
-            self?.loadAllBikePointsIfNeeded(forceRefresh: false)
-            if let favoriteBikePoints = self?.favoriteBikePoints {
-                self?.updateWidgetData(favoriteBikePoints)
-            }
-        }
-        .store(in: &cancellables)
-
-        // Load initial data immediately
-        Task {
-            await loadFavoriteData(forceRefresh: true)
-        }
-
-        startAutoRefresh()
+                guard let self else { return }
+                self.updateWidgetData(self.favoriteBikePoints)
+            }.store(in: &cancellables)
+        store.refresh(dockIDs: favoritesService.favorites.map(\.id))
     }
-    
+
     func refreshData() async {
-        // Force refresh to ensure we get fresh data during manual refresh
-        await loadFavoriteData(forceRefresh: true)
+        await DockAvailabilityStore.shared.refreshAndWait(
+            dockIDs: favoritesService?.favorites.map(\.id) ?? [], force: true)
     }
-    
+
     func refreshIfStale() async {
-        // Use the same freshness threshold as foreground polling.
-        let staleThreshold = favoriteRefreshInterval
-        
-        if let lastUpdate = lastUpdateTime {
-            let timeSinceLastUpdate = Date().timeIntervalSince(lastUpdate)
-            if timeSinceLastUpdate > staleThreshold {
-                await loadFavoriteData(forceRefresh: true)
-            }
-        } else {
-            // No last update time means we haven't loaded data yet
-            await loadFavoriteData(forceRefresh: true)
-        }
+        await DockAvailabilityStore.shared.refreshAndWait(dockIDs: favoritesService?.favorites.map(\.id) ?? [])
     }
 
     func refreshAlternativeDockDataIfStale() {
-        let cachedAllBikePoints = AllBikePointsCache.shared.load()
-        if !cachedAllBikePoints.isEmpty {
-            allBikePoints = cachedAllBikePoints
-        }
-
-        let staleThreshold = AppConstants.App.refreshInterval
-        let isStale = lastAllBikePointsRefreshTime.map {
-            Date().timeIntervalSince($0) >= staleThreshold
-        } ?? true
-
-        guard isStale else { return }
-        loadAllBikePointsIfNeeded(forceRefresh: true)
+        DockAvailabilityStore.shared.refresh()
     }
-    
-    func cacheBikePoint(_ bikePoint: BikePoint) {
-        bikePointCache[bikePoint.id] = bikePoint
+
+    private func apply(_ snapshot: DockAvailabilityStore.Snapshot, favoriteIDs: [String]? = nil) {
+        allBikePoints = snapshot.allBikePoints.filter(\.isInstalled)
+        let ids = favoriteIDs ?? favoritesService?.favorites.map(\.id) ?? []
+        favoriteBikePoints = sortBikePoints(ids.compactMap { snapshot.bikePointsByID[$0] })
+        lastUpdateTime = snapshot.oldestCheck(for: Array(snapshot.bikePointsByID.keys))
+        let staleRatio = BikePoint.staleAvailabilityDataRatio(in: allBikePoints, fetchedAt: Date(),
+            staleAfter: AppConstants.App.tflApiStalenessThreshold)
+        tflDataStaleWarning = (staleRatio ?? 0) >= AppConstants.App.tflApiStaleDockWarningRatio
+            ? "Warning: TfL bike data may be out of date" : nil
+        updateWidgetData(favoriteBikePoints)
     }
-    
-    func cacheBikePoints(_ bikePoints: [BikePoint]) {
-        for bikePoint in bikePoints {
-            bikePointCache[bikePoint.id] = bikePoint
-        }
-    }
-    
-    private func updateFavoriteBikePointsFromFavoritesList(_ favorites: [FavoriteBikePoint]) {
-        // Immediately filter the current favoriteBikePoints to match the updated favorites list
-        // This prevents UI crashes when items are deleted
-        let favoriteIds = Set(favorites.map { $0.id })
-        favoriteBikePoints = favoriteBikePoints.filter { favoriteIds.contains($0.id) }
-    }
-    
-    private func loadFavoriteData() async {
-        await loadFavoriteData(forceRefresh: false)
-    }
-    
-    private func loadFavoriteData(forceRefresh: Bool = false) async {
-        guard let favoritesService = favoritesService else { return }
-        guard !isFavoriteRefreshInFlight else { return }
 
-        let favoriteIds = favoritesService.favorites.map { $0.id }
-        guard !favoriteIds.isEmpty else {
-            lastFavoriteRefreshAttempt = Date()
-            favoriteBikePoints = []
-            loadAllBikePointsIfNeeded(forceRefresh: forceRefresh)
-            return
-        }
-        
-        // Determine which IDs to fetch
-        let idsToFetch: [String]
-        if forceRefresh || bikePointCache.isEmpty {
-            // Fetch all favorites if forcing refresh or no cache
-            idsToFetch = favoriteIds
-        } else {
-            // Only fetch missing IDs
-            idsToFetch = favoriteIds.filter { bikePointCache[$0] == nil }
-        }
-        
-        // Show cached data immediately if available and not forcing refresh
-        if !forceRefresh && !bikePointCache.isEmpty {
-            let cachedBikePoints = favoriteIds.compactMap { bikePointCache[$0] }
-            if !cachedBikePoints.isEmpty {
-                favoriteBikePoints = sortBikePoints(cachedBikePoints)
-                // Update widget with cached data
-                updateWidgetData(cachedBikePoints)
-            }
-        }
-        
-        // Fetch fresh data if needed
-        if !idsToFetch.isEmpty {
-            isLoading = true
-            isFavoriteRefreshInFlight = true
-            lastFavoriteRefreshAttempt = Date()
-            clearError()
-            
-            TfLAPIService.shared
-                .fetchMultipleBikePoints(ids: idsToFetch, cacheBusting: forceRefresh)
-                .sink(
-                    receiveCompletion: { [weak self] completion in
-                        self?.isLoading = false
-                        self?.isFavoriteRefreshInFlight = false
-                        if case .failure(let error) = completion {
-                            self?.setError(error)
-                        }
-                    },
-                    receiveValue: { [weak self] newBikePoints in
-                        // Update cache with new data
-                        for bikePoint in newBikePoints {
-                            self?.bikePointCache[bikePoint.id] = bikePoint
-                            DockArrivalMonitoringService.shared.updateMonitoredDockIfNeeded(using: bikePoint)
-                        }
-                        Task {
-                            await LiveActivityService.shared.updateActiveActivitiesIfNeeded(using: newBikePoints)
-                        }
-                        
-                        // Combine cached and new data
-                        let allBikePoints = favoriteIds.compactMap { self?.bikePointCache[$0] }
-                        self?.favoriteBikePoints = self?.sortBikePoints(allBikePoints) ?? []
-                        
-                        // Update last refresh time
-                        self?.lastUpdateTime = Date()
-
-                        // Clear any existing errors on successful data load
-                        self?.clearErrorOnSuccess()
-
-                        // Update widget data
-                        self?.updateWidgetData(allBikePoints)
-
-                        self?.loadAllBikePointsIfNeeded(forceRefresh: forceRefresh)
-                    }
-                )
-                .store(in: &cancellables)
-        } else if forceRefresh {
-            // If forcing refresh but no data to fetch, just update timestamp
-            lastUpdateTime = Date()
-            clearErrorOnSuccess()
-
-            // Update widget with all cached data
-            let allCachedBikePoints = favoriteIds.compactMap { bikePointCache[$0] }
-            if !allCachedBikePoints.isEmpty {
-                updateWidgetData(allCachedBikePoints)
-            }
-
-            loadAllBikePointsIfNeeded(forceRefresh: forceRefresh)
-        } else {
-            // No new data to fetch and not forcing refresh
-            // Still update widget with cached data in case it wasn't updated before
-            let allCachedBikePoints = favoriteIds.compactMap { bikePointCache[$0] }
-            if !allCachedBikePoints.isEmpty {
-                updateWidgetData(allCachedBikePoints)
-            }
-
-            loadAllBikePointsIfNeeded(forceRefresh: forceRefresh)
-        }
-    }
-    
     private func sortBikePoints(_ bikePoints: [BikePoint]) -> [BikePoint] {
         guard let favoritesService = favoritesService else { return bikePoints }
 
@@ -289,27 +107,6 @@ class HomeViewModel: BaseViewModel {
         favoriteBikePoints = sorted
     }
     
-    private func startAutoRefresh() {
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: AppConstants.App.nearbyDockRefreshInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                // Skip network refreshes while backgrounded — the app can stay
-                // alive in the background during dock arrival monitoring, and
-                // fresh data is loaded on return to foreground.
-                guard UIApplication.shared.applicationState != .background else { return }
-                guard let self else { return }
-                guard self.lastFavoriteRefreshAttempt.map({
-                    Date().timeIntervalSince($0) >= self.favoriteRefreshInterval - 1
-                }) ?? true else { return }
-                self.loadAllBikePointsIfNeeded(forceRefresh: false)
-                // Always force refresh to ensure fresh data at every interval
-                await self.loadFavoriteData(forceRefresh: true)
-            }
-        }
-        refreshTimer?.tolerance = 1
-        // Fire the timer immediately to ensure first update happens right away
-        refreshTimer?.fire()
-    }
-    
     private func updateWidgetData(_ bikePoints: [BikePoint]) {
         guard let favoritesService = favoritesService,
               let widgetService = widgetService else { return }
@@ -323,60 +120,4 @@ class HomeViewModel: BaseViewModel {
         )
     }
 
-    private func loadAllBikePointsIfNeeded(forceRefresh: Bool) {
-        let intervalElapsed = lastAllBikePointsRefreshTime.map {
-            Date().timeIntervalSince($0) >= AppConstants.App.allBikePointsPrewarmInterval
-        } ?? true
-        guard forceRefresh || allBikePoints.isEmpty || intervalElapsed else { return }
-        guard !isAllBikePointsRefreshInFlight else { return }
-
-        isAllBikePointsRefreshInFlight = true
-        let shouldBypassCache = forceRefresh || intervalElapsed
-        allBikePointsRequest = TfLAPIService.shared
-            .fetchAllBikePoints(cacheBusting: shouldBypassCache)
-            .sink(
-                receiveCompletion: { [weak self] _ in
-                    self?.isAllBikePointsRefreshInFlight = false
-                },
-                receiveValue: { [weak self] bikePoints in
-                    let installedBikePoints = bikePoints.filter { $0.isInstalled }
-                    guard !installedBikePoints.isEmpty else { return }
-                    self?.allBikePoints = installedBikePoints
-                    let fetchedAt = Date()
-                    self?.lastAllBikePointsRefreshTime = fetchedAt
-                    if self?.favoritesService?.favorites.isEmpty == true {
-                        self?.lastUpdateTime = fetchedAt
-                    }
-                    self?.updateTflDataStaleWarning(from: installedBikePoints, fetchedAt: fetchedAt)
-                    AllBikePointsCache.shared.save(installedBikePoints, savedAt: fetchedAt)
-                    Task {
-                        await LiveActivityService.shared.updateActiveActivitiesIfNeeded(using: installedBikePoints)
-                    }
-                    if let favoriteBikePoints = self?.favoriteBikePoints {
-                        self?.updateWidgetData(favoriteBikePoints)
-                    }
-                }
-            )
-    }
-
-    private func updateTflDataStaleWarning(from bikePoints: [BikePoint], fetchedAt: Date) {
-        let staleRatio = BikePoint.staleAvailabilityDataRatio(
-            in: bikePoints,
-            fetchedAt: fetchedAt,
-            staleAfter: AppConstants.App.tflApiStalenessThreshold
-        )
-        guard let staleRatio else {
-            tflDataStaleWarning = nil
-            return
-        }
-
-        tflDataStaleWarning = staleRatio >= AppConstants.App.tflApiStaleDockWarningRatio
-            ? "Warning: TfL bike data may be out of date"
-            : nil
-    }
-
-    deinit {
-        refreshTimer?.invalidate()
-        allBikePointsRequest?.cancel()
-    }
 }

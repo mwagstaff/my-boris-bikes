@@ -12,6 +12,7 @@ struct HomeView: View {
     @EnvironmentObject var scheduledJourneyService: ScheduledJourneyService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isShowingAddJourney = false
+    @State private var isShowingAddDock = false
     @State private var journeyRestoreIconScale = 1.0
     @AppStorage(
         AppConstants.UserDefaults.favoriteJourneysSectionHiddenKey,
@@ -35,8 +36,10 @@ struct HomeView: View {
         NavigationStack {
             ZStack {
                 VStack {
+                    DockFreshnessView()
                     if favoritesService.favorites.isEmpty && favoriteJourneyService.journeys.isEmpty {
-                        EmptyFavoritesView()
+                        EmptyFavoritesView(onAddJourney: { isShowingAddJourney = true },
+                                           onAddDock: { isShowingAddDock = true })
                     } else {
                         FavoritesListView(
                             bikePoints: viewModel.favoriteBikePoints,
@@ -47,7 +50,9 @@ struct HomeView: View {
                             tflDataStaleWarning: viewModel.tflDataStaleWarning,
                             onBikePointSelected: onBikePointSelected,
                             onJourneyStarted: onJourneyStarted,
-                            onHideJourneySection: { setJourneySectionHidden(true) }
+                            onHideJourneySection: { setJourneySectionHidden(true) },
+                            onAddJourney: { isShowingAddJourney = true },
+                            onAddDock: { isShowingAddDock = true }
                         )
                     }
                 }
@@ -64,10 +69,17 @@ struct HomeView: View {
                     }
 
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        Button { isShowingAddJourney = true } label: {
+                        Menu {
+                            Button { isShowingAddDock = true } label: {
+                                Label("Add dock", systemImage: "mappin.and.ellipse")
+                            }
+                            Button { isShowingAddJourney = true } label: {
+                                Label("Add journey", systemImage: "figure.outdoor.cycle")
+                            }
+                        } label: {
                             Image(systemName: "plus")
                         }
-                        .accessibilityLabel("New journey")
+                        .accessibilityLabel("Add to favourites")
                     }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         if isJourneySectionHidden && !favoriteJourneyService.journeys.isEmpty {
@@ -82,6 +94,14 @@ struct HomeView: View {
                                 await pulseJourneyRestoreIcon()
                             }
                         }
+                    }
+                }
+                .sheet(isPresented: $isShowingAddDock) {
+                    DockPickerView(title: "Add favourite dock", availabilityMode: .start,
+                                   excludedDockIDs: Set(favoritesService.favorites.map(\.id))) { dock in
+                        let bikePoint = viewModel.allBikePoints.first { $0.id == dock.id }
+                            ?? BikePoint(id: dock.id, commonName: dock.name, lat: dock.latitude, lon: dock.longitude)
+                        favoritesService.addFavorite(bikePoint)
                     }
                 }
                 .sheet(isPresented: $isShowingAddJourney) {
@@ -163,23 +183,49 @@ struct HomeView: View {
 }
 
 struct EmptyFavoritesView: View {
+    let onAddJourney: () -> Void
+    let onAddDock: () -> Void
+
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: "heart.slash")
-                .font(.system(size: 64))
-                .foregroundColor(.gray)
-            
-            Text("No favourites yet")
-                .font(.title2)
-                .fontWeight(.semibold)
-            
-            Text("Use the map to find and save your favourite docks.")
-                .font(.body)
-                .foregroundColor(.secondary)
+            Text("No favourite docks yet")
+                .font(.title2.weight(.semibold))
+            Text("Use + to add a dock or a journey.")
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal)
+            EmptyFavoriteActions(onAddJourney: onAddJourney, onAddDock: onAddDock)
         }
         .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct EmptyFavoriteActions: View {
+    let onAddJourney: () -> Void
+    let onAddDock: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            addButton("Add journey", identifier: "empty-favourites-add-journey", action: onAddJourney)
+            addButton("Add dock", identifier: "empty-favourites-add-dock", action: onAddDock)
+        }
+    }
+
+    private func addButton(_ title: String, identifier: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            ZStack {
+                // Keep both actions the existing journey button's intrinsic width.
+                Label("Add journey", systemImage: "plus").hidden()
+                Label(title, systemImage: "plus")
+            }
+            .font(.title3.weight(.semibold))
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.red)
+        .controlSize(.large)
+        .accessibilityIdentifier(identifier)
     }
 }
 
@@ -193,6 +239,8 @@ struct FavoritesListView: View {
     let onBikePointSelected: ((BikePoint) -> Void)?
     let onJourneyStarted: (() -> Void)?
     let onHideJourneySection: () -> Void
+    let onAddJourney: () -> Void
+    let onAddDock: () -> Void
     @EnvironmentObject var favoritesService: FavoritesService
     @EnvironmentObject var locationService: LocationService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -201,12 +249,10 @@ struct FavoritesListView: View {
     @State private var editingAlternatives: BikePoint?
     @ObservedObject private var dockPreferences = DockPreferencesService.shared
     @State private var isShowingAllFavoriteJourneys = false
-    @State private var alternativeBikePointOverrides: [String: BikePoint] = [:]
     @State private var expandedNearbyAlternatives: Set<String> = []
     @State private var allAlternativesDock: BikePoint?
     @State private var showsOtherNearbyDocks = false
     @State private var dismissedAutoExpandedAlternatives: Set<String> = []
-    @State private var alternativeDockRefreshRequest: AnyCancellable?
     @ObservedObject private var liveActivityService = LiveActivityService.shared
     private let alternativeRefreshTimer = Timer.publish(
         every: AppConstants.App.refreshInterval,
@@ -266,8 +312,7 @@ struct FavoritesListView: View {
         let startingPointIds = startingPointFavoriteIds()
         return Dictionary(uniqueKeysWithValues: bikePoints.map { favorite in
             if let savedDocks = dockPreferences.customDocks(for: favorite.id) {
-                let availableData = Array(availableBikePointsByID
-                    .merging(alternativeBikePointOverrides, uniquingKeysWith: { _, refreshed in refreshed }).values)
+                let availableData = Array(availableBikePointsByID.values)
                 return (favorite.id, AlternativeDockSelectionService.savedAlternativesForFavorites(
                     for: favorite.id,
                     savedDocks: savedDocks,
@@ -290,9 +335,7 @@ struct FavoritesListView: View {
     }
 
     private var displayedAlternativeDockMap: [String: [BikePoint]] {
-        Dictionary(uniqueKeysWithValues: alternativeDockMap.map { key, alternatives in
-            (key, alternatives.map { alternativeBikePointOverrides[$0.id] ?? $0 })
-        })
+        alternativeDockMap
     }
 
     private var liveActivityStartAlternativeDockMap: [String: [BikePoint]] {
@@ -314,9 +357,7 @@ struct FavoritesListView: View {
     }
 
     private var displayedLiveActivityStartAlternativeDockMap: [String: [BikePoint]] {
-        Dictionary(uniqueKeysWithValues: liveActivityStartAlternativeDockMap.map { key, alternatives in
-            (key, alternatives.map { alternativeBikePointOverrides[$0.id] ?? $0 })
-        })
+        liveActivityStartAlternativeDockMap
     }
 
     private var visibleAlternativeDockIDs: [String] {
@@ -331,8 +372,7 @@ struct FavoritesListView: View {
     private func otherNearbyDocks(for dock: BikePoint) -> [BikePoint] {
         AlternativeDockSelectionService.otherNearbyDocks(
             for: dock,
-            allBikePoints: Array(availableBikePointsByID
-                .merging(alternativeBikePointOverrides, uniquingKeysWith: { _, refreshed in refreshed }).values),
+            allBikePoints: Array(availableBikePointsByID.values),
             excludingDockIDs: Set(dockPreferences.customDockIDs(for: dock.id) ?? [])
         )
     }
@@ -426,6 +466,13 @@ struct FavoritesListView: View {
                 let bikePointsByID = availableBikePointsByID
                 favoriteJourneysSection(bikePointsByID: bikePointsByID)
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+            }
+
+            if favoritesService.favorites.isEmpty {
+                EmptyFavoriteActions(onAddJourney: onAddJourney, onAddDock: onAddDock)
+                    .frame(maxWidth: .infinity, minHeight: 300)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             }
 
             ForEach(bikePoints, id: \.id) { bikePoint in
@@ -725,9 +772,6 @@ struct FavoritesListView: View {
             guard UIApplication.shared.applicationState != .background else { return }
             refreshVisibleAlternativeDockData()
         }
-        .onDisappear {
-            alternativeDockRefreshRequest?.cancel()
-        }
     }
 
     private func favoriteJourneysSection(bikePointsByID: [String: BikePoint]) -> some View {
@@ -829,36 +873,8 @@ struct FavoritesListView: View {
     }
 
     private func refreshVisibleAlternativeDockData() {
-        guard alternativeDocksEnabled else {
-            alternativeDockRefreshRequest?.cancel()
-            alternativeDockRefreshRequest = nil
-            alternativeBikePointOverrides.removeAll()
-            return
-        }
-
-        let ids = Set(visibleAlternativeDockIDs)
-        guard !ids.isEmpty else {
-            alternativeDockRefreshRequest?.cancel()
-            alternativeDockRefreshRequest = nil
-            alternativeBikePointOverrides.removeAll()
-            return
-        }
-
-        alternativeBikePointOverrides = alternativeBikePointOverrides.filter { ids.contains($0.key) }
-        alternativeDockRefreshRequest?.cancel()
-        alternativeDockRefreshRequest = TfLAPIService.shared
-            .fetchMultipleBikePoints(ids: Array(ids), cacheBusting: true)
-            .sink(
-                receiveCompletion: { _ in },
-                receiveValue: { [self] bikePoints in
-                    let refreshed = bikePoints.reduce(into: [String: BikePoint]()) { result, bikePoint in
-                        result[bikePoint.id] = bikePoint
-                    }
-                    var updatedOverrides = self.alternativeBikePointOverrides
-                    updatedOverrides.merge(refreshed) { _, new in new }
-                    self.alternativeBikePointOverrides = updatedOverrides
-                }
-            )
+        guard alternativeDocksEnabled else { return }
+        DockAvailabilityStore.shared.refresh(dockIDs: visibleAlternativeDockIDs)
     }
 
     private func toggleNearbyAlternatives(
@@ -964,8 +980,7 @@ struct FavoritesListView: View {
 
         let candidates = AlternativeDockSelectionService.orderedCandidates(
             for: favorite,
-            allBikePoints: Array(Dictionary(allBikePoints.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
-                .merging(alternativeBikePointOverrides, uniquingKeysWith: { _, refreshed in refreshed }).values),
+            allBikePoints: allBikePoints,
             excludingFavoriteIDs: favoriteIds,
             customDockIDs: dockPreferences.customDockIDs(for: favorite.id)
         )

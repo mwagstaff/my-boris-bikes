@@ -15,6 +15,21 @@ struct DockPreferencesTests {
         ScheduledJourneyDock(id: id, name: "Official \(id)", latitude: 51.5, longitude: -0.1)
     }
 
+    @Test func displayNamesFollowAliasEditsAndRemovalWithoutAFavourite() throws {
+        try withStore { service, defaults in
+            let id = "BikePoints_2"
+            #expect(service.displayName(for: id, fallback: "Official") == "Official")
+            service.updateAlias(for: id, alias: "  🚉 Station  ")
+            #expect(service.displayName(for: id, fallback: "Official") == "🚉 Station")
+            #expect(DockPreferencesService(userDefaults: defaults).displayName(for: id, fallback: "Official") == "🚉 Station")
+            service.updateAlias(for: id, alias: "Office")
+            #expect(service.displayName(for: id, fallback: "Official") == "Office")
+            #expect(service.displayName(for: "other", fallback: "Other dock") == "Other dock")
+            service.updateAlias(for: id, alias: nil)
+            #expect(service.displayName(for: id, fallback: "Official") == "Official")
+        }
+    }
+
     @Test func customEmptyAndAutomaticRemainDistinctAfterRelaunch() throws {
         try withStore { service, defaults in
             #expect(service.customDockIDs(for: "BikePoints_1") == nil)

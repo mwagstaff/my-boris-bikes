@@ -164,7 +164,8 @@ struct MapView: View {
                     HStack(alignment: .bottom, spacing: 8) {
                         // Left column: TfL warning and last update time
                         VStack(alignment: .leading, spacing: 4) {
-                            if let warning = viewModel.tflDataStaleWarning ?? viewModel.staleDataWarningMessage {
+                            DockFreshnessView()
+                            if let warning = viewModel.tflDataStaleWarning {
                                 TflDataWarningBanner(message: warning)
                             }
                             if let lastUpdate = viewModel.lastUpdateTime {
@@ -236,18 +237,7 @@ struct MapView: View {
                     .padding(.bottom, 50) // Above tab bar
                 }
                 
-                // Error banner at the top
-                if let errorMessage = viewModel.errorMessage {
-                    VStack {
-                        ErrorBanner(
-                            message: errorMessage,
-                            onDismiss: {
-                                viewModel.clearError()
-                            }
-                        )
-                        Spacer()
-                    }
-                }
+
             }
             .sheet(item: $selectedBikePointForDetail, onDismiss: {
                 // Dock pickers also use the shared compass and stop it when dismissed.
@@ -356,13 +346,14 @@ struct BikePointMapPin: View {
         .accessibilityLabel("\(bikePoint.commonName) dock\(isFavorite ? ", favourite" : "")\(isSelected ? ", selected" : "")")
         .accessibilityValue("\(bikeDataFilter.filteredCounts(standardBikes: bikePoint.standardBikes, eBikes: bikePoint.eBikes, emptySpaces: bikePoint.emptyDocks).totalBikes) selected bikes, \(bikePoint.emptyDocks) spaces")
         .accessibilityHint("Show dock details")
+        .accessibilityIdentifier("dock-pin-\(bikePoint.id)")
     }
 }
 
 struct BikePointDetailView: View {
-    let bikePoint: BikePoint
-    let allBikePoints: [BikePoint]
-    let updatedAt: Date?
+    let initialBikePoint: BikePoint
+    let initialBikePoints: [BikePoint]
+    let initialUpdatedAt: Date?
     let isFavorite: Bool
     let onToggleFavorite: (BikePoint) -> Void
     let onDockSelected: (BikePoint) -> Void
@@ -386,6 +377,28 @@ struct BikePointDetailView: View {
     @State private var watchError: String?
     @State private var sheetContentHeight: CGFloat = 320
 
+    @ObservedObject private var availability = DockAvailabilityStore.shared
+    private var bikePoint: BikePoint { availability.bikePointsByID[initialBikePoint.id] ?? initialBikePoint }
+    private var allBikePoints: [BikePoint] {
+        availability.allBikePoints.isEmpty ? initialBikePoints : availability.allBikePoints
+    }
+    private var updatedAt: Date? {
+        availability.snapshot.oldestCheck(for: [bikePoint.id] + nearbyDocks.map(\.id)) ?? initialUpdatedAt
+    }
+
+    init(bikePoint: BikePoint, allBikePoints: [BikePoint], updatedAt: Date?, isFavorite: Bool,
+         onToggleFavorite: @escaping (BikePoint) -> Void, onDockSelected: @escaping (BikePoint) -> Void,
+         onUseDock: ((BikePoint) -> Void)? = nil, onJourneyStarted: @escaping () -> Void = {}) {
+        self.initialBikePoint = bikePoint
+        self.initialBikePoints = allBikePoints
+        self.initialUpdatedAt = updatedAt
+        self.isFavorite = isFavorite
+        self.onToggleFavorite = onToggleFavorite
+        self.onDockSelected = onDockSelected
+        self.onUseDock = onUseDock
+        self.onJourneyStarted = onJourneyStarted
+    }
+
     private var hasCustomAlternatives: Bool { preferences.customDockIDs(for: bikePoint.id) != nil }
     private var nearbyDocks: [BikePoint] {
         if let saved = preferences.customDocks(for: bikePoint.id) {
@@ -406,6 +419,7 @@ struct BikePointDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                DockFreshnessView(dockIDs: [bikePoint.id] + nearbyDocks.map(\.id))
                 summary
                 actionGrid.disabled(isReplacingJourney)
                 if isWatching && !journeyIsTracking {

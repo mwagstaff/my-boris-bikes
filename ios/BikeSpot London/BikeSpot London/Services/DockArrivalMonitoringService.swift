@@ -1579,7 +1579,8 @@ final class DockArrivalMonitoringService: NSObject {
     private func sendScheduledStartArrivalNotification(for dock: MonitoredDock) {
         let content = UNMutableNotificationContent()
         content.title = "Dock arrival"
-        content.body = "Welcome to \(dock.dockName)!"
+        let dockName = DockPreferencesService.shared.displayName(for: dock.dockId, fallback: dock.dockName)
+        content.body = "Welcome to \(dockName)!"
         content.sound = .default
         let minuteBucket = Int(Date().timeIntervalSince1970 / 60)
 

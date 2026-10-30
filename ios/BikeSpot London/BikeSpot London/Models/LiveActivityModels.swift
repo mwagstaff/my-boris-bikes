@@ -25,6 +25,33 @@ struct JourneyDemoAttributes: ActivityAttributes {
 }
 #endif
 
+/// The phone's saved preferences remain authoritative when a push omits an alias.
+/// Decode only the fields needed by the extension, without loading app services.
+enum LiveActivityDockNames {
+    private struct Preferences: Decodable {
+        let aliases: [String: String]
+    }
+
+    static func alias(for dockID: String, fallback: String?, defaults: UserDefaults = JourneyStore.defaults) -> String? {
+        if let data = defaults.data(forKey: "dockPreferences.v1"),
+           let preferences = try? JSONDecoder().decode(Preferences.self, from: data) {
+            // An absent entry in a saved snapshot means the alias was removed.
+            return preferences.aliases[dockID]?.nilIfBlank
+        }
+        return fallback?.nilIfBlank
+    }
+
+    static func destination(_ destination: JourneyDestinationAvailability?, officialName: String?, defaults: UserDefaults = JourneyStore.defaults) -> JourneyDestinationAvailability? {
+        guard var destination else { return nil }
+        if let data = defaults.data(forKey: "dockPreferences.v1"),
+           let preferences = try? JSONDecoder().decode(Preferences.self, from: data) {
+            destination.name = preferences.aliases[destination.id]?.nilIfBlank
+                ?? officialName?.nilIfBlank ?? destination.name
+        }
+        return destination
+    }
+}
+
 struct DockActivityAttributes: ActivityAttributes {
     /// Fixed properties set at activity creation
     let dockId: String

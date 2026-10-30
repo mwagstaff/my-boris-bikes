@@ -39,3 +39,18 @@ test("client seeded counts without a fetch time do not pretend to be fresh", () 
   const state = context.contentStateWithAlternatives({ standardBikes: 2, eBikes: 0, emptySpaces: 5 }, {});
   assert.equal(state.availabilityUpdatedAtEpochSeconds, null);
 });
+
+
+test("Live Activity payload resolves the active dock alias from device preferences", () => {
+  const { context } = harness();
+  const data = { standardBikes: 2, eBikes: 0, emptySpaces: 5, dockName: "Stonecutter Street" };
+  const session = { activeDockId: "BikePoints_112", activeDockAlias: "Old office",
+    dockPreferences: { aliases: { BikePoints_112: "Office", BikePoints_1: "Station" } } };
+  assert.equal(context.contentStateWithAlternatives(data, session).activeDockAlias, "Office");
+  session.activeDockId = "BikePoints_1";
+  assert.equal(context.contentStateWithAlternatives(data, session).activeDockAlias, "Station");
+  session.dockPreferences.aliases = {};
+  assert.equal(context.contentStateWithAlternatives(data, session).activeDockAlias, null);
+  delete session.dockPreferences;
+  assert.equal(context.contentStateWithAlternatives(data, session).activeDockAlias, "Old office");
+});

@@ -1,3 +1,4 @@
+const { notificationDockName } = require("./notification-dock-name");
 const { buildAlternativeNotification } = require("./alternative-notifications");
 const { updateJourneyProgress, rideStartedAtForPhase } = require("./journey-progress");
 const express = require("express");
@@ -1265,7 +1266,8 @@ function scheduleStartArrivalDestinationSpaceAlert({
 
     try {
       const endDockData = await fetchDockData(endDock.id);
-      const resolvedDockName = endDockData.dockName || endDock.name || endDock.id;
+      const preferences = await loadDeviceDockPreferences(deviceId) || dockPreferences;
+      const resolvedDockName = notificationDockName(preferences, endDock.id, endDockData.dockName || endDock.name || endDock.id);
       const alertBody = buildAvailabilitySnapshotMessage(
         resolvedDockName,
         "spaces",
@@ -1672,10 +1674,12 @@ function contentStateWithAlternatives(data, session) {
       : typeof data?.dockName === "string" && data.dockName.trim()
         ? data.dockName.trim()
         : null;
-  const activeDockAlias =
-    typeof session?.activeDockAlias === "string" && session.activeDockAlias.trim()
-      ? compactPushDockText(session.activeDockAlias.trim())
-      : null;
+  // Resolve at serialization too: seeded and restored sessions can precede a poll.
+  const alias = session?.dockPreferences
+    ? session.dockPreferences.aliases?.[activeDockId]
+    : session?.activeDockAlias;
+  const activeDockAlias = typeof alias === "string" && alias.trim()
+    ? compactPushDockText(alias.trim()) : null;
 
   return {
     standardBikes: data.standardBikes,
@@ -1988,7 +1992,7 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
     "input-push-token": 1,
     alert: {
       title: "Scheduled journey",
-      body: `Live updates started for ${startDock.name}`,
+      body: `Live updates started for ${notificationDockName(dockPreferences, startDock.id, startDock.name)}`,
       sound: "default",
     },
   };
@@ -2016,7 +2020,7 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
     channel: "live_activity",
     type: "scheduled_journey_start",
     title: "Scheduled journey",
-    body: `Live updates started for ${startDock.name}`,
+    body: `Live updates started for ${notificationDockName(dockPreferences, startDock.id, startDock.name)}`,
     result: "ok",
     status: result.statusCode,
     apnsEnv: result.buildType,
@@ -2127,12 +2131,13 @@ async function sendScheduledJourneyInitialAvailabilityPush(journey) {
   if (!deviceToken) return null;
 
   const dockData = await fetchDockData(journey.startDock.id);
+  const preferences = await loadDeviceDockPreferences(journey.deviceId);
   const result = await sendAlertPush(
     deviceToken,
     journey.buildType === "production" ? "production" : "development",
     "Scheduled journey",
     scheduledJourneyStartAlertBody(
-      journey.startDock.name,
+      notificationDockName(preferences, journey.startDock.id, journey.startDock.name),
       dockData,
       journey.bikeDataFilter
     ),
@@ -2179,8 +2184,9 @@ async function sendScheduledJourneyTransitionPushes(
 
   const buildType = journey.buildType === "production" ? "production" : "development";
   const startDock = journey.startDock || journey.activeRun;
-  const arrivalDockName = startDock?.name || startDock?.dockName;
-  const destinationDockName = destinationDock?.name || destinationDock?.dockName;
+  const preferences = await loadDeviceDockPreferences(journey.deviceId);
+  const arrivalDockName = notificationDockName(preferences, startDock?.id || startDock?.dockId, startDock?.name || startDock?.dockName);
+  const destinationDockName = notificationDockName(preferences, destinationDock?.id || destinationDock?.dockId, destinationDock?.name || destinationDock?.dockName);
   const results = [];
 
   if (options.includeStartArrivalNotification !== false) {
@@ -2240,7 +2246,7 @@ async function sendScheduledJourneyDestinationAvailabilityPushForSession(session
     deviceToken,
     session.buildType === "production" ? "production" : "development",
     "Scheduled journey",
-    scheduledJourneyDestinationAvailabilityBody(dockName, dockData),
+    scheduledJourneyDestinationAvailabilityBody(notificationDockName(session.dockPreferences, dockId, dockName), dockData),
     "scheduled_journey_destination_availability",
     "scheduled journey destination availability",
     {
@@ -2628,7 +2634,7 @@ async function pollDock(dockId) {
               primaryDisplay
             );
             const alertMessage = buildAvailabilityAlertMessage(
-              data.dockName,
+              notificationDockName(session.dockPreferences, dockId, data.dockName),
               primaryDisplay,
               previousValue,
               currentValue,
@@ -5064,7 +5070,8 @@ app.post("/live-activity/arrive", async (req, res) => {
       // duplicate notifications for the same tracked journey session.
       session.destinationArrivalWelcomeSentAt = Date.now();
       try {
-        await sendArrivalConfirmationPush(deviceToken, confirmationBuildType, dockName);
+        const preferences = await loadDeviceDockPreferences(session.deviceId) || session.dockPreferences;
+        await sendArrivalConfirmationPush(deviceToken, confirmationBuildType, notificationDockName(preferences, dockId, dockName));
         confirmationSent = true;
       } catch (err) {
         delete session.destinationArrivalWelcomeSentAt;

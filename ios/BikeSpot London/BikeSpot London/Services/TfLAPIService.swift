@@ -15,7 +15,8 @@ class TfLAPIService {
     
     private init() {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        config.timeoutIntervalForRequest = 12
         config.timeoutIntervalForResource = 60
         self.session = URLSession(configuration: config)
         
@@ -42,28 +43,18 @@ class TfLAPIService {
                 .eraseToAnyPublisher()
         }
         
-        var urlString = AppConstants.API.baseURL + AppConstants.API.bikePointEndpoint
-        if cacheBusting {
-            let timestamp = Int(Date().timeIntervalSince1970)
-            urlString += "?cb=\(timestamp)"
+        guard let request = Self.directoryRequest(cacheBusting: cacheBusting, timeoutInterval: timeoutInterval) else {
+            return Fail(error: NetworkError.invalidURL).eraseToAnyPublisher()
         }
-        
-        guard let url = URL(string: urlString) else {
-            return Fail(error: NetworkError.invalidURL)
-                .eraseToAnyPublisher()
-        }
-        
-        var request = URLRequest(url: url)
-        if let timeoutInterval {
-            request.timeoutInterval = timeoutInterval
-        }
-        if cacheBusting {
-            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-        }
-        
+
         return session.dataTaskPublisher(for: request)
-            .map(\.data)
+            .tryMap { data, response in
+                guard let response = response as? HTTPURLResponse,
+                      (200...299).contains(response.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
+                return data
+            }
             .decode(type: [FailableDecodable<BikePoint>].self, decoder: JSONDecoder())
             .map { $0.compactMap(\.value) }
             .mapError { error in
@@ -77,6 +68,16 @@ class TfLAPIService {
             .eraseToAnyPublisher()
     }
     
+    static func directoryRequest(cacheBusting: Bool, timeoutInterval: TimeInterval? = nil) -> URLRequest? {
+        // TfL returns 404 for /BikePoint?cb=..., although /Place/:id accepts it.
+        // Revalidate the canonical directory URL using cache policy and headers.
+        guard let url = URL(string: AppConstants.API.baseURL + AppConstants.API.bikePointEndpoint) else { return nil }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData)
+        if let timeoutInterval { request.timeoutInterval = timeoutInterval }
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        return request
+    }
+
     func fetchBikePoint(id: String, cacheBusting: Bool = false) -> AnyPublisher<BikePoint, NetworkError> {
         guard isOnline else {
             return Fail(error: NetworkError.offline)
@@ -101,7 +102,13 @@ class TfLAPIService {
         }
         
         return session.dataTaskPublisher(for: request)
-            .map(\.data)
+            .tryMap { data, response in
+                guard let response = response as? HTTPURLResponse,
+                      (200...299).contains(response.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
+                return data
+            }
             .decode(type: BikePoint.self, decoder: JSONDecoder())
             .mapError { error in
                 if error is DecodingError {

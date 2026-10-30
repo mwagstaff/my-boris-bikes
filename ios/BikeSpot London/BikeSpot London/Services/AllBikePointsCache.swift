@@ -3,6 +3,7 @@ import Foundation
 struct AllBikePointsSnapshot {
     let bikePoints: [BikePoint]
     let savedAt: Date?
+    var checkedAtByID: [String: Date]? = nil
 }
 
 final class AllBikePointsCache {
@@ -33,7 +34,8 @@ final class AllBikePointsCache {
         if let payload = try? decoder.decode(CachedAllBikePointsPayload.self, from: data) {
             return AllBikePointsSnapshot(
                 bikePoints: payload.bikePoints,
-                savedAt: payload.savedAt
+                savedAt: payload.savedAt,
+                checkedAtByID: payload.checkedAtByID
             )
         }
 
@@ -49,7 +51,7 @@ final class AllBikePointsCache {
         return nil
     }
 
-    func save(_ bikePoints: [BikePoint], savedAt: Date = Date()) {
+    func save(_ bikePoints: [BikePoint], savedAt: Date = Date(), checkedAtByID: [String: Date]? = nil) {
         guard !bikePoints.isEmpty else {
             print("AllBikePointsCache: Skipping save because bike points list is empty")
             return
@@ -59,7 +61,7 @@ final class AllBikePointsCache {
         writeQueue.async {
             do {
                 let encoder = JSONEncoder()
-                let payload = CachedAllBikePointsPayload(savedAt: savedAt, bikePoints: bikePoints)
+                let payload = CachedAllBikePointsPayload(savedAt: savedAt, bikePoints: bikePoints, checkedAtByID: checkedAtByID)
                 let data = try encoder.encode(payload)
                 try data.write(to: fileURL, options: [.atomic])
             } catch {
@@ -72,4 +74,5 @@ final class AllBikePointsCache {
 private struct CachedAllBikePointsPayload: Codable {
     let savedAt: Date
     let bikePoints: [BikePoint]
+    var checkedAtByID: [String: Date]? = nil
 }

@@ -99,23 +99,10 @@ struct BikePoint: Codable, Identifiable, Equatable, Sendable {
         return brokenCount
     }
     
-    /// Adjusted number of empty docks, accounting for broken docks
-    /// This is the number of spaces actually available to users
-    var emptyDocks: Int {
-        // If there are broken docks, we should not show them as available spaces
-        // The raw empty docks should already exclude broken ones, but we verify the calculation
-        let expectedTotal = totalBikes + rawEmptyDocks + brokenDocks
-        
-        if expectedTotal == totalDocks {
-            // Data is consistent, return raw empty docks
-            return rawEmptyDocks
-        } else {
-            // Data inconsistency detected, calculate adjusted empty docks
-            let adjustedEmpty = totalDocks - totalBikes - brokenDocks
-            return max(0, adjustedEmpty)
-        }
-    }
-    
+    /// TfL already excludes broken docks. A destination push can refresh spaces
+    /// before bikes, so never recalculate spaces from potentially older bike counts.
+    var emptyDocks: Int { max(0, rawEmptyDocks) }
+
     var isAvailable: Bool {
         isInstalled && !isLocked
     }
@@ -165,6 +152,12 @@ struct AdditionalProperty: Codable, Equatable, Sendable {
         return f
     }()
 
+    init(key: String, value: String, modified: Date? = nil) {
+        self.key = key
+        self.value = value
+        self.modified = modified
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         key = try container.decode(String.self, forKey: .key)
@@ -192,5 +185,6 @@ struct AdditionalProperty: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(key, forKey: .key)
         try container.encode(value, forKey: .value)
+        try container.encodeIfPresent(modified.map { Self.isoFormatter.string(from: $0) }, forKey: .modified)
     }
 }

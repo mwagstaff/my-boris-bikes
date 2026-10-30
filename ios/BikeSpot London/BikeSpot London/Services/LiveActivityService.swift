@@ -721,6 +721,7 @@ class LiveActivityService: ObservableObject {
         source: String
     ) {
         let dockId = activity.content.state.resolvedDockId ?? activity.attributes.dockId
+        importActivityAvailability(activity.content.state, dockID: dockId)
         guard observedActivityIdsByDock[dockId] != activity.id || observationTasks[dockId] == nil else {
             if let pushToken = activity.pushToken {
                 Task { [weak self] in
@@ -800,6 +801,7 @@ class LiveActivityService: ObservableObject {
                 guard let self else { break }
                 let currentDockId = content.state.resolvedDockId ?? activity.attributes.dockId
                 self.staleDates[currentDockId] = content.staleDate
+                self.importActivityAvailability(content.state, dockID: currentDockId)
                 JourneySyncService.shared.publish()
                 self.logLiveActivityDiagnosticEvent(
                     "live_activity_content_update_received",
@@ -975,7 +977,7 @@ class LiveActivityService: ObservableObject {
         let selectedAlternatives: [BikePoint]
         if DockPreferencesService.shared.customDockIDs(for: dockId) != nil {
             let candidates = Dictionary(
-                (AllBikePointsCache.shared.load() + alternatives + [bikePoint]).map { ($0.id, $0) },
+                (DockAvailabilityStore.shared.allBikePoints + alternatives + [bikePoint]).map { ($0.id, $0) },
                 uniquingKeysWith: { _, latest in latest }
             )
             let purpose: AlternativeDockPurpose
@@ -1245,9 +1247,29 @@ class LiveActivityService: ObservableObject {
         return nil
     }
 
+    private func importActivityAvailability(_ state: DockActivityAttributes.ContentState, dockID: String) {
+        guard let timestamp = state.availabilityUpdatedAtEpochSeconds else { return }
+        let checkedAt = Date(timeIntervalSince1970: Double(timestamp))
+        let store = DockAvailabilityStore.shared
+        store.acceptPushedCounts(id: dockID, standardBikes: state.standardBikes,
+            eBikes: state.eBikes, spaces: state.emptySpaces, checkedAt: checkedAt)
+        for alternative in state.alternatives {
+            guard let id = alternative.id else { continue }
+            store.acceptPushedCounts(id: id, standardBikes: alternative.standardBikes,
+                eBikes: alternative.eBikes, spaces: alternative.emptySpaces, checkedAt: checkedAt)
+        }
+        if let destination = state.destinationAvailability,
+           let spaces = destination.spaces, let timestamp = destination.updatedAtEpochSeconds {
+            store.acceptPushedSpaces(id: destination.id, spaces: spaces,
+                checkedAt: Date(timeIntervalSince1970: timestamp))
+        }
+    }
+
     func updateActiveActivitiesIfNeeded(using bikePoints: [BikePoint], refreshPreferences: Bool = false) async {
         guard refreshPreferences || !bikePoints.isEmpty else { return }
 
+        let store = DockAvailabilityStore.shared
+        let bikePoints = store.allBikePoints.isEmpty ? bikePoints : store.allBikePoints
         let bikePointsById = Dictionary(
             bikePoints.map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -1257,7 +1279,7 @@ class LiveActivityService: ObservableObject {
             uniquingKeysWith: { first, _ in first }
         )
         var selectionBikePointsById = Dictionary(
-            AllBikePointsCache.shared.load().map { ($0.id, $0) },
+            store.allBikePoints.map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         selectionBikePointsById.merge(bikePointsById, uniquingKeysWith: { _, latest in latest })
@@ -1272,6 +1294,10 @@ class LiveActivityService: ObservableObject {
             guard !Task.isCancelled else { return }
             let currentState = activity.content.state
             let activeDockId = currentState.resolvedDockId ?? activity.attributes.dockId
+            if !refreshPreferences,
+               let currentTimestamp = currentState.availabilityUpdatedAtEpochSeconds,
+               let checkedAt = store.snapshot.checkedAtByID[activeDockId],
+               checkedAt.timeIntervalSince1970 < Double(currentTimestamp) { continue }
             let fallbackBikePoint = refreshPreferences
                 ? DockActivityMonitoringResolver.resolve(attributes: activity.attributes, state: currentState)?.bikePoint
                 : nil
@@ -1311,11 +1337,13 @@ class LiveActivityService: ObservableObject {
                 destination.name = DockPreferencesService.shared.alias(for: destination.id)
                     ?? activity.attributes.destinationDockName ?? destination.name
                 if !refreshPreferences, let point = bikePointsById[destination.id],
+                   let checkedAt = store.snapshot.checkedAtByID[destination.id],
+                   checkedAt.timeIntervalSince1970 >= (destination.updatedAtEpochSeconds ?? 0),
                    point.isAvailable,
                    let raw = point.additionalProperties.first(where: { $0.key == "NbEmptyDocks" })?.value,
                    let spaces = Int(raw), spaces >= 0 {
                     destination.spaces = spaces
-                    destination.updatedAtEpochSeconds = Date().timeIntervalSince1970
+                    destination.updatedAtEpochSeconds = store.snapshot.checkedAtByID[destination.id]?.timeIntervalSince1970
                 }
                 destinationAvailability = destination
             }
@@ -1339,7 +1367,8 @@ class LiveActivityService: ObservableObject {
                 primaryDisplay: currentState.primaryDisplay,
                 availabilityUpdatedAtEpochSeconds: refreshPreferences
                     ? currentState.availabilityUpdatedAtEpochSeconds
-                    : Int(Date().timeIntervalSince1970),
+                    : store.snapshot.oldestCheck(for: [activeDockId] + refreshedAlternatives.compactMap(\.id))
+                        .map { Int($0.timeIntervalSince1970) },
                 journeyProgress: currentState.journeyProgress,
                 rideStartedAtEpochSeconds: currentState.rideStartedAtEpochSeconds,
                 destinationAvailability: destinationAvailability
@@ -1350,7 +1379,9 @@ class LiveActivityService: ObservableObject {
             }
             let staleDate = refreshPreferences
                 ? activity.content.staleDate
-                : Date().addingTimeInterval(availabilityFreshnessSeconds)
+                : updatedState.availabilityUpdatedAtEpochSeconds.map {
+                    Date(timeIntervalSince1970: Double($0)).addingTimeInterval(availabilityFreshnessSeconds)
+                }
 
             await activity.update(ActivityContent(state: updatedState, staleDate: staleDate))
             if dockId != activeDockId {
@@ -2217,18 +2248,10 @@ class LiveActivityService: ObservableObject {
     }
 
     private func fetchBikePointIfPossible(dock: ScheduledJourneyDock) async -> BikePoint {
-        let urlString = "\(AppConstants.API.baseURL)\(AppConstants.API.placeEndpoint)/\(dock.id)?cb=\(Int(Date().timeIntervalSince1970))"
-        guard let url = URL(string: urlString) else {
-            return BikePoint(id: dock.id, commonName: dock.name, lat: dock.latitude, lon: dock.longitude)
-        }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            return (try? JSONDecoder().decode(BikePoint.self, from: data))
-                ?? BikePoint(id: dock.id, commonName: dock.name, lat: dock.latitude, lon: dock.longitude)
-        } catch {
-            return BikePoint(id: dock.id, commonName: dock.name, lat: dock.latitude, lon: dock.longitude)
-        }
+        let store = DockAvailabilityStore.shared
+        await store.refreshAndWait(dockIDs: [dock.id])
+        return store.bikePointsByID[dock.id]
+            ?? BikePoint(id: dock.id, commonName: dock.name, lat: dock.latitude, lon: dock.longitude)
     }
 
     private func scheduledJourneyAlternatives(
@@ -2267,27 +2290,9 @@ class LiveActivityService: ObservableObject {
     }
 
     private func fetchAllBikePointsForAlternatives() async -> [BikePoint] {
-        let cached = AllBikePointsCache.shared.load()
-        if !cached.isEmpty {
-            return cached
-        }
-
-        var urlString = AppConstants.API.baseURL + AppConstants.API.bikePointEndpoint
-        urlString += "?cb=\(Int(Date().timeIntervalSince1970))"
-        guard let url = URL(string: urlString) else { return [] }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let bikePoints = try JSONDecoder()
-                .decode([LiveActivityFailableBikePoint].self, from: data)
-                .compactMap(\.value)
-                .filter(\.isInstalled)
-            AllBikePointsCache.shared.save(bikePoints)
-            return bikePoints
-        } catch {
-            logger.error("Failed to fetch all bike points for scheduled journey alternatives: \(error.localizedDescription)")
-            return []
-        }
+        let store = DockAvailabilityStore.shared
+        await store.refreshAndWait()
+        return store.allBikePoints
     }
 
     func handleDeviceTokenRegistration() async {
@@ -2954,13 +2959,5 @@ class LiveActivityService: ObservableObject {
             logger.error("Failed to mute all live activity notifications: \(error.localizedDescription)")
             return false
         }
-    }
-}
-
-private struct LiveActivityFailableBikePoint: Decodable {
-    let value: BikePoint?
-
-    init(from decoder: Decoder) throws {
-        value = try? BikePoint(from: decoder)
     }
 }

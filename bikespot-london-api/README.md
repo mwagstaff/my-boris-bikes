@@ -203,6 +203,8 @@ If the selected metric is below the user's configured minimum threshold, the ser
 - `⚠️ Warwick Row, Westminster only has 3 spaces available`
 - `⚠️ Warwick Row, Westminster now has 2 spaces available`
 
+All user-facing dock notifications resolve the recipient's saved dock alias by dock ID, falling back to the official name when no alias is set. This includes scheduled starts, availability changes and snapshots, collection/destination transitions, arrival confirmations, and alternative docks. Route metadata retains official names. Alias edits and removal use the existing device-preferences sync; delayed destination alerts reload preferences before sending.
+
 Each below-threshold availability alert is followed by a separate `Alternative docks` notification listing up to three docks, for example:
 - `Alternatives: Station - 12 bikes; Ashley Place, Victoria - 5 bikes; Howick Place - 3 bikes`
 

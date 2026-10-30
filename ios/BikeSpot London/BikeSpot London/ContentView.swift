@@ -19,8 +19,11 @@ struct ContentView: View {
     @StateObject private var favoritesService = FavoritesService.shared
     @StateObject private var bannerService = BannerService.shared
     @StateObject private var liveActivityService = LiveActivityService.shared
-    @StateObject private var scheduledJourneyService = ScheduledJourneyService.shared
-    @StateObject private var adHocJourneyService = AdHocJourneyService.shared
+    private let scheduledJourneyService = ScheduledJourneyService.shared
+    private let adHocJourneyService = AdHocJourneyService.shared
+    @State private var hasActiveJourney = ScheduledJourneyService.shared.journeys.contains { $0.isActive }
+        || AdHocJourneyService.shared.recentJourneys.contains { $0.isActive }
+    @State private var isHolidayModeEnabled = ScheduledJourneyService.shared.isHolidayModeEnabled
     @State private var selectedBikePointForMap: BikePoint?
     @State private var journeyDockUseAction: ((BikePoint) -> Void)?
     @State private var isServiceBannerDismissed = false
@@ -46,11 +49,6 @@ struct ContentView: View {
         return session
     }
 
-    private var hasActiveJourney: Bool {
-        scheduledJourneyService.journeys.contains { $0.isActive } ||
-        adHocJourneyService.recentJourneys.contains { $0.isActive }
-    }
-    
     var body: some View {
         ZStack(alignment: .top) {
             TabView(selection: $selectedTab) {
@@ -140,9 +138,9 @@ struct ContentView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if scheduledJourneyService.isHolidayModeEnabled || notificationSession != nil {
+            if isHolidayModeEnabled || notificationSession != nil {
                 VStack(spacing: 8) {
-                    if scheduledJourneyService.isHolidayModeEnabled {
+                    if isHolidayModeEnabled {
                         HolidayModeBanner {
                             Task { await scheduledJourneyService.setHolidayMode(false) }
                         }
@@ -190,6 +188,17 @@ struct ContentView: View {
             // handler above refreshes on return.
             guard UIApplication.shared.applicationState != .background else { return }
             Task { await liveActivityService.refreshNotificationStatusFromServer() }
+        }
+        // Loading changes during Journeys' appearance must not rebuild the tab
+        // container while UIKit is still committing the user's tab selection.
+        .onReceive(Publishers.CombineLatest(
+            scheduledJourneyService.$journeys,
+            adHocJourneyService.$recentJourneys
+        ).map { scheduled, adHoc in
+            scheduled.contains { $0.isActive } || adHoc.contains { $0.isActive }
+        }.removeDuplicates()) { hasActiveJourney = $0 }
+        .onReceive(scheduledJourneyService.$isHolidayModeEnabled.removeDuplicates()) {
+            isHolidayModeEnabled = $0
         }
         .onChange(of: bannerService.currentBanner) { _, newBanner in
             // Reset dismissal state when banner content changes

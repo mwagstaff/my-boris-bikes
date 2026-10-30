@@ -30,10 +30,12 @@ struct DockPickerView: View {
     @EnvironmentObject private var adHocJourneyService: AdHocJourneyService
     @State private var mode: Mode = .favourites
     @State private var searchText = ""
-    @State private var allBikePoints: [BikePoint] = []
-    @State private var cancellable: AnyCancellable?
-    @State private var loadError: String?
-    @State private var isLoading = false
+    @ObservedObject private var availability = DockAvailabilityStore.shared
+    private var allBikePoints: [BikePoint] { availability.allBikePoints.filter(\.isInstalled) }
+    private var isLoading: Bool { availability.isRefreshing }
+    private var loadError: String? {
+        availability.refreshFailed ? "Showing saved docks. Availability couldn’t be refreshed." : nil
+    }
     @State private var hasCenteredOnInitialLocation = false
     @State private var currentMapCenter = CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278)
     @State private var mapPosition: MapCameraPosition = .region(
@@ -202,6 +204,7 @@ struct DockPickerView: View {
                     .searchable(text: $searchText, prompt: "Search dock name")
                 }
             }
+            .safeAreaInset(edge: .top) { DockFreshnessView() }
             .bikeSpotBackground(showsPhoto: false)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
@@ -222,8 +225,6 @@ struct DockPickerView: View {
                 }
             }
             .onDisappear {
-                cancellable?.cancel()
-                isLoading = false
                 locationService.stopHeadingUpdates()
             }
             .onReceive(locationService.$location.compactMap { $0 }) { location in
@@ -384,30 +385,9 @@ struct DockPickerView: View {
     }
 
     private func loadBikePoints() {
-        cancellable?.cancel()
-        loadError = nil
-        isLoading = true
-        let cached = AllBikePointsCache.shared.load()
-        if !cached.isEmpty {
-            allBikePoints = cached
-        }
-
-        cancellable = TfLAPIService.shared.fetchAllBikePoints(cacheBusting: false)
-            .sink(
-                receiveCompletion: { completion in
-                    isLoading = false
-                    if case .failure = completion {
-                        loadError = allBikePoints.isEmpty
-                            ? "Docks couldn’t be loaded. Check your connection and try again."
-                            : "Showing saved docks. Availability couldn’t be refreshed."
-                    }
-                },
-                receiveValue: { bikePoints in
-                    allBikePoints = bikePoints.filter(\.isInstalled)
-                    AllBikePointsCache.shared.save(allBikePoints, savedAt: Date())
-                }
-            )
+        availability.refresh(force: true)
     }
+
 }
 
 private struct DockPickerMapMarker: View {

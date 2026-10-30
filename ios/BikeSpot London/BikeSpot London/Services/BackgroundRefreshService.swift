@@ -52,14 +52,13 @@ final class BackgroundRefreshService {
         // Always schedule the next refresh first, so the chain never breaks
         scheduleAppRefresh()
 
-        Task {
+        let work = Task {
             let success = await refreshWidgetDataAsync()
-            task.setTaskCompleted(success: success)
+            task.setTaskCompleted(success: success && !Task.isCancelled)
         }
 
         task.expirationHandler = {
-            // iOS is killing us — mark complete so we don't get penalised
-            task.setTaskCompleted(success: false)
+            work.cancel()
             print("BackgroundRefresh: Task expired before completion")
         }
     }
@@ -72,6 +71,10 @@ final class BackgroundRefreshService {
     }
 
     func prewarmAllBikePointsIfStale(force: Bool = false) {
+        #if DEBUG
+        // UI freshness tests supply a delayed directory response in the shared store.
+        guard !ProcessInfo.processInfo.arguments.contains("-UITEST_DOCK_FRESHNESS") else { return }
+        #endif
         let now = Date().timeIntervalSince1970
         let lastPrefetch = AppConstants.UserDefaults.sharedDefaults.double(forKey: allBikePointsPrewarmTimestampKey)
 
@@ -105,14 +108,18 @@ final class BackgroundRefreshService {
     /// Async version of refresh used by the background task handler.
     /// Uses async/await with the tight-timeout session for faster execution.
     private func refreshWidgetDataAsync() async -> Bool {
+        async let directoryRefresh = fetchAndCacheAllBikePoints()
         await ScheduledJourneyService.shared.refresh()
         await MainActor.run { JourneySyncService.shared.publish() }
+        let directoryRefreshed = await directoryRefresh
+        guard !Task.isCancelled else { return false }
         let favoritesService = FavoritesService.shared
         let favorites = favoritesService.favorites
-        guard !favorites.isEmpty else { return true }
+        guard !favorites.isEmpty else { return directoryRefreshed }
 
         let favoriteIds = favorites.map { $0.id }
 
+        let requestedAt = Date()
         do {
             // Fetch each favorite's data concurrently with tight timeouts
             let bikePoints = try await withThrowingTaskGroup(of: BikePoint?.self, returning: [BikePoint].self) { group in
@@ -134,16 +141,18 @@ final class BackgroundRefreshService {
             }
 
             let sortMode = favoritesService.sortMode
+            try Task.checkCancellation()
             await MainActor.run {
+                let store = DockAvailabilityStore.shared
+                store.accept(bikePoints, checkedAt: requestedAt)
                 WidgetService.shared.updateWidgetData(
-                    bikePoints: bikePoints,
-                    allBikePoints: [],
+                    bikePoints: favoriteIds.compactMap { store.bikePointsByID[$0] },
+                    allBikePoints: store.allBikePoints,
                     favorites: favorites,
                     sortMode: sortMode,
                     userLocation: nil
                 )
             }
-            await LiveActivityService.shared.updateActiveActivitiesIfNeeded(using: bikePoints)
             // Push fresh data to watch complications via WatchConnectivity
             pushDataToWatchComplication(bikePoints: bikePoints, favorites: favorites)
             print("BackgroundRefresh: Async refresh completed successfully")
@@ -263,29 +272,30 @@ final class BackgroundRefreshService {
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
 
-        let (data, _) = try await Self.backgroundSession.data(for: request)
+        let (data, response) = try await Self.backgroundSession.data(for: request)
+        try Task.checkCancellation()
+        guard let response = response as? HTTPURLResponse,
+              (200...299).contains(response.statusCode) else { return nil }
         return try? JSONDecoder().decode(BikePoint.self, from: data)
     }
 
     private func fetchAndCacheAllBikePoints() async -> Bool {
-        let timestamp = Int(Date().timeIntervalSince1970)
-        let urlString = "https://api.tfl.gov.uk/BikePoint?cb=\(timestamp)"
-
-        guard let url = URL(string: urlString) else { return false }
-
-        var request = URLRequest(url: url)
-        request.timeoutInterval = AppConstants.App.mapFetchTimeout
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        let requestedAt = Date()
+        guard let request = TfLAPIService.directoryRequest(cacheBusting: true,
+            timeoutInterval: AppConstants.App.mapFetchTimeout) else { return false }
 
         do {
-            let (data, _) = try await Self.backgroundSession.data(for: request)
+            let (data, response) = try await Self.backgroundSession.data(for: request)
+            try Task.checkCancellation()
+            guard let response = response as? HTTPURLResponse,
+                  (200...299).contains(response.statusCode) else { return false }
             let bikePoints = try JSONDecoder().decode([FailableBikePoint].self, from: data).compactMap(\.value)
             let installedBikePoints = bikePoints.filter { $0.isInstalled }
             guard !installedBikePoints.isEmpty else { return false }
 
-            AllBikePointsCache.shared.save(installedBikePoints, savedAt: Date())
-            await LiveActivityService.shared.updateActiveActivitiesIfNeeded(using: installedBikePoints)
+            await MainActor.run {
+                DockAvailabilityStore.shared.accept(installedBikePoints, checkedAt: requestedAt, directory: true)
+            }
             return true
         } catch {
             print("BackgroundRefresh: All bike points prewarm failed: \(error)")
@@ -344,6 +354,9 @@ final class BackgroundRefreshService {
                     let installedBikePoints = allBikePoints.filter { $0.isInstalled }
                     let sortMode = favoritesService.sortMode
                     Task { @MainActor in
+                        let store = DockAvailabilityStore.shared
+                        store.accept(installedBikePoints, checkedAt: Date(), directory: !installedBikePoints.isEmpty)
+                        store.accept(favoriteBikePoints, checkedAt: Date())
                         WidgetService.shared.updateWidgetData(
                             bikePoints: favoriteBikePoints,
                             allBikePoints: installedBikePoints,
