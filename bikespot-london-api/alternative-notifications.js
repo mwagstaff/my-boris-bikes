@@ -39,8 +39,8 @@ function buildAlternativeNotification({ dockId, primaryDisplay, preferences, doc
   return "Alternatives: " + alternatives.map((dock) => {
     const name = compactPushDockText(preferences?.aliases?.[dock.id] || dock.dockName || dock.name);
     const count = availability(dock, primaryDisplay);
-    return `${name} - ${count} ${metric}${count === 1 ? "" : "s"}`;
-  }).join("; ");
+    return `${name} has ${count} ${metric}${count === 1 ? "" : "s"}`;
+  }).join("; ") + ".";
 }
 
 module.exports = { buildAlternativeNotification };

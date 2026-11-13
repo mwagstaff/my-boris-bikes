@@ -1,3 +1,5 @@
+const { countText, availabilityTitle, availabilityBody, destinationMessage } = require("./notification-content");
+const { JourneyNotificationReceipts } = require("./journey-notification-receipts");
 const { notificationDockName } = require("./notification-dock-name");
 const { buildAlternativeNotification } = require("./alternative-notifications");
 const { updateJourneyProgress, rideStartedAtForPhase } = require("./journey-progress");
@@ -129,6 +131,10 @@ const MAX_SCHEDULED_JOURNEY_WINDOW_MINUTES = 12 * 60;
 if (!fs.existsSync(LOG_DIR)) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
 }
+
+const journeyNotificationReceipts = new JourneyNotificationReceipts(
+  path.join(LOG_DIR, "journey-notification-receipts.json")
+);
 
 // Configure Winston logger
 const logger = winston.createLogger({
@@ -1106,7 +1112,7 @@ async function fetchTflJson(urlPath, queryParams = {}, options = {}) {
 
   let res;
   try {
-    res = await fetch(url);
+    res = await fetch(url, { signal: options.signal });
   } catch (err) {
     const duration = (Date.now() - start) / 1000;
     tflRequestDuration.observe(
@@ -1169,16 +1175,28 @@ async function fetchTflJson(urlPath, queryParams = {}, options = {}) {
   }
 }
 
-async function fetchDockData(dockId) {
+async function fetchDockData(dockId, signal) {
   const bikePoint = await fetchTflJson(
     `/Place/${dockId}`,
     { cb: Date.now() },
-    { dockIdForPolling: dockId }
+    { dockIdForPolling: dockId, signal }
   );
+  if (signal && !dockOverrides.has(dockId)) {
+    const properties = bikePoint?.additionalProperties || [];
+    const valid = ["NbStandardBikes", "NbEBikes", "NbEmptyDocks"].every(key => {
+      const value = properties.find(item => item.key === key)?.value;
+      return typeof value === "string" && /^\d+$/.test(value) && Number.isSafeInteger(Number(value));
+    });
+    if (!valid) throw new Error("Dock availability is incomplete");
+  }
   return {
     ...effectiveDockDataForDock(dockId, bikePoint),
     availabilityUpdatedAtEpochSeconds: Math.floor(Date.now() / 1000),
   };
+}
+
+function fetchNotificationDockData(dockId) {
+  return fetchDockData(dockId, AbortSignal.timeout(4000));
 }
 
 function parseBikePointData(data) {
@@ -1220,7 +1238,7 @@ function effectiveDockDataForDock(dockId, bikePointData) {
 
 const loadAlternativeDockSnapshots = createDockSnapshotLoader(async () => {
   // TfL's catalogue endpoint returns 404 for cache-buster query parameters.
-  const bikePoints = await fetchTflJson("/BikePoint");
+  const bikePoints = await fetchTflJson("/BikePoint", {}, { signal: AbortSignal.timeout(4000) });
   if (!Array.isArray(bikePoints)) throw new Error("Unexpected TfL BikePoint catalogue");
   return bikePoints.filter((dock) => typeof dock?.id === "string").map((dock) => {
     const properties = dock.additionalProperties || [];
@@ -1265,25 +1283,15 @@ function scheduleStartArrivalDestinationSpaceAlert({
     scheduledStartArrivalDestinationAlerts.delete(key);
 
     try {
-      const endDockData = await fetchDockData(endDock.id);
+      const { data: endDockData } = await fetchVerifiedDestinationAvailability(fetchNotificationDockData, endDock.id);
       const preferences = await loadDeviceDockPreferences(deviceId) || dockPreferences;
-      const resolvedDockName = notificationDockName(preferences, endDock.id, endDockData.dockName || endDock.name || endDock.id);
-      const alertBody = buildAvailabilitySnapshotMessage(
-        resolvedDockName,
-        "spaces",
-        endDockData.emptySpaces,
-        minimumSpaces
-      );
-
-      await sendAvailabilityAlertPush(
-        deviceToken,
-        buildType,
-        alertBody,
-        endDock.id,
-        resolvedDockName,
-        { deviceId, dockPreferences, primaryDisplay: "spaces", minimumThresholds: { spaces: minimumSpaces } },
-        endDockData
-      );
+      const resolvedDockName = notificationDockName(preferences, endDock.id, endDockData?.dockName || endDock.name || endDock.id);
+      const message = await composeDestinationNotification({ deviceId, dockPreferences: preferences,
+        minimumThresholds: { spaces: minimumSpaces } }, endDock.id, resolvedDockName, endDockData,
+        triggerSource === "destination_approach" ? "approach" : "transition");
+      await sendAlertPush(deviceToken, buildType, message.title, message.body, "availability_alert",
+        "journey destination snapshot", { category: LIVE_ACTIVITY_ALERT_CATEGORY,
+          customPayload: { dockId: endDock.id, dockName: resolvedDockName } });
 
       const diagnosticKind =
         triggerSource === "destination_approach"
@@ -1300,7 +1308,7 @@ function scheduleStartArrivalDestinationSpaceAlert({
         triggerSource,
         scheduledJourneyId: scheduledJourneyId || null,
         adHocJourneyId: adHocJourneyId || null,
-        emptySpaces: endDockData.emptySpaces,
+        emptySpaces: endDockData?.emptySpaces ?? null,
         minimumSpaces,
       });
     } catch (err) {
@@ -1515,40 +1523,6 @@ function primaryValueForDisplay(data, primaryDisplay) {
   }
 }
 
-function singularMetricLabel(primaryDisplay) {
-  switch (primaryDisplay) {
-    case "allBikes":
-      return "bike";
-    case "eBikes":
-      return "e-bike";
-    case "spaces":
-      return "space";
-    case "bikes":
-    default:
-      return "bike";
-  }
-}
-
-function pluralMetricLabel(primaryDisplay) {
-  switch (primaryDisplay) {
-    case "allBikes":
-      return "bikes";
-    case "eBikes":
-      return "e-bikes";
-    case "spaces":
-      return "spaces";
-    case "bikes":
-    default:
-      return "bikes";
-  }
-}
-
-function metricLabelForValue(primaryDisplay, value) {
-  return value === 1
-    ? singularMetricLabel(primaryDisplay)
-    : pluralMetricLabel(primaryDisplay);
-}
-
 function minimumThresholdForDisplay(minimumThresholds, primaryDisplay) {
   if (!minimumThresholds || typeof minimumThresholds !== "object") {
     return 0;
@@ -1567,66 +1541,12 @@ function buildAvailabilityAlertMessage(
   currentValue,
   minimumThreshold = 0
 ) {
-  const safeDockName =
-    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "This dock";
-
-  if (previousValue === currentValue) {
-    return null;
+  if (previousValue === currentValue) return null;
+  const threshold = sanitizeThresholdValue(minimumThreshold);
+  if (currentValue < threshold || previousValue < threshold || currentValue === 0 || previousValue === 0) {
+    return availabilityBody(dockName, primaryDisplay, currentValue, threshold, currentValue > previousValue);
   }
-
-  const normalizedThreshold = sanitizeThresholdValue(minimumThreshold);
-  if (normalizedThreshold > 0) {
-    if (currentValue < normalizedThreshold) {
-      const prefix = currentValue === 0 ? "‼️" : "⚠️";
-      if (currentValue === 0) {
-        return `${prefix} ${safeDockName} now has no ${pluralMetricLabel(primaryDisplay)} available`;
-      }
-
-      const metricLabel = metricLabelForValue(primaryDisplay, currentValue);
-      const isIncreaseWhileBelowThreshold = currentValue > previousValue;
-      const qualifier = isIncreaseWhileBelowThreshold ? "now has" : "only has";
-      return `${prefix} ${safeDockName} ${qualifier} ${currentValue} ${metricLabel} available`;
-    }
-  }
-
-  if (normalizedThreshold > 0 && previousValue < normalizedThreshold && currentValue >= normalizedThreshold) {
-    const metricLabel = metricLabelForValue(primaryDisplay, currentValue);
-    return `✅ ${safeDockName} now has ${currentValue} ${metricLabel} available`;
-  }
-
-  if (previousValue > 0 && currentValue === 0) {
-    return `‼️ ${safeDockName} no longer has any ${pluralMetricLabel(primaryDisplay)}`;
-  }
-
-  if (previousValue === 0 && currentValue > 0) {
-    const metricLabel = metricLabelForValue(primaryDisplay, currentValue);
-    return `✅ ${safeDockName} now has ${currentValue} ${metricLabel} available`;
-  }
-
   return null;
-}
-
-function buildAvailabilitySnapshotMessage(
-  dockName,
-  primaryDisplay,
-  currentValue,
-  minimumThreshold = 0
-) {
-  const safeDockName =
-    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "This dock";
-  const sanitizedCurrentValue = sanitizeThresholdValue(currentValue);
-  const normalizedThreshold = sanitizeThresholdValue(minimumThreshold);
-
-  if (sanitizedCurrentValue === 0) {
-    return `‼️ ${safeDockName} now has no ${pluralMetricLabel(primaryDisplay)} available`;
-  }
-
-  const metricLabel = metricLabelForValue(primaryDisplay, sanitizedCurrentValue);
-  if (normalizedThreshold > 0 && sanitizedCurrentValue < normalizedThreshold) {
-    return `⚠️ ${safeDockName} only has ${sanitizedCurrentValue} ${metricLabel} available`;
-  }
-
-  return `✅ ${safeDockName} now has ${sanitizedCurrentValue} ${metricLabel} available`;
 }
 
 function sanitizeAlternatives(rawAlternatives) {
@@ -1941,7 +1861,7 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
   const endDock = journey.endDock;
   let startDockData = null;
   try {
-    startDockData = await fetchDockData(startDock.id);
+    startDockData = await fetchNotificationDockData(startDock.id);
   } catch (err) {
     logger.warn(
       `Failed to fetch initial scheduled journey dock data for ${startDock.id}: ${err.message}`
@@ -1969,6 +1889,20 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
     primaryDisplay,
     availabilityUpdatedAtEpochSeconds: Math.floor(Date.now() / 1000),
   };
+  const startName = notificationDockName(dockPreferences, startDock.id, startDock.name);
+  const destinationName = notificationDockName(dockPreferences, endDock.id, endDock.name);
+  const minimum = minimumThresholdForDisplay({ bikes: dockPreferences?.settings?.minBikes,
+    eBikes: dockPreferences?.settings?.minEBikes }, primaryDisplay);
+  const low = startDockData && primaryValueForDisplay(startDockData, primaryDisplay) < minimum;
+  const startTitle = low ? availabilityTitle(startName, primaryDisplay, primaryValueForDisplay(startDockData, primaryDisplay), minimum)
+    : `Journey to ${destinationName}`;
+  const counts = !startDockData ? null : primaryDisplay === "allBikes"
+    ? `${countText(startDockData.standardBikes, "bike")} and ${countText(startDockData.eBikes, "e-bike")}`
+    : countText(primaryValueForDisplay(startDockData, primaryDisplay), primaryDisplay === "eBikes" ? "e-bike" : "bike");
+  let startBody = counts ? `${startName} has ${counts} available.${low ? "" : " Live updates have started."}`
+    : `Bike availability at ${startName} is currently unavailable. Live updates have started.`;
+  const alternatives = await alternativeAvailabilityText({ dockPreferences, primaryDisplay }, startDock.id, startDockData);
+  if (alternatives) startBody += ` ${alternatives}`;
   const timestamp = Math.floor(Date.now() / 1000);
   const aps = {
     timestamp,
@@ -1991,8 +1925,8 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
     },
     "input-push-token": 1,
     alert: {
-      title: "Scheduled journey",
-      body: `Live updates started for ${notificationDockName(dockPreferences, startDock.id, startDock.name)}`,
+      title: startTitle,
+      body: startBody,
       sound: "default",
     },
   };
@@ -2019,8 +1953,8 @@ async function sendScheduledJourneyStartPush(journey, reason = "schedule") {
     target: token,
     channel: "live_activity",
     type: "scheduled_journey_start",
-    title: "Scheduled journey",
-    body: `Live updates started for ${notificationDockName(dockPreferences, startDock.id, startDock.name)}`,
+    title: startTitle,
+    body: startBody,
     result: "ok",
     status: result.statusCode,
     apnsEnv: result.buildType,
@@ -2109,156 +2043,51 @@ async function prepareScheduledJourneyStart(journey, reason) {
   return { canStart: true, endedPreStartAdHocCount, inProgressCount: 0 };
 }
 
-function scheduledJourneyStartAlertBody(dockName, dockData, bikeDataFilter) {
-  const resolvedDockName =
-    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "Start dock";
-  const standardBikes = sanitizeThresholdValue(dockData?.standardBikes);
-  const eBikes = sanitizeThresholdValue(dockData?.eBikes);
-
-  switch (sanitizeBikeDataFilter(bikeDataFilter)) {
-    case "bikesOnly":
-      return `${resolvedDockName}: ${standardBikes} ${standardBikes === 1 ? "bike" : "bikes"}`;
-    case "eBikesOnly":
-      return `${resolvedDockName}: ${eBikes} ${eBikes === 1 ? "e-bike" : "e-bikes"}`;
-    case "both":
-    default:
-      return `${resolvedDockName}: ${standardBikes} ${standardBikes === 1 ? "bike" : "bikes"}, ${eBikes} ${eBikes === 1 ? "e-bike" : "e-bikes"}`;
-  }
-}
-
-async function sendScheduledJourneyInitialAvailabilityPush(journey) {
-  const deviceToken = normalizeApnsDeviceToken(journey.deviceToken);
-  if (!deviceToken) return null;
-
-  const dockData = await fetchDockData(journey.startDock.id);
-  const preferences = await loadDeviceDockPreferences(journey.deviceId);
-  const result = await sendAlertPush(
-    deviceToken,
-    journey.buildType === "production" ? "production" : "development",
-    "Scheduled journey",
-    scheduledJourneyStartAlertBody(
-      notificationDockName(preferences, journey.startDock.id, journey.startDock.name),
-      dockData,
-      journey.bikeDataFilter
-    ),
-    "scheduled_journey_initial_availability",
-    "scheduled journey initial availability"
-  );
-  await sendAlternativeAvailabilityPush({
-    deviceToken,
-    buildType: result.buildType,
-    deviceId: journey.deviceId,
-    primaryDisplay: journey.bikeDataFilter === "bikesOnly" ? "bikes"
-      : journey.bikeDataFilter === "eBikesOnly" ? "eBikes" : "allBikes",
-  }, journey.startDock.id, journey.startDock.name, dockData);
-  return result;
-}
-
-
-function scheduledJourneyDockArrivalBody(dockName) {
-  const resolvedDockName =
-    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "your dock";
-  return `Welcome to ${resolvedDockName}!`;
-}
-
-function scheduledJourneyWatchingDestinationBody(dockName) {
-  const resolvedDockName =
-    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "your destination dock";
-  return `Now watching spaces at ${resolvedDockName}`;
-}
-
-function scheduledJourneyDestinationAvailabilityBody(dockName, dockData) {
-  const resolvedDockName =
-    typeof dockName === "string" && dockName.trim() ? dockName.trim() : "Destination dock";
-  const spaces = sanitizeThresholdValue(dockData?.emptySpaces);
-  return `${resolvedDockName}: ${spaces} ${spaces === 1 ? "space" : "spaces"} available`;
-}
-
-async function sendScheduledJourneyTransitionPushes(
-  journey,
-  destinationDock,
-  options = {}
-) {
-  const deviceToken = normalizeApnsDeviceToken(journey.deviceToken);
-  if (!deviceToken) return null;
-
-  const buildType = journey.buildType === "production" ? "production" : "development";
-  const startDock = journey.startDock || journey.activeRun;
-  const preferences = await loadDeviceDockPreferences(journey.deviceId);
-  const arrivalDockName = notificationDockName(preferences, startDock?.id || startDock?.dockId, startDock?.name || startDock?.dockName);
-  const destinationDockName = notificationDockName(preferences, destinationDock?.id || destinationDock?.dockId, destinationDock?.name || destinationDock?.dockName);
-  const results = [];
-
-  if (options.includeStartArrivalNotification !== false) {
-    try {
-      results.push(
-        await sendAlertPush(
-          deviceToken,
-          buildType,
-          "Dock arrival",
-          scheduledJourneyDockArrivalBody(arrivalDockName),
-          "scheduled_journey_start_arrival",
-          "scheduled journey start arrival",
-          {
-            customPayload: {
-              journeyId: journey._id?.toString?.() || null,
-              dockId: startDock?.id || startDock?.dockId || null,
-              dockName: arrivalDockName || null,
-            },
-          }
-        )
-      );
-    } catch (err) {
-      logger.warn(`Failed to send scheduled journey start-arrival push: ${err.message}`);
-    }
-  }
-
-  try {
-    results.push(
-      await sendAlertPush(
-        deviceToken,
-        buildType,
-        "Scheduled journey",
-        scheduledJourneyWatchingDestinationBody(destinationDockName),
-        "scheduled_journey_destination_watch",
-        "scheduled journey destination watch",
-        {
-          customPayload: {
-            journeyId: journey._id?.toString?.() || null,
-            dockId: destinationDock?.id || destinationDock?.dockId || null,
-            dockName: destinationDockName || null,
-          },
-        }
-      )
-    );
-  } catch (err) {
-    logger.warn(`Failed to send scheduled journey destination-watch push: ${err.message}`);
-  }
-
-  return results;
+async function composeDestinationNotification(session, dockId, dockName, dockData, kind = "transition", startName = null) {
+  const name = notificationDockName(session.dockPreferences, dockId, dockName);
+  const message = destinationMessage(name, dockData, kind, startName);
+  const alternatives = await alternativeAvailabilityText({ ...session, primaryDisplay: "spaces" }, dockId, dockData);
+  if (alternatives) message.body += ` ${alternatives}`;
+  return message;
 }
 
 async function sendScheduledJourneyDestinationAvailabilityPushForSession(session, dockId, dockName, dockData) {
-  const deviceToken = normalizeApnsDeviceToken(session?.deviceToken);
-  if (!deviceToken) return null;
+  if (!normalizeApnsDeviceToken(session?.deviceToken)) return null;
+  const message = await composeDestinationNotification(session, dockId, dockName, dockData);
+  return sendAlertPush(session.deviceToken, session.buildType, message.title, message.body,
+    "scheduled_journey_destination_availability", "journey destination availability", {
+      category: LIVE_ACTIVITY_ALERT_CATEGORY,
+      customPayload: { journeyId: session.scheduledJourneyId || session.adHocJourneyId || null, dockId, dockName },
+    });
+}
 
-  const result = await sendAlertPush(
-    deviceToken,
-    session.buildType === "production" ? "production" : "development",
-    "Scheduled journey",
-    scheduledJourneyDestinationAvailabilityBody(notificationDockName(session.dockPreferences, dockId, dockName), dockData),
-    "scheduled_journey_destination_availability",
-    "scheduled journey destination availability",
-    {
-      customPayload: {
-        journeyId: session.scheduledJourneyId || null,
-        dockId,
-        dockName,
-      },
-    }
-  );
-  await sendAlternativeAvailabilityPush({ ...session, buildType: result.buildType, primaryDisplay: "spaces" }, dockId, dockName, dockData);
-  return result;
+async function sendHalfwayNotificationIfNeeded(session, dockId) {
+  const progress = session.journeyProgress;
+  if (session.scheduledJourneyPhase !== "end" || !session.deviceToken ||
+      !progress || progress.percent < 50 || progress.percent >= 100 ||
+      Date.now() / 1000 - progress.updatedAtEpochSeconds > 120 ||
+      !session.rideStartedAtEpochSeconds || !(session.scheduledJourneyId || session.adHocJourneyId)) return;
+  const key = crypto.createHash("sha256").update(JSON.stringify([
+    session.deviceId || session.deviceToken, session.scheduledJourneyId || session.adHocJourneyId,
+    session.rideStartedAtEpochSeconds, "halfway",
+  ])).digest("hex");
+  if (journeyNotificationReceipts.entries.has(key)) return;
+  try {
+    const preferences = await loadDeviceDockPreferences(session.deviceId) || session.dockPreferences;
+    const { data } = await fetchVerifiedDestinationAvailability(fetchNotificationDockData, dockId);
+    const message = await composeDestinationNotification({ ...session, dockPreferences: preferences }, dockId,
+      session.activeDockName || session.dockName || dockId, data, "halfway");
+    // The journey may have ended while availability was loading.
+    if (![...(dockPollers.get(dockId)?.tokens.values() || [])].includes(session) ||
+        session.scheduledJourneyPhase !== "end" || session.journeyProgress?.percent >= 100) return;
+    await journeyNotificationReceipts.sendOnce(key, () => sendAlertPush(session.deviceToken, session.buildType,
+      message.title, message.body, "journey_halfway", "journey halfway", {
+        category: LIVE_ACTIVITY_ALERT_CATEGORY,
+        customPayload: { dockId, journeyId: session.scheduledJourneyId || session.adHocJourneyId },
+      }));
+  } catch (error) {
+    logger.warn(`Failed to send halfway notification: ${error.message}`);
+  }
 }
 
 async function sendAlertPush(
@@ -2344,38 +2173,22 @@ async function sendAlertPush(
   }
 }
 
-async function sendAlternativeAvailabilityPush(session, dockId, dockName, dockData) {
-  if (!dockData || !session.deviceToken) return;
+async function alternativeAvailabilityText(session, dockId, dockData) {
+  if (!dockData) return "";
   try {
     const preferences = session.dockPreferences || await loadDeviceDockPreferences(session.deviceId);
     const settings = preferences?.settings;
     const thresholds = session.minimumThresholds || {
-      bikes: settings?.minBikes,
-      eBikes: settings?.minEBikes,
-      spaces: settings?.minSpaces,
+      bikes: settings?.minBikes, eBikes: settings?.minEBikes, spaces: settings?.minSpaces,
     };
     const primaryDisplay = sanitizePrimaryDisplay(session.primaryDisplay);
     const threshold = minimumThresholdForDisplay(thresholds, primaryDisplay);
-    if (threshold <= 0 || primaryValueForDisplay(dockData, primaryDisplay) >= threshold) return;
-    const body = buildAlternativeNotification({
-      dockId,
-      primaryDisplay,
-      preferences,
-      docksById: await loadAlternativeDockSnapshots(),
-    });
-    if (!body) return;
-    await sendAlertPush(
-      session.deviceToken,
-      session.buildType,
-      "Alternative docks",
-      body,
-      "availability_alternatives",
-      "availability alternatives",
-      { customPayload: { dockId, dockName: sanitizeDockName(dockName) || dockId } }
-    );
+    if (threshold <= 0 || primaryValueForDisplay(dockData, primaryDisplay) >= threshold) return "";
+    return buildAlternativeNotification({ dockId, primaryDisplay, preferences,
+      docksById: await loadAlternativeDockSnapshots() }) || "";
   } catch (error) {
-    // A failed follow-up must not fail or retry the already-delivered main alert.
-    logger.warn(`Failed to send alternative dock availability for ${dockId}: ${error.message}`);
+    logger.warn(`Failed to compose alternative dock availability for ${dockId}: ${error.message}`);
+    return "";
   }
 }
 
@@ -2389,11 +2202,15 @@ async function sendAvailabilityAlertPush(
   dockData
 ) {
   const sanitizedDockName = sanitizeDockName(dockName);
+  const display = sanitizePrimaryDisplay(session.primaryDisplay);
+  const name = notificationDockName(session.dockPreferences, dockId, dockName);
+  const alternatives = await alternativeAvailabilityText(session, dockId, dockData);
   const result = await sendAlertPush(
     deviceToken,
     buildType,
-    "Dock availability update",
-    alertBody,
+    availabilityTitle(name, display, primaryValueForDisplay(dockData, display),
+      minimumThresholdForDisplay(session.minimumThresholds, display)),
+    alternatives ? `${alertBody} ${alternatives}` : alertBody,
     "availability_alert",
     "availability alert",
     {
@@ -2404,7 +2221,6 @@ async function sendAvailabilityAlertPush(
       },
     }
   );
-  await sendAlternativeAvailabilityPush({ ...session, deviceToken, buildType: result.buildType }, dockId, dockName, dockData);
   return result;
 }
 
@@ -2414,8 +2230,8 @@ async function sendArrivalConfirmationPush(deviceToken, buildType, dockName) {
   return sendAlertPush(
     deviceToken,
     buildType,
-    "Dock arrival",
-    `Welcome to ${resolvedDockName}!`,
+    `Arrived at ${resolvedDockName}`,
+    `You’ve reached ${resolvedDockName}.`,
     "arrival_confirmation",
     "arrival confirmation"
   );
@@ -4296,15 +4112,6 @@ app.post("/scheduled-journeys/:id/phase", async (req, res) => {
     dockName: dock.name,
   });
 
-  if (phase === "end") {
-    await sendScheduledJourneyTransitionPushes(journey, dock, {
-      // Arrival monitoring already posts the welcome notification locally.
-      // Suppress the server copy so one physical arrival produces one alert.
-      includeStartArrivalNotification:
-        transitionSource !== "manual" && transitionSource !== "arrival",
-    });
-  }
-
   res.json({ success: true, journey: serializeScheduledJourney(result) });
 });
 
@@ -4519,6 +4326,7 @@ app.post("/live-activity/start", async (req, res) => {
     destinationDockName: typeof req.body?.destinationDockName === "string"
       ? compactPushDockText(req.body.destinationDockName) : existingSessionForPushToken?.destinationDockName || null,
     destinationAvailability: existingSessionForPushToken?.destinationAvailability || null,
+    journeyProgress: existingSessionForPushToken?.journeyProgress || null,
     rideStartedAtEpochSeconds: rideStartedAtForPhase(normalizedScheduledJourneyPhase,
       existingSessionForPushToken, req.body?.rideStartedAtEpochSeconds),
     adHocJourneyId:
@@ -4536,6 +4344,7 @@ app.post("/live-activity/start", async (req, res) => {
   });
 
   updateJourneyProgress(poller.tokens.get(normalizedPushToken), req.body?.journeyProgress);
+  void sendHalfwayNotificationIfNeeded(poller.tokens.get(normalizedPushToken), dockId);
 
   appendDiagnosticJsonLine("live_activity_session_registered", {
     dockId,
@@ -4701,6 +4510,7 @@ app.post("/live-activity/session/update", async (req, res) => {
 
   if (req.body?.progressOnly === true) {
     const updated = updateJourneyProgress(session, req.body.journeyProgress);
+    if (updated) await sendHalfwayNotificationIfNeeded(session, dockId);
     return res.json({ success: true, progressUpdated: updated });
   }
 
@@ -4762,6 +4572,7 @@ app.post("/live-activity/session/update", async (req, res) => {
   }
 
   updateJourneyProgress(session, req.body?.journeyProgress);
+  void sendHalfwayNotificationIfNeeded(session, resolvedTargetDockId);
 
   session.activeDockId = resolvedTargetDockId;
   session.activeDockName =
@@ -4814,7 +4625,7 @@ app.post("/live-activity/session/update", async (req, res) => {
   let verifiedDestinationData = null;
   if (isDestinationMigration) {
     const verification = await fetchVerifiedDestinationAvailability(
-      fetchDockData,
+      fetchNotificationDockData,
       resolvedTargetDockId
     );
     verifiedDestinationData = verification.data;
@@ -4886,7 +4697,7 @@ app.post("/live-activity/session/update", async (req, res) => {
 
   if (
     isDestinationMigration &&
-    verifiedDestinationData &&
+    req.body?.arrivalNotificationHandled !== true &&
     !session.destinationAvailabilitySentAt
   ) {
     try {
@@ -5144,6 +4955,25 @@ app.post("/live-activity/arrive", async (req, res) => {
   }
 
   res.json(responseBody);
+});
+
+app.post("/live-activity/arrival-message", async (req, res) => {
+  const startDock = sanitizeJourneyDock(req.body?.startDock);
+  const endDock = sanitizeJourneyDock(req.body?.endDock);
+  const deviceId = deviceIdFromRequest(req);
+  if (!startDock || !endDock || !deviceId) return res.status(400).json({ error: "Valid startDock, endDock and deviceId are required" });
+  const validated = validateDockPreferences(req.body?.dockPreferences);
+  if (validated.error) return res.status(400).json({ error: validated.error });
+  try {
+    const preferences = await loadDeviceDockPreferences(deviceId, validated.value) || validated.value;
+    const { data } = await fetchVerifiedDestinationAvailability(fetchNotificationDockData, endDock.id);
+    const message = await composeDestinationNotification({ deviceId, dockPreferences: preferences },
+      endDock.id, endDock.name, data, "transition", notificationDockName(preferences, startDock.id, startDock.name));
+    res.json(message);
+  } catch (error) {
+    logger.warn(`Failed to compose arrival notification: ${error.message}`);
+    res.status(503).json({ error: "Arrival notification content unavailable" });
+  }
 });
 
 app.post("/live-activity/start-arrival", (req, res) => {
@@ -5836,13 +5666,6 @@ async function processScheduledJourneyStarts() {
         decision,
         { source: "schedule" }
       );
-      try {
-        await sendScheduledJourneyInitialAvailabilityPush(journey);
-      } catch (err) {
-        logger.warn(
-          `Failed to send initial scheduled journey availability notification for ${journey._id}: ${err.message}`
-        );
-      }
       await scheduledJourneysCollection.updateOne(
         { _id: journey._id },
         {

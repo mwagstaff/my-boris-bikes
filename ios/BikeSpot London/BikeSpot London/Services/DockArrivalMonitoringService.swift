@@ -1426,14 +1426,15 @@ final class DockArrivalMonitoringService: NSObject {
                 dock: dock,
                 message: "Start dock reached; transitioning scheduled journey to destination dock"
             )
-            sendScheduledStartArrivalNotification(for: dock)
+            let arrivalNotificationHandled = await sendScheduledStartArrivalNotification(for: dock, destination: destinationDock)
             stopMonitoring(reason: "scheduled_start_arrival")
             await LiveActivityService.shared.transitionScheduledJourneyToEndDock(
                 journeyId: startArrivalScheduledJourneyId,
                 adHocJourneyId: startArrivalAdHocJourneyId,
                 endDock: destinationDock,
                 delaySeconds: 0,
-                transitionSource: "arrival"
+                transitionSource: "arrival",
+                arrivalNotificationHandled: arrivalNotificationHandled
             )
             return true
         }
@@ -1576,23 +1577,55 @@ final class DockArrivalMonitoringService: NSObject {
         }
     }
 
-    private func sendScheduledStartArrivalNotification(for dock: MonitoredDock) {
+    private func sendScheduledStartArrivalNotification(for dock: MonitoredDock, destination: ScheduledJourneyDock) async -> Bool {
         let content = UNMutableNotificationContent()
-        content.title = "Dock arrival"
-        let dockName = DockPreferencesService.shared.displayName(for: dock.dockId, fallback: dock.dockName)
-        content.body = "Welcome to \(dockName)!"
+        let preferences = DockPreferencesService.shared
+        let startName = preferences.displayName(for: dock.dockId, fallback: dock.dockName)
+        let endName = preferences.displayName(for: destination.id, fallback: destination.name)
+        content.title = "Journey to \(endName)"
+        content.body = "You’ve reached \(startName). Space availability at \(endName) is currently unavailable."
         content.sound = .default
-        let minuteBucket = Int(Date().timeIntervalSince1970 / 60)
+        content.categoryIdentifier = "LIVE_ACTIVITY_ALERT"
+        content.userInfo = ["dockId": destination.id, "dockName": destination.name]
 
+        // The server composes text only. Delivery remains local, so a timeout
+        // can safely use the offline wording without a second remote alert.
+        do {
+            let (data, response) = try await postJSON(
+                path: AppConstants.Server.liveActivityArrivalMessageEndpoint,
+                body: [
+                    "deviceId": DeviceTokenHelper.scheduledJourneyDeviceId,
+                    "dockPreferences": preferences.serverPayload,
+                    "startDock": ["id": dock.dockId, "name": dock.dockName,
+                                  "latitude": dock.latitude, "longitude": dock.longitude],
+                    "endDock": ["id": destination.id, "name": destination.name,
+                                "latitude": destination.latitude, "longitude": destination.longitude],
+                ],
+                requestHeaderToken: DeviceTokenHelper.apnsDeviceToken,
+                backgroundTaskName: "arrival-notification-content"
+            )
+            struct Message: Decodable { let title: String; let body: String }
+            if (200...299).contains(response.statusCode) {
+                let message = try JSONDecoder().decode(Message.self, from: data)
+                content.title = message.title
+                content.body = message.body
+            }
+        } catch {
+            logger.warning("Using offline arrival notification: \(error.localizedDescription)")
+        }
+        guard !Task.isCancelled else { return false }
+        let minuteBucket = Int(Date().timeIntervalSince1970 / 60)
         let request = UNNotificationRequest(
             identifier: "scheduled-start-arrival-\(scheduledJourneyId ?? adHocJourneyId ?? dock.dockId)-\(minuteBucket)",
             content: content,
             trigger: nil
         )
-        UNUserNotificationCenter.current().add(request) { [weak self] error in
-            if let error {
-                self?.logger.error("Failed to schedule start-dock arrival notification: \(error.localizedDescription)")
-            }
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            return true
+        } catch {
+            logger.error("Failed to schedule start-dock arrival notification: \(error.localizedDescription)")
+            return false
         }
     }
 

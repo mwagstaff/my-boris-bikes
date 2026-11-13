@@ -40,6 +40,17 @@ test("client seeded counts without a fetch time do not pretend to be fresh", () 
   assert.equal(state.availabilityUpdatedAtEpochSeconds, null);
 });
 
+test("notification fetch rejects missing counts instead of reporting a full dock", async () => {
+  const { context } = harness();
+  context.dockOverrides = new Map();
+  const signal = new AbortController().signal;
+  await assert.rejects(context.fetchDockData("BikePoints_1", signal), /incomplete/);
+  context.fetchTflJson = async () => ({ additionalProperties: [
+    { key: "NbStandardBikes", value: "2" }, { key: "NbEBikes", value: "0" }, { key: "NbEmptyDocks", value: "5" },
+  ] });
+  assert.equal((await context.fetchDockData("BikePoints_1", signal)).emptySpaces, 5);
+});
+
 
 test("Live Activity payload resolves the active dock alias from device preferences", () => {
   const { context } = harness();

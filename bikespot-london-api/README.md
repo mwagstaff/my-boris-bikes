@@ -192,26 +192,57 @@ When a live activity is active, the server now tracks transitions for the select
 - `eBikes`
 - `spaces`
 
-If the selected metric crosses from positive to zero, the server sends an APNS alert like:
-- `‼️ Warwick Row no longer has any bikes`
+Availability warnings now include alternatives in the same notification. For example:
 
-If it crosses from zero to positive, the server sends an APNS alert like:
-- `✅ Warwick Row now has 1 bike available`
+- **No Bikes at Home** — `Home has no bikes available. Alternatives: Station has 6 bikes; Park has 4 bikes.`
+- **Spaces Low at Office** — `Office has 2 spaces available, below your minimum of 5. Alternatives: Station has 6 spaces.`
+- **Spaces Available at Office** — `Office now has 6 spaces available.`
 
-If the selected metric is below the user's configured minimum threshold, the server sends a warning alert on every change:
-- `⚠️ Warwick Row, Westminster only has 4 spaces available`
-- `⚠️ Warwick Row, Westminster only has 3 spaces available`
-- `⚠️ Warwick Row, Westminster now has 2 spaces available`
+Existing zero-availability, below-minimum change and recovery triggers remain in
+place. Notifications use the selected bikes/e-bikes/spaces filter and resolve
+current recipient aliases at send time. Up to three alternatives retain saved
+order (including saved docks with zero availability), then fill remaining slots
+with nearby open docks with availability. Failed or empty alternative lookups
+leave the primary message intact; they never generate a separate alert.
 
-All user-facing dock notifications resolve the recipient's saved dock alias by dock ID, falling back to the official name when no alias is set. This includes scheduled starts, availability changes and snapshots, collection/destination transitions, arrival confirmations, and alternative docks. Route metadata retains official names. Alias edits and removal use the existing device-preferences sync; delayed destination alerts reload preferences before sending.
+Journey notifications:
 
-Each below-threshold availability alert is followed by a separate `Alternative docks` notification listing up to three docks, for example:
-- `Alternatives: Station - 12 bikes; Ashley Place, Victoria - 5 bikes; Howick Place - 3 bikes`
+| Event | Single notification |
+| --- | --- |
+| Scheduled start | `Journey to Office` — `Home has 8 bikes and 2 e-bikes available. Live updates have started.` Included in the Live Activity start push; no second availability push. |
+| Collection dock arrival | `Journey to Office` — `You’ve reached Home. Office has 5 spaces available.` |
+| Collection arrival with full destination | `Office Is Full` — `You’ve reached Home. Office has no spaces available. Alternatives: Station has 6 spaces; Park has 4 spaces.` |
+| Halfway | `Halfway to Office` — `You’re halfway to Office, which has 2 spaces available. Alternatives: Station has 6 spaces; Park has 4 spaces.` |
+| Destination approach | `Approaching Office` — `Office has 2 spaces available. Alternatives: Station has 6 spaces; Park has 4 spaces.` |
+| Final / standalone dock arrival | `Arrived at Office` — `You’ve reached Office.` |
 
-This applies to journey start/end monitoring, standalone dock watches, scheduled journey initial summaries, and destination availability snapshots. Custom alternatives retain their saved order and aliases, including docks with zero availability. The server fills any remaining slots with the nearest open docks with availability for the watched metric, without duplicates. Empty custom lists use nearby docks; missing or closed docks are omitted. Notification lists use a three-dock limit independently of the Live Activity display limit and filtering. Follow-ups use the existing shared TfL catalogue cache, and lookup or delivery failures do not fail the primary alert.
+The app requests collection-arrival text from `POST /live-activity/arrival-message`
+with `deviceId`, `dockPreferences`, `startDock`, and `endDock`. This endpoint
+composes text without sending a push. iOS delivers one local notification and
+passes `arrivalNotificationHandled: true` during the session migration to suppress
+the server snapshot. If the content request fails, the local arrival message says
+destination availability is unavailable. Manual transitions still receive one
+server destination snapshot. The phase-update endpoint no longer sends a separate
+watching/arrival alert. Full collection-arrival consolidation requires the updated
+API **and** iOS app; older clients retain their local welcome plus one destination
+snapshot until updated. Deploy the API before releasing the app.
 
-If the selected metric rises back to or above that threshold, the server sends a success alert:
-- `✅ Warwick Row, Westminster now has 6 spaces available`
+The halfway alert uses the existing location-derived journey progress, during the
+riding phase, on the first fresh update at or above 50% and below 100%. It applies
+to scheduled and ad-hoc journeys and fetches destination availability at send time.
+Missing data is described as unavailable, never as zero. Alternatives appear only
+below the configured minimum. Completed/ended journeys cannot emit a late milestone.
+
+`LOG_DIR/journey-notification-receipts.json` holds hashed per-device/per-ride
+milestone claims for 24 hours. Preserve it across deployments/restarts. Claims
+prevent duplicate halfway alerts across concurrent requests, token changes and
+restoration with the same ride start time. Explicit APNs rejection permits retry;
+an ambiguous network failure retains the claim to avoid duplicate delivery.
+Monitor `journey_halfway` events in the existing push-event dashboard/logs and
+`apns_pushes_total`. A readable/writable receipt directory is required; check logs
+for receipt/send failures. The app/API build and tests cannot verify physical-device
+notification presentation or Apple Intelligence summaries; exercise those on an
+actual journey, including offline pickup and a halfway crossing.
 
 The app should provide both the selected primary metric and minimum thresholds when calling `POST /live-activity/start`:
 
@@ -225,6 +256,52 @@ The app should provide both the selected primary metric and minimum thresholds w
   }
 }
 ```
+
+### Custom sample notifications
+
+From your Mac, run this from `bikespot-london-api`:
+
+```sh
+node scripts/sample-notification.js --remote sky
+```
+
+This runs the installed helper over SSH in `~/dev/boris-bikes-api` on Sky,
+keeping the signing key and device tokens on the server. It prompts for title,
+body and a target device. Text arguments also work with `--remote sky`.
+Use `--remote sky --check` to verify the credential and registration files
+without sending. After changing the helper, copy it to the server's
+`~/dev/boris-bikes-api/scripts/sample-notification.js`; no service restart is needed.
+
+Run `node scripts/sample-notification.js` from the API directory on a machine
+with its APNs signing key and registered `complication-tokens.json` (or the
+configured `COMPLICATION_TOKENS_PATH`). It prompts for a title, body and one
+device, showing masked token prefixes and registration dates. Match the prefix
+to your iPhone's app token; the list can include other devices and old installs.
+This standalone tool sends one ordinary BikeSpot alert without starting the API,
+changing journey state or overriding dock values. It does not add a public endpoint
+or appear in the running API's in-memory push-event log; retain the returned APNs ID.
+
+You can also supply text as arguments:
+
+```sh
+node scripts/sample-notification.js --title 'Journey to Office' --body 'You have reached Home. Office has 5 spaces available.'
+```
+
+For a specific device, save its regular app APNs token in a private text file
+(not a Live Activity or push-to-start token), then add
+`--token-file /private/path/iphone-token.txt --environment production`.
+Use `production` for App Store/TestFlight and `development` for Xcode development
+builds. The tool uses the same `APNS_KEY_PATH`, `APNS_KEY_ID`, `APNS_TEAM_ID` and
+app-topic environment settings/defaults as the API. Service environment settings
+must also be present in the shell running the tool. There is no automatic resend
+or environment fallback, so each successful invocation sends exactly one sample.
+
+Add `--dry-run` to preview the payload without credentials or network access.
+For summary comparisons, dismiss previous BikeSpot alerts, lock the iPhone, and
+send a sample. Compare it with the original three messages by running the tool
+three times. Keep notification-summary and Focus settings consistent. APNs
+acceptance does not prove display, speech or Apple Intelligence summarisation;
+verify those on the physical device. No sample is sent automatically.
 
 ### Notification Stop Conditions
 

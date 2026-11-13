@@ -1711,7 +1711,8 @@ class LiveActivityService: ObservableObject {
         adHocJourneyId: String? = nil,
         endDock: ScheduledJourneyDock,
         delaySeconds: UInt64 = 60,
-        transitionSource: String = "manual"
+        transitionSource: String = "manual",
+        arrivalNotificationHandled: Bool = false
     ) async {
         let current = scheduledStartActivity(
             journeyId: journeyId,
@@ -1814,7 +1815,8 @@ class LiveActivityService: ObservableObject {
                     targetDockId: endBikePoint.id,
                     alternatives: Array(alternativeDocks),
                     currentState: updatedState,
-                    scheduledJourneyPhase: .end
+                    scheduledJourneyPhase: .end,
+                    arrivalNotificationHandled: arrivalNotificationHandled
                 )
                 untrackServerSession(dockId: originalDockId, pushToken: tokenString)
                 trackServerSession(dockId: endBikePoint.id, pushToken: tokenString)
@@ -2754,7 +2756,8 @@ class LiveActivityService: ObservableObject {
         alternatives: [DockActivityAttributes.AlternativeDock]? = nil,
         currentState: DockActivityAttributes.ContentState? = nil,
         scheduledJourneyPhase: ScheduledJourney.ActiveRun.Phase? = nil,
-        progress: JourneyProgress? = nil
+        progress: JourneyProgress? = nil,
+        arrivalNotificationHandled: Bool = false
     ) async {
         let urlString = "\(serverBaseURL)/live-activity/session/update"
         guard let url = URL(string: urlString) else {
@@ -2781,6 +2784,7 @@ class LiveActivityService: ObservableObject {
             } ?? primaryDisplay.rawValue,
             "minimumThresholds": minimumThresholdsPayload(),
         ]
+        body["arrivalNotificationHandled"] = arrivalNotificationHandled
         if let progress, let data = try? JSONEncoder().encode(progress) {
             body["progressOnly"] = true
             body["journeyProgress"] = try? JSONSerialization.jsonObject(with: data)

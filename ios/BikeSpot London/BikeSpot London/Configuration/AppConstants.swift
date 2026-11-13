@@ -38,6 +38,7 @@ struct AppConstants {
         static let liveActivityDeviceEndEndpoint = "/live-activity/device/end"
         static let liveActivityDeviceEndAllEndpoint = "/live-activity/device/end-all"
         static let liveActivityArrivalEndpoint = "/live-activity/arrive"
+        static let liveActivityArrivalMessageEndpoint = "/live-activity/arrival-message"
         static let liveActivityStartArrivalEndpoint = "/live-activity/start-arrival"
         static let backgroundLocationEventEndpoint = "/app/background-location-event"
 
