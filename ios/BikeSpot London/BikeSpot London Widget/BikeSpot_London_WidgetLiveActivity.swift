@@ -224,6 +224,8 @@ private struct LiveActivityLegendItem: View {
             Text("\(count) \(label)")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(textColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
     }
 }
@@ -531,7 +533,7 @@ private struct DockLiveActivityView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if isStale && (activityFamily != .small || journeyMetric == nil) {
+            if isStale && activityFamily == .small && journeyMetric == nil {
                 Label("Updating…", systemImage: "clock.arrow.circlepath")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.orange)
@@ -602,7 +604,7 @@ private struct DockLiveActivityView: View {
                             spaces: state.emptySpaces,
                             updatedAt: Date(timeIntervalSince1970: Double(state.availabilityUpdatedAtEpochSeconds ?? 0))),
                         metric: JourneyMetric(rawValue: journeyMetric.queryValue) ?? .bikes,
-                        threshold: journeySummary.threshold, progress: state.journeyProgress, isStale: isStale, compact: false,
+                        threshold: journeySummary.threshold, progress: state.journeyProgress, isStale: isStale, compact: true,
                         destination: journeyMetric.queryValue == "spaces" ? nil : LiveActivityDockNames.destination(state.destinationAvailability, officialName: attributes.destinationDockName))
                 } else {
                     HStack(spacing: 14) {
@@ -610,28 +612,18 @@ private struct DockLiveActivityView: View {
                             standardBikes: state.standardBikes,
                             eBikes: state.eBikes,
                             emptySpaces: state.emptySpaces,
-                            size: 42,
-                            strokeWidth: 10,
+                            size: 36,
+                            strokeWidth: 8,
                             centerText: extractInitials(from: displayTitle(attributes: attributes, state: state))
                         )
+                        .padding(4) // Include the chart's outward stroke in its layout size.
                         .fixedSize()
 
                         VStack(alignment: .leading, spacing: 4) {
-                            if let alias = displayAlias(attributes: attributes, state: state) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(alias)
-                                        .font(.system(size: 16, weight: .semibold))
-                                        .lineLimit(1)
-                                    Text(displayDockName(attributes: attributes, state: state))
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(1)
-                                }
-                            } else {
-                                Text(displayDockName(attributes: attributes, state: state))
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .lineLimit(2)
-                            }
+                            Text(displayTitle(attributes: attributes, state: state))
+                                .font(.system(size: 16, weight: .semibold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
 
                             HStack(spacing: 10) {
                                 if bikeDataFilter.showsStandardBikes {
@@ -729,8 +721,17 @@ private struct DockLiveActivityView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 4)
 
-            DockUpdatedLabel(timestamp: state.availabilityUpdatedAtEpochSeconds)
-                .padding(.bottom, 2)
+            HStack(spacing: 8) {
+                DockUpdatedLabel(timestamp: state.availabilityUpdatedAtEpochSeconds)
+                if isStale {
+                    Label("Updating…", systemImage: "clock.arrow.circlepath")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("Dock availability is updating")
+                }
+            }
+            .lineLimit(1)
+            .padding(.bottom, 2)
 
             Text("Tap to manage")
                 .font(.system(size: 12, weight: .semibold))
@@ -742,6 +743,8 @@ private struct DockLiveActivityView: View {
                 .frame(maxWidth: .infinity)
                 .background(standardBikeColor)
         }
+        // Keep the compact card, alternatives and footer within the system's 160pt limit.
+        .dynamicTypeSize(...DynamicTypeSize.large)
     }
 }
 
